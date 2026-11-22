@@ -265,7 +265,7 @@
               <p class="chat-status-line" id="chatConnectionState">Checking AI endpoint…</p>
             </div>
             <div class="chat-toolbar-actions">
-              <button class="icon-chip-btn" id="btnConfigureAi" title="Configure AI Endpoint">&#x1F511; Setup AI</button>
+              <button class="icon-chip-btn" id="btnConfigureAi" title="Proxy Status">&#x1F6E1;&#xFE0F; Status</button>
               <button class="icon-chip-btn" id="btnNewChat" title="New Chat">+ New</button>
               <button class="icon-chip-btn danger" id="btnClearChat" title="Clear Chat">Clear</button>
             </div>
@@ -273,10 +273,10 @@
 
           <div class="ai-setup-banner hidden" id="aiSetupBanner">
             <div>
-              <strong>Live AI Backend Needed for Web Browser</strong>
-              <p>For security, no developer API key is stored in public GitHub Pages JavaScript. Connect your Cloudflare Worker proxy or enter your own session Gemini key to chat live.</p>
+              <strong>Public AI Proxy Endpoint Pending Configuration</strong>
+              <p>The site owner needs to set <code>PUBLIC_PROXY_URL</code> in <code>docs/app.js</code> to the deployed Cloudflare Worker URL. Visitors never need an API key.</p>
             </div>
-            <button type="button" class="outline-pill-btn" id="btnBannerSetupAi">Configure AI</button>
+            <button type="button" class="outline-pill-btn" id="btnBannerSetupAi">View Status</button>
           </div>
 
           <div class="chat-messages" id="chatMessages"></div>
@@ -460,42 +460,31 @@
     </nav>
   </div>
 
-  <!-- Modal: AI Settings & Secure Endpoint Configuration -->
+  <!-- Modal: Public AI Proxy Status & Web Controls -->
   <div class="modal-backdrop hidden" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsModalTitle">
     <div class="glass-card modal-card">
       <div class="modal-head">
-        <h3 id="settingsModalTitle">INFFOLER AI · Web Settings</h3>
+        <h3 id="settingsModalTitle">INFFOLER AI &middot; Proxy &amp; Web Status</h3>
         <button class="circle-icon-btn small" id="closeSettingsModal" aria-label="Close">&times;</button>
       </div>
-      <p class="modal-desc">
-        Configure how this GitHub Pages web interface connects to Google Gemini without ever hardcoding API keys in public JavaScript.
+      <span class="badge-chip cyan">PUBLIC ZERO-KEY ACCESS</span>
+      <p class="modal-desc" id="proxyStatusSummary">
+        Checking public Cloudflare Worker proxy connection&hellip;
       </p>
 
-      <label class="field-label" for="proxyEndpointInput">Secure Backend Proxy URL (Recommended)</label>
-      <input
-        type="url"
-        id="proxyEndpointInput"
-        class="modal-input"
-        placeholder="https://your-worker.workers.dev"
-      />
-      <p class="field-hint">Deploy <code>web-proxy/cloudflare-worker.js</code> with your server-side <code>GEMINI_API_KEY</code> secret.</p>
-
-      <label class="field-label" for="sessionApiKeyInput">Or Your Own Session Gemini Key (Stored in sessionStorage only)</label>
-      <input
-        type="password"
-        id="sessionApiKeyInput"
-        class="modal-input"
-        placeholder="AIza... (cleared when browser tab closes)"
-      />
-
-      <div class="modal-actions">
-        <button type="button" class="gradient-cta-btn small" id="btnSaveAiConfig">Save Connection</button>
-        <button type="button" class="outline-pill-btn" id="btnResetAiConfig">Clear Keys</button>
+      <div class="phase-card">
+        <h4>SECURITY &amp; USAGE PROTECTION</h4>
+        <p>
+          Visitors never enter an API key. Requests route through a hardened Cloudflare Worker where
+          <code>GEMINI_API_KEY</code> is stored strictly as a server-side secret, with CORS restricted to
+          <code>xalan-aesthetic.github.io</code> and per-IP rate limits (15 req/min &middot; 120 req/day).
+        </p>
       </div>
 
       <hr class="modal-divider" />
       <div class="modal-actions">
         <button type="button" class="icon-chip-btn" id="btnModalClearCache">Clear Web Cache</button>
+        <button type="button" class="icon-chip-btn danger" id="btnModalClearHistory">Clear Local History</button>
         <a href="https://github.com/xalan-aesthetic/INFFOLER-AI" target="_blank" rel="noopener noreferrer" class="icon-chip-btn">GitHub Repo &#x2197;</a>
       </div>
     </div>

@@ -31,7 +31,7 @@ To create a powerful, intelligent, and user-friendly AI assistant that helps peo
 - `app/` — Native Android application source code (Kotlin, Jetpack Compose, Firebase AI Logic, Room)
 - `docs/` — Production static web interface for GitHub Pages (`https://xalan-aesthetic.github.io/INFFOLER-AI/`)
 - `.github/workflows/deploy-pages.yml` — Automatic GitHub Pages deployment workflow on push to `main`
-- `web-proxy/cloudflare-worker.js` — Optional serverless Gemini proxy template so API keys never appear in frontend JavaScript
+- `web-proxy/cloudflare-worker.js` — Hardened serverless Gemini proxy so visitors never enter an API key and `GEMINI_API_KEY` remains a server-side Cloudflare Worker secret
 
 ## Enabling GitHub Pages (`https://xalan-aesthetic.github.io/INFFOLER-AI/`)
 
@@ -39,6 +39,15 @@ To create a powerful, intelligent, and user-friendly AI assistant that helps peo
 2. Go to **Settings → Pages**.
 3. Under **Build and deployment → Source**, choose **GitHub Actions** (or **Deploy from a branch → `main` → `/docs`**).
 4. Push to `main` (or trigger **Actions → Deploy INFFOLER AI to GitHub Pages → Run workflow**).
+
+## Connecting the Public Zero-Key AI Proxy
+
+1. Deploy `web-proxy/cloudflare-worker.js` as a Cloudflare Worker at `https://dash.cloudflare.com`.
+2. Add `GEMINI_API_KEY` under **Worker → Settings → Variables and Secrets** as a **Secret** (never plaintext).
+3. Verify your Worker health check at `https://<your-worker>.workers.dev/health` confirms `"ok": true` and `"secretConfigured": true`.
+4. Set `PUBLIC_PROXY_URL` at the top of `docs/app.js` to your live `https://<your-worker>.workers.dev` URL and push to `main`.
+
+> **Security Protections:** CORS restricted to `https://xalan-aesthetic.github.io`, model allow-list (`gemini-3.8-flash`, `gemini-3.5-flash-lite`, `gemini-4-argon`), 48 KB / 24-turn payload validation, `maxOutputTokens: 2048` cap, and per-IP rate limits (15 requests/minute, 120 requests/day).
 
 ---
 

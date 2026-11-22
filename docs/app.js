@@ -1,11 +1,17 @@
 (function () {
   "use strict";
 
+  // =========================================================================
+  // PUBLIC SERVER-SIDE PROXY ENDPOINT (REQUIRED FOR PUBLIC AI ACCESS)
+  // Replace this placeholder with your deployed Cloudflare Worker URL, e.g.:
+  // const PUBLIC_PROXY_URL = "https://inffoler-ai-proxy.your-subdomain.workers.dev";
+  // Your GEMINI_API_KEY stays strictly inside Cloudflare Worker Secrets.
+  // =========================================================================
+  const PUBLIC_PROXY_URL = "https://REPLACE_WITH_YOUR_WORKER.workers.dev";
+
   const GITHUB_REPO_URL = "https://github.com/xalan-aesthetic/INFFOLER-AI";
   const STORAGE_CONVS = "inffoler_web_conversations_v1";
   const STORAGE_SIMS = "inffoler_web_simulations_v1";
-  const STORAGE_PROXY = "inffoler_web_proxy_url_v1";
-  const SESSION_KEY = "inffoler_web_session_gemini_key_v1";
 
   const INSTAGRAM_ACCOUNTS = [
     { username: "@xalan_vetrnen", url: "https://www.instagram.com/xalan_vetrnen?cplk=b2c4NXRjcTkxbWR3" },
@@ -58,19 +64,15 @@
     try {
       localStorage.setItem(STORAGE_CONVS, JSON.stringify(conversations));
       localStorage.setItem(STORAGE_SIMS, JSON.stringify(simulations));
-    } catch { /* ignore quota */ }
+    } catch { /* ignore storage quota */ }
   }
 
-  function getProxyUrl() {
-    return (localStorage.getItem(STORAGE_PROXY) || "").trim();
-  }
-
-  function getSessionKey() {
-    return (sessionStorage.getItem(SESSION_KEY) || "").trim();
-  }
-
-  function hasAiConfig() {
-    return Boolean(getProxyUrl() || getSessionKey());
+  function isProxyConfigured() {
+    return (
+      typeof PUBLIC_PROXY_URL === "string" &&
+      PUBLIC_PROXY_URL.startsWith("https://") &&
+      !PUBLIC_PROXY_URL.includes("REPLACE_WITH_YOUR_WORKER")
+    );
   }
 
   function showToast(msg) {
@@ -186,19 +188,27 @@
   }
 
   function updateConnectionIndicators() {
-    const configured = hasAiConfig();
-    const proxy = getProxyUrl();
+    const configured = isProxyConfigured();
     const statusText = configured
-      ? (proxy ? "SECURE PROXY CONNECTED · READY" : "SESSION KEY CONNECTED · READY")
-      : "SETUP REQUIRED FOR LIVE AI";
+      ? "PUBLIC AI PROXY CONNECTED · READY"
+      : "PROXY DEPLOYMENT REQUIRED (SET PUBLIC_PROXY_URL)";
 
     document.getElementById("chatConnectionState").textContent = statusText;
-    document.getElementById("railStatusLabel").textContent = configured ? "AI READY" : "SETUP AI";
-    document.getElementById("coreStatusText").textContent = configured ? "AI STATUS: READY" : "AI STATUS: CONNECT KEY";
+    document.getElementById("railStatusLabel").textContent = configured ? "AI READY" : "PROXY PENDING";
+    document.getElementById("coreStatusText").textContent = configured
+      ? "AI STATUS: READY"
+      : "AI STATUS: PROXY PENDING";
     document.getElementById("aiSetupBanner").classList.toggle("hidden", configured);
+
+    const modalStatusEl = document.getElementById("proxyStatusSummary");
+    if (modalStatusEl) {
+      modalStatusEl.textContent = configured
+        ? `Connected to public Cloudflare Worker (${PUBLIC_PROXY_URL}). All visitors can chat with zero API key setup.`
+        : "Not connected yet: PUBLIC_PROXY_URL in docs/app.js still uses the placeholder URL. Deploy web-proxy/cloudflare-worker.js, add GEMINI_API_KEY as a Cloudflare Worker secret, and set PUBLIC_PROXY_URL.";
+    }
   }
 
-  /* Gemini Integration with Retry + Fallback (Zero Hardcoded Keys) */
+  /* Strict Alternating History Sanitization */
   function sanitizeHistory(messages) {
     const cleaned = [];
     for (const msg of messages) {
@@ -210,7 +220,14 @@
     return cleaned;
   }
 
-  async function callGeminiOnce(modelId, contents, systemInstruction, responseMimeType) {
+  /* Secure Server-Side Proxy Call (Zero Frontend API Keys) */
+  async function callProxyOnce(modelId, contents, systemInstruction, responseMimeType) {
+    if (!isProxyConfigured()) {
+      throw new Error(
+        "The public Cloudflare Worker proxy is not configured yet (PUBLIC_PROXY_URL in docs/app.js is still a placeholder)."
+      );
+    }
+
     const payload = {
       systemInstruction: { parts: [{ text: systemInstruction }] },
       contents
@@ -219,38 +236,43 @@
       payload.generationConfig = { responseMimeType };
     }
 
-    const proxyUrl = getProxyUrl();
-    const sessionKey = getSessionKey();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 35000);
 
-    let response;
-    if (proxyUrl) {
-      response = await fetch(proxyUrl, {
+    try {
+      const response = await fetch(PUBLIC_PROXY_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: modelId, payload })
+        body: JSON.stringify({ model: modelId, payload }),
+        signal: controller.signal
       });
-    } else if (sessionKey) {
-      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(sessionKey)}`;
-      response = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-    } else {
-      throw new Error("No AI proxy URL or session Gemini API key is configured. Click 'Setup AI' to connect.");
-    }
 
-    if (!response.ok) {
-      const errBody = await response.text();
-      const err = new Error(`HTTP ${response.status}: ${errBody.slice(0, 200)}`);
-      err.status = response.status;
+      const bodyText = await response.text();
+      if (!response.ok) {
+        let message = `HTTP ${response.status}`;
+        try {
+          const parsedErr = JSON.parse(bodyText);
+          if (parsedErr?.error) message = parsedErr.error;
+        } catch { /* ignore */ }
+        const err = new Error(message);
+        err.status = response.status;
+        throw err;
+      }
+
+      const data = JSON.parse(bodyText);
+      const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("")?.trim();
+      if (!text) throw new Error(`Model ${modelId} returned an empty response.`);
+      return text;
+    } catch (err) {
+      if (err.name === "AbortError") {
+        const timeoutErr = new Error("Request timed out after 35 seconds.");
+        timeoutErr.status = 504;
+        throw timeoutErr;
+      }
       throw err;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    const data = await response.json();
-    const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("")?.trim();
-    if (!text) throw new Error(`Model ${modelId} returned an empty response.`);
-    return text;
   }
 
   async function executeWithRetryAndFallback(primaryModel, contents, systemInstruction, responseMimeType) {
@@ -261,11 +283,13 @@
     for (const modelId of chain) {
       for (let attempt = 0; attempt <= delays.length; attempt++) {
         try {
-          const text = await callGeminiOnce(modelId, contents, systemInstruction, responseMimeType);
+          const text = await callProxyOnce(modelId, contents, systemInstruction, responseMimeType);
           return { modelId, text };
         } catch (err) {
           lastError = err;
-          const retryable = !err.status || err.status === 429 || err.status >= 500;
+          // Do not retry client validation errors (400/403/413/415) or rate limits (429) on another model
+          if (err.status === 429) throw err;
+          const retryable = !err.status || err.status >= 500;
           if (retryable && attempt < delays.length) {
             await new Promise(r => setTimeout(r, delays[attempt]));
             continue;
@@ -274,7 +298,7 @@
         }
       }
     }
-    throw lastError || new Error("Unable to reach Gemini right now.");
+    throw lastError || new Error("Unable to reach the INFFOLER AI proxy right now.");
   }
 
   /* Chat State */
@@ -345,11 +369,11 @@
     saveState();
     renderChat();
 
-    if (!hasAiConfig()) {
+    if (!isProxyConfigured()) {
       conv.messages.push({
         role: "model",
         isError: true,
-        text: "AI backend not configured yet. Click 'Setup AI' above to connect a secure proxy URL or your session Gemini API key."
+        text: "AI proxy is not connected yet. Deploy web-proxy/cloudflare-worker.js with GEMINI_API_KEY as a Cloudflare secret and set PUBLIC_PROXY_URL in docs/app.js."
       });
       saveState();
       renderChat();
@@ -386,11 +410,11 @@
     if (!question) return;
     const area = document.getElementById("whatIfResultArea");
 
-    if (!hasAiConfig()) {
+    if (!isProxyConfigured()) {
       area.innerHTML = `
         <div class="phase-card">
-          <h4>AI CONNECTION REQUIRED</h4>
-          <p>Connect your secure Gemini proxy URL or session key in Settings to run live 6-stage WHAT IF simulations.</p>
+          <h4>PUBLIC PROXY DEPLOYMENT REQUIRED</h4>
+          <p>Deploy <code>web-proxy/cloudflare-worker.js</code> with your server-side <code>GEMINI_API_KEY</code> secret and set <code>PUBLIC_PROXY_URL</code> in <code>docs/app.js</code> to run live 6-stage WHAT IF simulations for all visitors.</p>
         </div>
       `;
       return;
@@ -532,7 +556,6 @@
 
         ctx.clearRect(0, 0, w, h);
 
-        // Aura
         const grad = ctx.createRadialGradient(cx, cy, 4, cx, cy, Math.min(w, h) * 0.48);
         grad.addColorStop(0, "rgba(168, 85, 247, 0.35)");
         grad.addColorStop(0.5, "rgba(0, 229, 255, 0.15)");
@@ -542,7 +565,6 @@
         ctx.arc(cx, cy, Math.min(w, h) * 0.48, 0, Math.PI * 2);
         ctx.fill();
 
-        // Orbital rings
         [0, 1, 2].forEach(idx => {
           ctx.save();
           ctx.translate(cx, cy);
@@ -555,7 +577,6 @@
           ctx.restore();
         });
 
-        // Project 3D nodes
         const yaw = t * 0.45 + corePulseBoost * 1.6;
         const cosY = Math.cos(yaw);
         const sinY = Math.sin(yaw);
@@ -685,8 +706,7 @@
     });
 
     const openSettings = () => {
-      document.getElementById("proxyEndpointInput").value = getProxyUrl();
-      document.getElementById("sessionApiKeyInput").value = getSessionKey();
+      updateConnectionIndicators();
       document.getElementById("settingsModal").classList.remove("hidden");
     };
     document.getElementById("btnSettings").addEventListener("click", openSettings);
@@ -697,25 +717,6 @@
       document.getElementById("settingsModal").classList.add("hidden");
     });
 
-    document.getElementById("btnSaveAiConfig").addEventListener("click", () => {
-      const proxy = document.getElementById("proxyEndpointInput").value.trim();
-      const key = document.getElementById("sessionApiKeyInput").value.trim();
-      if (proxy) localStorage.setItem(STORAGE_PROXY, proxy); else localStorage.removeItem(STORAGE_PROXY);
-      if (key) sessionStorage.setItem(SESSION_KEY, key); else sessionStorage.removeItem(SESSION_KEY);
-      document.getElementById("settingsModal").classList.add("hidden");
-      updateConnectionIndicators();
-      showToast("AI connection updated");
-    });
-
-    document.getElementById("btnResetAiConfig").addEventListener("click", () => {
-      localStorage.removeItem(STORAGE_PROXY);
-      sessionStorage.removeItem(SESSION_KEY);
-      document.getElementById("proxyEndpointInput").value = "";
-      document.getElementById("sessionApiKeyInput").value = "";
-      updateConnectionIndicators();
-      showToast("AI credentials cleared");
-    });
-
     const clearCache = () => {
       if ("caches" in window) {
         caches.keys().then(keys => keys.forEach(k => caches.delete(k)));
@@ -724,14 +725,18 @@
     };
     document.getElementById("btnModalClearCache").addEventListener("click", clearCache);
     document.getElementById("btnClearWebCache").addEventListener("click", clearCache);
-    document.getElementById("btnClearAllHistory").addEventListener("click", () => {
+
+    const clearAllHistory = () => {
       conversations = [];
       simulations = [];
       activeConversationId = null;
       saveState();
       renderHistory();
       showToast("Local history cleared");
-    });
+    };
+    document.getElementById("btnClearAllHistory").addEventListener("click", clearAllHistory);
+    const modalClearHistoryBtn = document.getElementById("btnModalClearHistory");
+    if (modalClearHistoryBtn) modalClearHistoryBtn.addEventListener("click", clearAllHistory);
 
     document.getElementById("btnOpenAllIg").addEventListener("click", () => {
       document.getElementById("igModal").classList.remove("hidden");
