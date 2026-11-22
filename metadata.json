@@ -1,0 +1,6 @@
+{
+  "name": "Inffoler AI",
+  "description": "INFFOLER AI — Futuristic AI assistant and hypothetical scenario simulator created by Alankrit Pathak.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
