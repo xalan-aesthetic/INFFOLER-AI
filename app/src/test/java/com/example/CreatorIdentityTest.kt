@@ -10,6 +10,8 @@ class CreatorIdentityTest {
     fun `contains official INFFOLER AI creator identity and all six Instagram accounts`() {
         assertEquals("INFFOLER AI", CreatorIdentity.APP_NAME)
         assertEquals("Alankrit Pathak", CreatorIdentity.CREATOR_NAME)
+        assertEquals("https://github.com/xalan-aesthetic/INFFOLER-AI", CreatorIdentity.DEFAULT_GITHUB_REPO_URL)
+        assertEquals("https://xalan-aesthetic.github.io/INFFOLER-AI/", CreatorIdentity.LIVE_WEBSITE_URL)
 
         val expected = listOf(
             "@xalan_vetrnen" to "https://www.instagram.com/xalan_vetrnen?cplk=b2c4NXRjcTkxbWR3",

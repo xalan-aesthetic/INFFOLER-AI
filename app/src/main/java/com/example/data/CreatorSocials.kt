@@ -24,6 +24,8 @@ object CreatorIdentity {
     const val CREATOR_ROLE = "Founder & Creator of INFFOLER AI"
     const val CREATOR_QUOTE = "\"Building ideas into intelligent experiences.\""
     const val GITHUB_HOME_URL = "https://github.com"
+    const val DEFAULT_GITHUB_REPO_URL = "https://github.com/xalan-aesthetic/INFFOLER-AI"
+    const val LIVE_WEBSITE_URL = "https://xalan-aesthetic.github.io/INFFOLER-AI/"
 
     val instagramAccounts: List<InstagramAccount> = listOf(
         InstagramAccount(
@@ -88,7 +90,7 @@ object CreatorIdentity {
 }
 
 object GitHubRepoPreferences {
-    private val _repoUrl = MutableStateFlow<String?>(null)
+    private val _repoUrl = MutableStateFlow<String?>(CreatorIdentity.DEFAULT_GITHUB_REPO_URL)
     val repoUrl: StateFlow<String?> = _repoUrl.asStateFlow()
 
     @Volatile
@@ -98,6 +100,7 @@ object GitHubRepoPreferences {
         if (!loaded) {
             val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             _repoUrl.value = prefs.getString(KEY_GITHUB_REPO_URL, null)
+                ?: CreatorIdentity.DEFAULT_GITHUB_REPO_URL
             loaded = true
         }
         return _repoUrl.value
@@ -115,7 +118,7 @@ object GitHubRepoPreferences {
     fun clearRepoUrl(context: Context) {
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         prefs.edit().remove(KEY_GITHUB_REPO_URL).apply()
-        _repoUrl.value = null
+        _repoUrl.value = CreatorIdentity.DEFAULT_GITHUB_REPO_URL
         loaded = true
     }
 }

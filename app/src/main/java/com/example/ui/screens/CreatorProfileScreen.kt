@@ -375,6 +375,57 @@ fun CreatorProfileScreen(
                 }
             }
 
+            // Vision Card
+            GlassCard(
+                borderBrush = Brush.linearGradient(
+                    listOf(BrightViolet.copy(alpha = 0.55f), GlassBorder)
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Text(
+                        text = "VISION · YOUR INTELLIGENCE. YOUR ASSISTANT. YOUR FUTURE.",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = BrightViolet
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "To create a powerful, intelligent, and user-friendly AI assistant that helps people:\n" +
+                            "• Answer questions and understand concepts\n" +
+                            "• Learn new things\n" +
+                            "• Generate creative ideas\n" +
+                            "• Solve everyday problems\n" +
+                            "• Experience AI through a modern interface",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = IceWhite
+                    )
+                }
+            }
+
+            // Technology Card
+            GlassCard(
+                borderBrush = Brush.linearGradient(
+                    listOf(QuantumTeal.copy(alpha = 0.55f), GlassBorder)
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Text(
+                        text = "TECHNOLOGY",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = QuantumTeal
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "• Google AI Studio & AI-powered Gemini language models\n" +
+                            "• Modern Jetpack Compose & responsive Web companion UI\n" +
+                            "• GitHub for project development, Actions CI & Pages hosting",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = IceWhite
+                    )
+                }
+            }
+
             // Dedicated CONNECT WITH ALANKRIT section (all 6 Instagram accounts)
             ConnectWithAlankritSection()
 
