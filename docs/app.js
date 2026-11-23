@@ -224,6 +224,9 @@ let pendingImages = [];
 let searchQuery = "";
 
 let isGenerating = false;
+let chatRequestLock = false;
+let whatIfRequestLock = false;
+let abortRequestedBeforeDispatch = false;
 let activeAbortController = null;
 let typingAnimFrame = null;
 let stopTypingRequested = false;
@@ -1206,6 +1209,8 @@ function detachCloudSubscriptions() {
 async function onAuthChange(user) {
   detachCloudSubscriptions();
   stopCurrentGeneration();
+  chatRequestLock = false;
+  whatIfRequestLock = false;
   currentUser = user || null;
   authBootSettled = true;
 
@@ -1550,6 +1555,157 @@ function sanitizeConversationTurns(messages) {
   return cleaned;
 }
 
+function redactSensitiveText(text) {
+  return String(text || "")
+    .replace(/AIza[0-9A-Za-z\-_]{12,}/g, "[REDACTED_KEY]")
+    .replace(/([?&]key=)[^&\s"']+/gi, "$1[REDACTED]")
+    .replace(/Bearer\s+[A-Za-z0-9\-_.]+/gi, "Bearer [REDACTED]");
+}
+
+function classifyClientAiError(status, errJson = null, retryAfterHeader = null, rawText = "") {
+  const errPayload = errJson && typeof errJson === "object" ? errJson : {};
+  const nestedErr = errPayload.error && typeof errPayload.error === "object" ? errPayload.error : null;
+  const serverCode = String(errPayload.code || nestedErr?.status || "").toUpperCase();
+  const serverQuotaType = errPayload.quotaType || null;
+  const rawMessage = redactSensitiveText(
+    typeof errPayload.error === "string"
+      ? errPayload.error
+      : nestedErr?.message || errPayload.message || rawText || ""
+  );
+
+  let retryAfterSec =
+    typeof errPayload.retryAfterSec === "number" && errPayload.retryAfterSec > 0
+      ? Math.ceil(errPayload.retryAfterSec)
+      : null;
+  if (!retryAfterSec && retryAfterHeader) {
+    const hVal = Number(String(retryAfterHeader).trim());
+    if (Number.isFinite(hVal) && hVal > 0) retryAfterSec = Math.ceil(hVal);
+  }
+  if (!retryAfterSec) {
+    const m = rawMessage.match(/(?:wait|retry\s+(?:in|after)|about)\s+(\d+(?:\.\d+)?)s/i);
+    if (m) retryAfterSec = Math.max(1, Math.ceil(Number(m[1])));
+  }
+
+  let hasZeroQuota = false;
+  const detailParts = [];
+  if (Array.isArray(nestedErr?.details)) {
+    for (const d of nestedErr.details) {
+      if (d?.reason) detailParts.push(String(d.reason));
+      if (Array.isArray(d?.violations)) {
+        for (const v of d.violations) {
+          if (v?.quotaId) detailParts.push(String(v.quotaId));
+          if (v?.quotaMetric) detailParts.push(String(v.quotaMetric));
+          if (String(v?.quotaValue) === "0") hasZeroQuota = true;
+        }
+      }
+    }
+  }
+  const combined = `${rawMessage} ${serverCode} ${detailParts.join(" ")}`;
+
+  if (
+    status === 429 ||
+    serverCode === "DAILY_QUOTA_EXCEEDED" ||
+    serverCode === "RATE_LIMIT_EXCEEDED" ||
+    serverCode === "RATE_LIMIT" ||
+    serverCode === "QUOTA_EXCEEDED" ||
+    serverCode === "RESOURCE_EXHAUSTED"
+  ) {
+    const isDaily =
+      serverQuotaType === "daily" ||
+      serverCode === "DAILY_QUOTA_EXCEEDED" ||
+      hasZeroQuota ||
+      /perday|per_day|requestsperday|tokensperday|daily\s+quota|daily\s+usage|daily\s+anti-abuse|plan and billing|billing details|try again tomorrow/i.test(
+        combined
+      );
+
+    if (isDaily) {
+      return {
+        kind: "daily_quota",
+        code: "DAILY_QUOTA_EXCEEDED",
+        quotaType: "daily",
+        retryable: false,
+        retryAfterSec,
+        badgeLabel: "DAILY QUOTA EXHAUSTED",
+        userMessage:
+          "Daily Gemini API quota has been reached for today. Quota resets on the next daily cycle — please try again later.",
+      };
+    }
+
+    return {
+      kind: "rate_limit",
+      code: "RATE_LIMIT_EXCEEDED",
+      quotaType: "rate_limit",
+      retryable: true,
+      retryAfterSec,
+      badgeLabel: "TEMPORARY RATE LIMIT (429)",
+      userMessage: retryAfterSec
+        ? `Too many requests right now. Please wait about ${retryAfterSec}s and tap Retry.`
+        : "Gemini API temporary rate limit reached due to high traffic. Please wait a few seconds and tap Retry.",
+    };
+  }
+
+  if (
+    status === 500 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504 ||
+    serverCode === "TEMPORARY_SERVER_ERROR" ||
+    serverCode === "UNAVAILABLE" ||
+    serverCode === "INTERNAL"
+  ) {
+    return {
+      kind: "server_temp",
+      code: "TEMPORARY_SERVER_ERROR",
+      quotaType: null,
+      retryable: true,
+      retryAfterSec,
+      badgeLabel: `SERVER BUSY (HTTP ${status || 503})`,
+      userMessage: `Gemini AI servers are temporarily busy or unavailable (HTTP ${status || 503}). Please tap Retry in a moment.`,
+    };
+  }
+
+  if (status === 401 || status === 403) {
+    return {
+      kind: "auth",
+      code: serverCode || "AUTH_ERROR",
+      quotaType: null,
+      retryable: false,
+      retryAfterSec: null,
+      badgeLabel: "AUTHENTICATION REQUIRED",
+      userMessage: rawMessage || "Your session needs re-verification. Please sign out and sign in again.",
+    };
+  }
+
+  return {
+    kind: "generic",
+    code: serverCode || "UPSTREAM_ERROR",
+    quotaType: null,
+    retryable: false,
+    retryAfterSec: null,
+    badgeLabel: `REQUEST ERROR${status ? ` (${status})` : ""}`,
+    userMessage: rawMessage || `Unable to complete AI request (HTTP ${status || "error"}).`,
+  };
+}
+
+function sleepWithAbort(ms, signal) {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(Object.assign(new Error("Generation stopped."), { name: "AbortError", userStopped: true }));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(Object.assign(new Error("Generation stopped."), { name: "AbortError", userStopped: true }));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 async function callProxyOnce(modelId, contents, systemInstruction, responseMimeType, signal) {
   if (!auth.currentUser) {
     throw new Error("Authentication required. Please log in to access INFFOLER AI.");
@@ -1594,13 +1750,24 @@ async function callProxyOnce(modelId, contents, systemInstruction, responseMimeT
 
     const bodyText = await response.text();
     if (!response.ok) {
-      let message = `HTTP ${response.status}`;
+      let errJson = null;
       try {
-        const errJson = JSON.parse(bodyText);
-        if (errJson?.error) message = errJson.error;
+        errJson = JSON.parse(bodyText);
       } catch { /* ignore */ }
-      const err = new Error(message);
+      const classified = classifyClientAiError(
+        response.status,
+        errJson,
+        response.headers?.get?.("Retry-After") || null,
+        bodyText
+      );
+      const err = new Error(classified.userMessage);
       err.status = response.status;
+      err.code = classified.code;
+      err.quotaType = classified.quotaType;
+      err.errorKind = classified.kind;
+      err.badgeLabel = classified.badgeLabel;
+      err.retryable = classified.retryable;
+      err.retryAfterSec = classified.retryAfterSec;
       throw err;
     }
 
@@ -1615,12 +1782,19 @@ async function callProxyOnce(modelId, contents, systemInstruction, responseMimeT
         stopErr.userStopped = true;
         throw stopErr;
       }
-      const timeoutErr = new Error("Request timed out. Please try again.");
+      const timeoutErr = new Error("Request timed out while waiting for Gemini AI. Tap Retry to try again.");
       timeoutErr.status = 504;
+      timeoutErr.errorKind = "server_temp";
+      timeoutErr.badgeLabel = "REQUEST TIMED OUT (504)";
+      timeoutErr.retryable = true;
       throw timeoutErr;
     }
     if (err instanceof TypeError) {
-      throw new Error("Network connection failed. Check your internet connection and retry.");
+      const netErr = new Error("Network connection failed. Check your internet connection and tap Retry.");
+      netErr.errorKind = "network";
+      netErr.badgeLabel = "CONNECTION ISSUE";
+      netErr.retryable = true;
+      throw netErr;
     }
     throw err;
   } finally {
@@ -1631,24 +1805,52 @@ async function callProxyOnce(modelId, contents, systemInstruction, responseMimeT
 
 async function executeGeminiWithFallback(primaryModel, contents, systemInstruction, responseMimeType, signal) {
   const chain = FALLBACK_CHAINS[primaryModel] || [primaryModel, "gemini-3.5-flash-lite"];
-  const delays = [800, 1800];
+  const MAX_TEMPORARY_RETRIES = 2; // Strictly bounded: max 2 retries (never retries indefinitely)
+  const BASE_BACKOFF_MS = 750;
+  const MAX_BACKOFF_MS = 8000;
+  let retriesUsed = 0;
   let lastError = null;
 
-  for (const modelId of chain) {
-    for (let attempt = 0; attempt <= delays.length; attempt++) {
+  for (let modelIdx = 0; modelIdx < chain.length; modelIdx++) {
+    const modelId = chain[modelIdx];
+    while (true) {
       try {
         const text = await callProxyOnce(modelId, contents, systemInstruction, responseMimeType, signal);
         return { modelId, text };
       } catch (err) {
         if (err.userStopped) throw err;
         lastError = err;
-        if (err.status === 429 || (err.status >= 400 && err.status < 500)) {
-          if (err.status === 429) throw err;
-          break;
+
+        // Daily quota exhaustion or non-retryable client error (400/401/403): fail immediately without retrying
+        if (err.quotaType === "daily" || err.code === "DAILY_QUOTA_EXCEEDED" || !err.retryable) {
+          if (err.status === 404 && modelIdx + 1 < chain.length) {
+            break; // Try next available model once if model name unavailable
+          }
+          throw err;
         }
-        if (attempt < delays.length) {
-          await new Promise(r => setTimeout(r, delays[attempt]));
-          continue;
+
+        // If server told us to wait > 10s, don't hang the UI—surface clear wait message + Retry button
+        if (err.retryAfterSec && err.retryAfterSec > 10) {
+          throw err;
+        }
+
+        if (retriesUsed >= MAX_TEMPORARY_RETRIES) {
+          throw err;
+        }
+
+        const expDelay = Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * Math.pow(2, retriesUsed));
+        const jitter = Math.floor(Math.random() * 200);
+        const waitMs = Math.min(
+          MAX_BACKOFF_MS,
+          Math.max(expDelay + jitter, (err.retryAfterSec || 0) * 1000)
+        );
+        retriesUsed += 1;
+
+        await sleepWithAbort(waitMs, signal);
+
+        // On temporary 429/5xx, switch to next fallback model if one exists
+        if (modelIdx + 1 < chain.length) {
+          break;
         }
       }
     }
@@ -1689,6 +1891,9 @@ function setGeneratingUi(active) {
 
 function stopCurrentGeneration() {
   stopTypingRequested = true;
+  if (isGenerating && !activeAbortController) {
+    abortRequestedBeforeDispatch = true;
+  }
   if (activeAbortController) activeAbortController.abort();
   if (typingAnimFrame) {
     cancelAnimationFrame(typingAnimFrame);
@@ -1782,9 +1987,16 @@ function renderChatMessages() {
       }
 
       const renderedMd = msg.isError
-        ? `<p class="md-p error-text">${escapeHtml(msg.text)}</p>`
+        ? `<div class="error-status-pill ${escapeHtml(msg.errorKind || "generic")}">${escapeHtml(msg.errorBadge || "REQUEST ERROR")}</div>
+           <p class="md-p error-text">${escapeHtml(msg.text)}</p>
+           ${
+             msg.errorKind === "daily_quota"
+               ? `<p class="error-guidance">Daily quota resets on the next daily cycle. Retrying before reset cannot bypass daily limits.</p>`
+               : ""
+           }`
         : renderSafeMarkdown(msg.text);
-      const showRegen = idx === lastModelIdx && !isGenerating;
+      const showRegen = idx === lastModelIdx && !isGenerating && !msg.isError;
+      const showRetry = Boolean(msg.isError || msg.wasStopped);
 
       return `
         <div class="msg-turn model msg-enter">
@@ -1795,10 +2007,15 @@ function renderChatMessages() {
             </div>
             <div class="md-content">${renderedMd}</div>
             <div class="msg-actions-bar">
+              ${
+                showRetry
+                  ? `<button type="button" class="msg-action-btn retry-action-btn" data-msg-retry="${idx}" ${isGenerating ? "disabled" : ""} title="Retry this request">&#x21BB; Retry</button>`
+                  : ""
+              }
               <button type="button" class="msg-action-btn" data-msg-copy="${idx}" title="Copy response">&#x2398; Copy</button>
               ${showRegen ? `<button type="button" class="msg-action-btn" data-msg-regen="${idx}" title="Regenerate response">&#x21BB; Regenerate</button>` : ""}
               ${
-                !msg.isError
+                !msg.isError && !msg.wasStopped
                   ? `
                 <button type="button" class="msg-action-btn ${msg.feedback === "up" ? "active-up" : ""}" data-msg-fb="up" data-msg-idx="${idx}" title="Helpful">&#x1F44D;</button>
                 <button type="button" class="msg-action-btn ${msg.feedback === "down" ? "active-down" : ""}" data-msg-fb="down" data-msg-idx="${idx}" title="Needs improvement">&#x1F44E;</button>
@@ -1832,6 +2049,10 @@ function renderChatMessages() {
         showToast("Response copied");
       }
     });
+  });
+
+  container.querySelectorAll("[data-msg-retry]").forEach(btn => {
+    btn.addEventListener("click", () => retryFailedTurn(Number(btn.getAttribute("data-msg-retry"))));
   });
 
   container.querySelectorAll("[data-msg-regen]").forEach(btn => {
@@ -1915,57 +2136,71 @@ async function sendChatMessage(rawPrompt, overrideImages = null) {
     showToast("Please sign in to chat with INFFOLER AI.");
     return;
   }
-  if (isGenerating) return;
+  if (isGenerating || chatRequestLock) return;
+
   const imagesToSend = overrideImages ?? [...pendingImages];
   const promptText =
     (rawPrompt || "").trim() ||
     (imagesToSend.length > 0 ? "Please analyze and explain this image in detail." : "");
   if (!promptText && imagesToSend.length === 0) return;
 
-  if (!activeChatId) {
-    await createAndSelectChat(promptText.slice(0, 48));
-  }
-  if (!activeChatId) return;
-
-  const isFirstUserTurn = !activeMessages.some(m => m.role === "user");
-  const newTitle = isFirstUserTurn ? promptText.slice(0, 48) : null;
-  const priorTurns = sanitizeConversationTurns(activeMessages);
-
-  if (!overrideImages) {
-    pendingImages = [];
-    renderAttachmentPreviews();
-  }
-
-  const userMsgId = makeSafeId("msg");
-  const userMsg = {
-    id: userMsgId,
-    role: "user",
-    text: promptText,
-    hasImage: imagesToSend.length > 0,
-    imageName: imagesToSend[0]?.name || null,
-    localImages: imagesToSend.map(i => i.previewUrl),
-    feedback: "none",
-  };
-  activeMessages.push(userMsg);
-  playSentSfx();
+  // Synchronous lock BEFORE any Firestore awaits prevents duplicate requests on rapid clicks
+  chatRequestLock = true;
+  abortRequestedBeforeDispatch = false;
+  setGeneratingUi(true);
 
   try {
-    await addCloudMessage(currentUser.uid, activeChatId, userMsgId, {
+    if (!activeChatId) {
+      await createAndSelectChat(promptText.slice(0, 48));
+    }
+    if (!activeChatId) return;
+
+    const isFirstUserTurn = !activeMessages.some(m => m.role === "user");
+    const newTitle = isFirstUserTurn ? promptText.slice(0, 48) : null;
+    const priorTurns = sanitizeConversationTurns(activeMessages);
+
+    if (!overrideImages) {
+      pendingImages = [];
+      renderAttachmentPreviews();
+    }
+
+    const userMsgId = makeSafeId("msg");
+    const userMsg = {
+      id: userMsgId,
       role: "user",
       text: promptText,
       hasImage: imagesToSend.length > 0,
       imageName: imagesToSend[0]?.name || null,
-      newTitle,
-    });
-  } catch (err) {
-    showToast(mapFirebaseError(err));
-  }
+      localImages: imagesToSend.map(i => i.previewUrl),
+      feedback: "none",
+    };
+    activeMessages.push(userMsg);
+    playSentSfx();
 
-  await dispatchAiCompletion(priorTurns, promptText, imagesToSend);
+    try {
+      await addCloudMessage(currentUser.uid, activeChatId, userMsgId, {
+        role: "user",
+        text: promptText,
+        hasImage: imagesToSend.length > 0,
+        imageName: imagesToSend[0]?.name || null,
+        newTitle,
+      });
+    } catch (err) {
+      showToast(mapFirebaseError(err));
+    }
+
+    await dispatchAiCompletion(priorTurns, promptText, imagesToSend);
+  } finally {
+    chatRequestLock = false;
+    if (isGenerating) {
+      setGeneratingUi(false);
+      renderChatMessages();
+    }
+  }
 }
 
 async function regenerateLastResponse() {
-  if (!currentUser || isGenerating || activeMessages.length === 0) return;
+  if (!currentUser || isGenerating || chatRequestLock || activeMessages.length === 0) return;
   let lastUserIdx = -1;
   for (let i = activeMessages.length - 1; i >= 0; i--) {
     if (activeMessages[i].role === "user") {
@@ -1975,10 +2210,46 @@ async function regenerateLastResponse() {
   }
   if (lastUserIdx < 0) return;
 
-  const userPrompt = activeMessages[lastUserIdx].text;
-  const priorTurns = sanitizeConversationTurns(activeMessages.slice(0, lastUserIdx));
-  activeMessages = activeMessages.slice(0, lastUserIdx + 1);
-  await dispatchAiCompletion(priorTurns, userPrompt, []);
+  chatRequestLock = true;
+  try {
+    const userPrompt = activeMessages[lastUserIdx].text;
+    const priorTurns = sanitizeConversationTurns(activeMessages.slice(0, lastUserIdx));
+    activeMessages = activeMessages.slice(0, lastUserIdx + 1);
+    await dispatchAiCompletion(priorTurns, userPrompt, []);
+  } finally {
+    chatRequestLock = false;
+  }
+}
+
+async function retryFailedTurn(msgIdx) {
+  if (!currentUser || isGenerating || chatRequestLock) return;
+  const errMsg = activeMessages[msgIdx];
+  if (!errMsg) return;
+
+  let priorTurns = errMsg.retryContext?.priorTurns;
+  let promptText = errMsg.retryContext?.promptText;
+  const imagesToSend = errMsg.retryContext?.imagesToSend || [];
+
+  if (!promptText) {
+    let lastUserIdx = -1;
+    for (let i = Math.min(msgIdx - 1, activeMessages.length - 1); i >= 0; i--) {
+      if (activeMessages[i].role === "user") {
+        lastUserIdx = i;
+        break;
+      }
+    }
+    if (lastUserIdx < 0) return;
+    promptText = activeMessages[lastUserIdx].text;
+    priorTurns = sanitizeConversationTurns(activeMessages.slice(0, lastUserIdx));
+  }
+
+  chatRequestLock = true;
+  try {
+    activeMessages.splice(msgIdx, 1);
+    await dispatchAiCompletion(priorTurns || [], promptText, imagesToSend);
+  } finally {
+    chatRequestLock = false;
+  }
 }
 
 async function dispatchAiCompletion(priorTurns, promptText, imagesToSend) {
@@ -2000,6 +2271,10 @@ async function dispatchAiCompletion(priorTurns, promptText, imagesToSend) {
   renderChatMessages();
 
   activeAbortController = new AbortController();
+  if (abortRequestedBeforeDispatch) {
+    activeAbortController.abort();
+  }
+  abortRequestedBeforeDispatch = false;
 
   try {
     const { modelId, text } = await executeGeminiWithFallback(
@@ -2023,11 +2298,17 @@ async function dispatchAiCompletion(priorTurns, promptText, imagesToSend) {
     }
   } catch (err) {
     activeMessages = activeMessages.filter(m => !m.isTypingPlaceholder);
-    const errText = err.userStopped ? "Generation stopped." : `Unable to complete request: ${err.message}`;
+    const stopped = Boolean(err.userStopped);
+    const errText = stopped ? "Generation stopped." : redactSensitiveText(err.message);
     activeMessages.push({
       id: makeSafeId("err"),
       role: "model",
-      isError: !err.userStopped,
+      isError: !stopped,
+      wasStopped: stopped,
+      errorKind: err.errorKind || "generic",
+      errorBadge: err.badgeLabel || (stopped ? "STOPPED" : "REQUEST ERROR"),
+      retryAfterSec: err.retryAfterSec || null,
+      retryContext: { priorTurns, promptText, imagesToSend },
       text: errText,
       feedback: "none",
     });
@@ -2045,8 +2326,17 @@ async function runWhatIfSimulation(rawQuestion) {
     showToast("Please sign in to run WHAT IF simulations.");
     return;
   }
+  if (whatIfRequestLock) return;
   const question = rawQuestion.trim();
   if (!question) return;
+
+  whatIfRequestLock = true;
+  const runBtn = document.getElementById("btnRunWhatIf");
+  if (runBtn) {
+    runBtn.disabled = true;
+    runBtn.textContent = "SIMULATING…";
+  }
+
   const area = document.getElementById("whatIfResultArea");
   area.innerHTML = `<div class="phase-card"><h4>SIMULATING TIMELINE…</h4><p>Modeling 6 cascading stages for "${escapeHtml(question)}"…</p></div>`;
 
@@ -2067,7 +2357,29 @@ async function runWhatIfSimulation(rawQuestion) {
     await createCloudSimulation(currentUser.uid, simId, sim);
     renderWhatIfResult(sim);
   } catch (err) {
-    area.innerHTML = `<div class="phase-card"><h4>SIMULATION ERROR</h4><p>${escapeHtml(err.message)}</p></div>`;
+    const badge = err.badgeLabel || "SIMULATION ERROR";
+    const guidance =
+      err.errorKind === "daily_quota"
+        ? `<p class="error-guidance">Daily quota resets on the next daily cycle. Retrying before reset cannot bypass daily limits.</p>`
+        : "";
+    area.innerHTML = `
+      <div class="phase-card">
+        <div class="error-status-pill ${escapeHtml(err.errorKind || "generic")}">${escapeHtml(badge)}</div>
+        <p class="error-text">${escapeHtml(redactSensitiveText(err.message))}</p>
+        ${guidance}
+        <div style="margin-top:10px;">
+          <button type="button" class="outline-pill-btn" id="btnRetryWhatIf">&#x21BB; Retry Simulation</button>
+        </div>
+      </div>`;
+    document.getElementById("btnRetryWhatIf")?.addEventListener("click", () => {
+      runWhatIfSimulation(question);
+    });
+  } finally {
+    whatIfRequestLock = false;
+    if (runBtn) {
+      runBtn.disabled = false;
+      runBtn.textContent = "RUN SIMULATION";
+    }
   }
 }
 
@@ -2468,7 +2780,7 @@ function bindEvents() {
   });
 
   document.getElementById("chatSendBtn").addEventListener("click", e => {
-    if (isGenerating) {
+    if (isGenerating || chatRequestLock) {
       e.preventDefault();
       stopCurrentGeneration();
     }
@@ -2476,11 +2788,11 @@ function bindEvents() {
 
   document.getElementById("chatForm").addEventListener("submit", e => {
     e.preventDefault();
-    if (isGenerating) {
-      stopCurrentGeneration();
+    if (isGenerating || chatRequestLock) {
       return;
     }
     const text = chatInput.value;
+    if (!text.trim() && pendingImages.length === 0) return;
     chatInput.value = "";
     chatInput.style.height = "auto";
     sendChatMessage(text);
@@ -2544,26 +2856,26 @@ function bindEvents() {
 
   document.getElementById("homePromptForm").addEventListener("submit", async e => {
     e.preventDefault();
-    if (!currentUser) return;
+    if (!currentUser || isGenerating || chatRequestLock) return;
     const input = document.getElementById("homePromptInput");
     const val = input.value.trim();
     input.value = "";
     navigateTo("chat");
     if (val) {
-      await createAndSelectChat(val.slice(0, 44));
+      activeChatId = null;
       sendChatMessage(val);
     }
   });
 
   document.getElementById("chipGiveIdeas").addEventListener("click", async () => {
-    if (!currentUser) return;
+    if (!currentUser || isGenerating || chatRequestLock) return;
     navigateTo("chat");
-    await createAndSelectChat("Futuristic Project Ideas");
+    activeChatId = null;
     sendChatMessage("Give me 5 innovative, futuristic technology and creative project ideas I can explore right now.");
   });
 
   document.getElementById("chipRandomWhatIf").addEventListener("click", () => {
-    if (!currentUser) return;
+    if (!currentUser || whatIfRequestLock) return;
     const q = RANDOM_WHAT_IF[Math.floor(Math.random() * RANDOM_WHAT_IF.length)];
     document.getElementById("whatIfInput").value = q;
     navigateTo("whatif");
@@ -2597,9 +2909,9 @@ function bindEvents() {
   });
 
   document.getElementById("btnAskAboutCreator").addEventListener("click", async () => {
-    if (!currentUser) return;
+    if (!currentUser || isGenerating || chatRequestLock) return;
     navigateTo("chat");
-    await createAndSelectChat("About Alankrit Pathak");
+    activeChatId = null;
     sendChatMessage("Tell me about INFFOLER AI and its creator Alankrit Pathak.");
   });
 

@@ -7,6 +7,7 @@ import { webcrypto } from "node:crypto";
 import {
   handleRequest,
   clearJwkCache,
+  classifyGeminiUpstreamError,
 } from "./cloudflare-worker.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1032,6 +1033,306 @@ test("Audio SFX, ambient music, volume persistence, no autoplay, and AI thinking
     assert.equal(document.getElementById("homeBrainDot").classList.contains("thinking"), false);
     assert.equal(document.getElementById("homeBrainPulseLabel").textContent, "NEURAL CORE READY");
     assert.ok(oscillatorsStarted > oscBeforeChat, "Sent/thinking/received SFX must trigger during chat cycle");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("Worker distinguishes daily quota exhaustion from temporary 429 rate limits and 5xx errors without leaking keys", () => {
+  // 1. Daily quota exhaustion via QuotaFailure quotaId (PerDay)
+  const dailyBody = JSON.stringify({
+    error: {
+      code: 429,
+      message: "Quota exceeded for key=AIzaSySecretTestKey1234567890. Check plan and billing details.",
+      status: "RESOURCE_EXHAUSTED",
+      details: [
+        {
+          "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+          violations: [
+            {
+              quotaMetric: "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+              quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+              quotaValue: "20",
+            },
+          ],
+        },
+      ],
+    },
+  });
+  const dailyOut = classifyGeminiUpstreamError(429, dailyBody, null);
+  assert.equal(dailyOut.code, "DAILY_QUOTA_EXCEEDED");
+  assert.equal(dailyOut.quotaType, "daily");
+  assert.equal(dailyOut.retryable, false);
+  assert.ok(!dailyOut.message.includes("AIzaSy"));
+  assert.match(dailyOut.message, /daily quota/i);
+
+  // 2. Temporary rate limit via PerMinute + RetryInfo
+  const rpmBody = JSON.stringify({
+    error: {
+      code: 429,
+      message: "Resource has been exhausted (e.g. check quota).",
+      status: "RESOURCE_EXHAUSTED",
+      details: [
+        {
+          "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+          violations: [{ quotaId: "GenerateRequestsPerMinutePerProjectPerModel-FreeTier" }],
+        },
+        {
+          "@type": "type.googleapis.com/google.rpc.RetryInfo",
+          retryDelay: "3s",
+        },
+      ],
+    },
+  });
+  const rpmOut = classifyGeminiUpstreamError(429, rpmBody, null);
+  assert.equal(rpmOut.code, "RATE_LIMIT_EXCEEDED");
+  assert.equal(rpmOut.quotaType, "rate_limit");
+  assert.equal(rpmOut.retryable, true);
+  assert.equal(rpmOut.retryAfterSec, 3);
+
+  // 3. Temporary server error (503 UNAVAILABLE)
+  const srvOut = classifyGeminiUpstreamError(
+    503,
+    JSON.stringify({ error: { code: 503, message: "The model is overloaded.", status: "UNAVAILABLE" } }),
+    "2"
+  );
+  assert.equal(srvOut.code, "TEMPORARY_SERVER_ERROR");
+  assert.equal(srvOut.retryable, true);
+  assert.equal(srvOut.retryAfterSec, 2);
+});
+
+test("Frontend quota/5xx handling: safe backoff, bounded retries, Retry button, daily non-retry, and duplicate-click guard", async () => {
+  clearJwkCache();
+  const { jwt, publicJwk, now } = await generateTestKeyAndJwt(
+    { sub: "uid_quota_e2e", user_id: "uid_quota_e2e", email: "quota@example.com", email_verified: true },
+    { kid: "quota-kid-1" }
+  );
+  const html = fs.readFileSync(path.resolve(__dirname, "../docs/index.html"), "utf8");
+  const originalJs = fs.readFileSync(path.resolve(__dirname, "../docs/app.js"), "utf8");
+
+  const { document } = createLightweightDomFromHtml(html);
+  const store = new Map();
+  globalThis.document = document;
+  globalThis.localStorage = {
+    getItem: k => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: k => store.delete(k),
+  };
+  globalThis.window = {
+    innerWidth: 412,
+    innerHeight: 915,
+    devicePixelRatio: 2,
+    location: { hostname: "xalan-aesthetic.github.io" },
+    matchMedia: () => ({ matches: false }),
+    addEventListener: () => {},
+    confirm: () => true,
+  };
+  globalThis.requestAnimationFrame = cb => {
+    if (cb?.name === "tick" || cb?.name === "frame") return 1;
+    return setTimeout(() => cb(Date.now()), 0);
+  };
+  globalThis.cancelAnimationFrame = id => clearTimeout(id);
+  Object.defineProperty(globalThis, "navigator", {
+    value: { clipboard: { writeText: async () => {} } },
+    configurable: true,
+  });
+
+  // Scenario script for upstream Gemini calls inside handleRequest
+  let scenarioMode = "temp_429_then_ok";
+  let upstreamCalls = 0;
+
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).startsWith("https://www.googleapis.com/identitytoolkit/v3/relyingparty/getProjectConfig")) {
+      return new Response(JSON.stringify({ authorizedDomains: ["xalan-aesthetic.github.io"] }), { status: 200 });
+    }
+    if (String(url).startsWith("https://inffoler-ai-proxy.xalanvetrnen.workers.dev")) {
+      return handleRequest(
+        new Request(url, init),
+        { GEMINI_API_KEY: "AIzaSyTopSecretDoNotLeak999", FIREBASE_PROJECT_ID: PROJECT_ID },
+        {
+          nowSec: now,
+          fetchImpl: async upstreamUrl => {
+            if (String(upstreamUrl) === GOOGLE_JWK_URL) {
+              return new Response(JSON.stringify({ keys: [publicJwk] }), {
+                status: 200,
+                headers: { "Content-Type": "application/json", "Cache-Control": "max-age=300" },
+              });
+            }
+            upstreamCalls += 1;
+
+            if (scenarioMode === "temp_429_then_ok") {
+              if (upstreamCalls === 1) {
+                return new Response(
+                  JSON.stringify({
+                    error: {
+                      code: 429,
+                      message: "Rate limit per minute exceeded",
+                      status: "RESOURCE_EXHAUSTED",
+                      details: [
+                        { "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "1s" },
+                      ],
+                    },
+                  }),
+                  { status: 429, headers: { "Content-Type": "application/json" } }
+                );
+              }
+              return new Response(
+                JSON.stringify({ candidates: [{ content: { parts: [{ text: "Recovered after backoff!" }] } }] }),
+                { status: 200, headers: { "Content-Type": "application/json" } }
+              );
+            }
+
+            if (scenarioMode === "always_503") {
+              return new Response(
+                JSON.stringify({ error: { code: 503, message: "Server overloaded", status: "UNAVAILABLE" } }),
+                { status: 503, headers: { "Content-Type": "application/json" } }
+              );
+            }
+
+            if (scenarioMode === "daily_quota") {
+              return new Response(
+                JSON.stringify({
+                  error: {
+                    code: 429,
+                    message: "Exceeded daily free tier limit",
+                    status: "RESOURCE_EXHAUSTED",
+                    details: [
+                      {
+                        "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                        violations: [{ quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier", quotaValue: "20" }],
+                      },
+                    ],
+                  },
+                }),
+                { status: 429, headers: { "Content-Type": "application/json" } }
+              );
+            }
+
+            return new Response(
+              JSON.stringify({ candidates: [{ content: { parts: [{ text: "Success on manual Retry!" }] } }] }),
+              { status: 200, headers: { "Content-Type": "application/json" } }
+            );
+          },
+        }
+      );
+    }
+    throw new Error(`Unexpected fetch URL: ${url}`);
+  };
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "inffoler-quota-e2e-"));
+  try {
+    fs.writeFileSync(
+      path.join(tmpDir, "firebase-app.js"),
+      `const apps = [];
+       export function getApps() { return apps; }
+       export function getApp() { return apps[0]; }
+       export function initializeApp(cfg) { const app = { cfg }; apps.push(app); return app; }`
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "firebase-auth.js"),
+      `export const __state = { currentUser: null, listeners: [] };
+       export class GoogleAuthProvider { setCustomParameters() {} }
+       export class EmailAuthProvider { static credential(e, p) { return { e, p }; } }
+       export const browserLocalPersistence = {};
+       export function getAuth() { return __state; }
+       export async function setPersistence() {}
+       export function onAuthStateChanged(_a, cb) { __state.listeners.push(cb); cb(__state.currentUser); return () => {}; }
+       export async function getRedirectResult() { return null; }
+       export async function signInWithEmailAndPassword(_a, email) {
+         const user = { uid: "uid_quota_e2e", email, displayName: "Quota Tester", providerData: [{ providerId: "password" }], getIdToken: async () => ${JSON.stringify(jwt)}, reload: async () => {} };
+         __state.currentUser = user;
+         await Promise.all(__state.listeners.map(fn => fn(user)));
+         return { user };
+       }
+       export async function createUserWithEmailAndPassword() {}
+       export async function updateProfile() {}
+       export async function signInWithPopup() {}
+       export async function signInWithRedirect() {}
+       export async function sendPasswordResetEmail() {}
+       export async function linkWithPopup() {}
+       export async function linkWithCredential() {}
+       export async function deleteUser() {}
+       export async function signOut() {}`
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "firebase-firestore.js"),
+      `export function getFirestore() { return {}; }
+       export function doc(_db, ...p) { return p.join("/"); }
+       export function collection(_db, ...p) { return p.join("/"); }
+       export function query(c) { return c; }
+       export function orderBy() { return null; }
+       export function limit() { return null; }
+       export function serverTimestamp() { return new Date().toISOString(); }
+       export function increment(n) { return n; }
+       export async function getDoc() { return { exists: () => false, data: () => ({}) }; }
+       export async function setDoc() {}
+       export async function updateDoc() {}
+       export async function deleteDoc() {}
+       export async function getDocs() { return { docs: [] }; }
+       export function writeBatch() { return { set() {}, update() {}, delete() {}, async commit() {} }; }
+       export function onSnapshot(_q, onNext) { onNext({ docs: [] }); return () => {}; }`
+    );
+
+    const patchedAppJs = originalJs
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js", "./firebase-app.js")
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js", "./firebase-auth.js")
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js", "./firebase-firestore.js");
+    fs.writeFileSync(path.join(tmpDir, "app.js"), patchedAppJs);
+
+    await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
+    await new Promise(r => setTimeout(r, 20));
+
+    document.getElementById("loginEmail").value = "quota@example.com";
+    document.getElementById("loginPassword").value = "pass1234";
+    await document.getElementById("emailLoginForm").submit();
+    await new Promise(r => setTimeout(r, 30));
+
+    // A) Temporary 429 rate limit -> automatic safe backoff succeeds + duplicate rapid clicks blocked
+    scenarioMode = "temp_429_then_ok";
+    upstreamCalls = 0;
+    document.getElementById("chatInput").value = "First question";
+    const p1 = document.getElementById("chatForm").submit();
+    document.getElementById("chatInput").value = "Duplicate spam click";
+    const p2 = document.getElementById("chatForm").submit();
+    await Promise.all([p1, p2]);
+    await new Promise(r => setTimeout(r, 1250));
+
+    assert.equal(upstreamCalls, 2, "Must auto-backoff once on 429 and block duplicate Send submission");
+    assert.ok(document.getElementById("chatMessages").innerHTML.includes("Recovered after backoff!"));
+    assert.ok(!document.getElementById("chatMessages").innerHTML.includes("Duplicate spam click"));
+
+    // B) Persistent 503 -> bounded retries stop at 3 total calls (1 + 2 retries), renders Retry button, manual Retry succeeds
+    scenarioMode = "always_503";
+    upstreamCalls = 0;
+    document.getElementById("chatInput").value = "Trigger 503 error";
+    await document.getElementById("chatForm").submit();
+    await new Promise(r => setTimeout(r, 2800));
+
+    assert.equal(upstreamCalls, 3, "Temporary 503 must strictly stop after 2 retries (3 total calls)");
+    const chatHtml503 = document.getElementById("chatMessages").innerHTML;
+    assert.ok(chatHtml503.includes("SERVER BUSY (HTTP 503)"), "Must show friendly server busy badge");
+    const retryBtn = document.getElementById("chatMessages").querySelector("[data-msg-retry]");
+    assert.ok(retryBtn, "Error message MUST include a Retry button");
+
+    scenarioMode = "success";
+    upstreamCalls = 0;
+    await retryBtn.click();
+    await new Promise(r => setTimeout(r, 120));
+    assert.equal(upstreamCalls, 1);
+    assert.ok(document.getElementById("chatMessages").innerHTML.includes("Success on manual Retry!"));
+
+    // C) Daily quota exhaustion -> ZERO retries (only 1 call), shows DAILY QUOTA EXHAUSTED, never exposes API key
+    scenarioMode = "daily_quota";
+    upstreamCalls = 0;
+    document.getElementById("chatInput").value = "Test daily quota";
+    await document.getElementById("chatForm").submit();
+    await new Promise(r => setTimeout(r, 120));
+
+    assert.equal(upstreamCalls, 1, "Daily quota exhaustion must NEVER auto-retry");
+    const dailyHtml = document.getElementById("chatMessages").innerHTML;
+    assert.ok(dailyHtml.includes("DAILY QUOTA EXHAUSTED"));
+    assert.ok(dailyHtml.includes("Daily quota resets on the next daily cycle"));
+    assert.ok(!dailyHtml.includes("AIzaSy"));
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

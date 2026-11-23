@@ -1178,6 +1178,54 @@ body {
   border-color: rgba(255, 90, 121, 0.4);
 }
 
+.error-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 3px 9px;
+  border-radius: 999px;
+  margin-bottom: 8px;
+  background: rgba(255, 90, 121, 0.14);
+  color: var(--error);
+  border: 1px solid rgba(255, 90, 121, 0.35);
+}
+
+.error-status-pill.rate_limit,
+.error-status-pill.server_temp {
+  background: rgba(245, 158, 11, 0.14);
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
+.error-guidance {
+  margin-top: 6px;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.msg-action-btn.retry-action-btn {
+  color: var(--cyan);
+  background: rgba(0, 229, 255, 0.1);
+  border-color: rgba(0, 229, 255, 0.38);
+  padding: 5px 12px;
+  min-height: 32px;
+}
+
+.msg-action-btn.retry-action-btn:hover:not(:disabled) {
+  background: rgba(0, 229, 255, 0.2);
+  color: #fff;
+}
+
+.msg-action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 /* ==================== FIXED BOTTOM COMPOSER ==================== */
 .composer-dock {
   flex-shrink: 0;

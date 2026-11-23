@@ -343,7 +343,9 @@ async function checkRateLimit(request, env, verifiedUid) {
     return {
       allowed: false,
       retryAfter,
-      reason: `Too many rapid requests (${minuteLimit}/min). Please wait ${retryAfter}s.`,
+      code: "RATE_LIMIT_EXCEEDED",
+      quotaType: "rate_limit",
+      reason: `Too many rapid requests (${minuteLimit}/min). Please wait ${retryAfter}s and retry.`,
     };
   }
 
@@ -353,7 +355,9 @@ async function checkRateLimit(request, env, verifiedUid) {
     return {
       allowed: false,
       retryAfter,
-      reason: `Daily anti-abuse quota reached (${dailyLimit}/day). Please try again tomorrow.`,
+      code: "DAILY_QUOTA_EXCEEDED",
+      quotaType: "daily",
+      reason: `Daily usage quota reached (${dailyLimit}/day). Quota resets on the next daily cycle.`,
     };
   }
 
@@ -363,11 +367,122 @@ async function checkRateLimit(request, env, verifiedUid) {
     return {
       allowed: false,
       retryAfter,
-      reason: `Too many requests from this network. Please retry in ${retryAfter}s.`,
+      code: "RATE_LIMIT_EXCEEDED",
+      quotaType: "rate_limit",
+      reason: `Too many requests from this network. Please wait ${retryAfter}s and retry.`,
     };
   }
 
   return { allowed: true };
+}
+
+function sanitizeErrorText(text) {
+  return String(text || "")
+    .replace(/AIza[0-9A-Za-z\-_]{12,}/g, "[REDACTED_KEY]")
+    .replace(/([?&]key=)[^&\s"']+/gi, "$1[REDACTED]")
+    .replace(/Bearer\s+[A-Za-z0-9\-_.]+/gi, "Bearer [REDACTED]");
+}
+
+function parseRetryDelaySeconds(details, retryAfterHeader, rawMessage) {
+  if (retryAfterHeader) {
+    const asNum = Number(String(retryAfterHeader).trim());
+    if (Number.isFinite(asNum) && asNum > 0) return Math.ceil(asNum);
+  }
+  if (Array.isArray(details)) {
+    for (const d of details) {
+      if (typeof d?.retryDelay === "string") {
+        const m = d.retryDelay.match(/(\d+(?:\.\d+)?)s/i);
+        if (m) return Math.max(1, Math.ceil(Number(m[1])));
+      }
+    }
+  }
+  const msgMatch = String(rawMessage || "").match(/retry\s+(?:in|after)\s+(\d+(?:\.\d+)?)s/i);
+  if (msgMatch) return Math.max(1, Math.ceil(Number(msgMatch[1])));
+  return null;
+}
+
+export function classifyGeminiUpstreamError(upstreamStatus, upstreamText, retryAfterHeader = null) {
+  let errJson = null;
+  try {
+    errJson = JSON.parse(upstreamText);
+  } catch { /* non-JSON upstream error */ }
+
+  const errObj = errJson?.error || {};
+  const rawMessage = sanitizeErrorText(errObj.message || "");
+  const rpcStatus = String(errObj.status || "").toUpperCase();
+  const details = Array.isArray(errObj.details) ? errObj.details : [];
+  const retryAfterSec = parseRetryDelaySeconds(details, retryAfterHeader, rawMessage);
+
+  const violationStrings = [];
+  let hasZeroQuotaValue = false;
+  for (const d of details) {
+    if (d?.reason) violationStrings.push(String(d.reason));
+    if (Array.isArray(d?.violations)) {
+      for (const v of d.violations) {
+        if (v?.quotaId) violationStrings.push(String(v.quotaId));
+        if (v?.quotaMetric) violationStrings.push(String(v.quotaMetric));
+        if (v?.description) violationStrings.push(String(v.description));
+        if (String(v?.quotaValue) === "0") hasZeroQuotaValue = true;
+      }
+    }
+  }
+
+  const inspectionBlob = `${rawMessage} ${rpcStatus} ${violationStrings.join(" ")}`;
+
+  if (upstreamStatus === 429 || rpcStatus === "RESOURCE_EXHAUSTED") {
+    const isDailyExhausted =
+      hasZeroQuotaValue ||
+      /perday|per_day|requestsperday|tokensperday|generate_content.*day|daily|rpd|plan and billing|billing details|check your plan/i.test(
+        inspectionBlob
+      );
+
+    if (isDailyExhausted) {
+      return {
+        code: "DAILY_QUOTA_EXCEEDED",
+        quotaType: "daily",
+        retryable: false,
+        retryAfterSec,
+        message:
+          "Gemini API daily quota has been reached for today. Quota resets on the next daily cycle — please try again later.",
+      };
+    }
+
+    return {
+      code: "RATE_LIMIT_EXCEEDED",
+      quotaType: "rate_limit",
+      retryable: true,
+      retryAfterSec,
+      message: retryAfterSec
+        ? `Gemini API temporary rate limit reached. Please wait about ${retryAfterSec}s and tap Retry.`
+        : "Gemini API temporary rate limit reached due to high demand. Please wait a few seconds and tap Retry.",
+    };
+  }
+
+  if (
+    upstreamStatus === 500 ||
+    upstreamStatus === 502 ||
+    upstreamStatus === 503 ||
+    upstreamStatus === 504 ||
+    rpcStatus === "UNAVAILABLE" ||
+    rpcStatus === "INTERNAL" ||
+    rpcStatus === "DEADLINE_EXCEEDED"
+  ) {
+    return {
+      code: "TEMPORARY_SERVER_ERROR",
+      quotaType: null,
+      retryable: true,
+      retryAfterSec,
+      message: "Gemini AI servers are temporarily busy or unavailable. Please try again in a moment.",
+    };
+  }
+
+  return {
+    code: "UPSTREAM_ERROR",
+    quotaType: null,
+    retryable: false,
+    retryAfterSec: null,
+    message: (rawMessage || `Upstream AI service returned HTTP ${upstreamStatus}.`).slice(0, 260),
+  };
 }
 
 export function validateAndSanitizeRequest(rawBody) {
@@ -562,7 +677,13 @@ export async function handleRequest(request, env = {}, deps = {}) {
     const rateCheck = await checkRateLimit(request, env, authCheck.uid);
     if (!rateCheck.allowed) {
       return jsonResponse(
-        { error: rateCheck.reason, code: "RATE_LIMIT" },
+        {
+          error: rateCheck.reason,
+          code: rateCheck.code || "RATE_LIMIT_EXCEEDED",
+          quotaType: rateCheck.quotaType || "rate_limit",
+          retryable: rateCheck.quotaType !== "daily",
+          retryAfterSec: rateCheck.retryAfter,
+        },
         429,
         {
           ...corsHeaders,
@@ -594,20 +715,25 @@ export async function handleRequest(request, env = {}, deps = {}) {
 
     const upstreamText = await upstream.text();
     if (!upstream.ok) {
-      let safeMessage = `Upstream AI service returned HTTP ${upstream.status}.`;
-      try {
-        const errJson = JSON.parse(upstreamText);
-        if (errJson?.error?.message) {
-          safeMessage = String(errJson.error.message).slice(0, 260);
-        }
-      } catch { /* ignore */ }
-      if (upstream.status === 429) {
-        safeMessage = "Gemini API quota is temporarily busy. Please wait a moment and try again.";
+      const classified = classifyGeminiUpstreamError(
+        upstream.status,
+        upstreamText,
+        upstream.headers.get("Retry-After")
+      );
+      const responseHeaders = { ...corsHeaders };
+      if (classified.retryAfterSec) {
+        responseHeaders["Retry-After"] = String(classified.retryAfterSec);
       }
       return jsonResponse(
-        { error: safeMessage, code: upstream.status === 429 ? "QUOTA_EXCEEDED" : "UPSTREAM_ERROR" },
+        {
+          error: classified.message,
+          code: classified.code,
+          quotaType: classified.quotaType,
+          retryable: classified.retryable,
+          retryAfterSec: classified.retryAfterSec,
+        },
         upstream.status,
-        corsHeaders
+        responseHeaders
       );
     }
 
