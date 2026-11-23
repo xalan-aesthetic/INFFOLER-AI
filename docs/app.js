@@ -7,7 +7,7 @@
   // const PUBLIC_PROXY_URL = "https://inffoler-ai-proxy.your-subdomain.workers.dev";
   // Your GEMINI_API_KEY stays strictly inside Cloudflare Worker Secrets.
   // =========================================================================
-  const PUBLIC_PROXY_URL = "https://inffoler-ai-proxy.yourname.workers.dev";
+  const PUBLIC_PROXY_URL = "https://inffoler-ai-proxy.xalanvetrnen.workers.dev";
 
   const GITHUB_REPO_URL = "https://github.com/xalan-aesthetic/INFFOLER-AI";
   const STORAGE_CONVS = "inffoler_web_conversations_v1";
