@@ -13,17 +13,6 @@
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <!-- Animated Startup Brain Boot Splash -->
-  <div class="startup-splash" id="startupSplash" aria-hidden="true">
-    <div class="splash-core">
-      <div class="splash-orbit"></div>
-      <div class="splash-orbit splash-orbit-2"></div>
-      <img src="./assets/whatif_brain_icon.png" alt="" class="splash-brain-img" />
-    </div>
-    <div class="splash-brand">INFFOLER <span>AI</span> <em>2.0</em></div>
-    <p class="splash-sub">Made with &hearts; by Alankrit Pathak</p>
-  </div>
-
   <!-- Ambient Futuristic Background & Particles -->
   <div class="bg-nebula" aria-hidden="true"></div>
   <div class="bg-grid" aria-hidden="true"></div>
@@ -32,12 +21,12 @@
   <!-- Mobile Sidebar Backdrop -->
   <div class="sidebar-backdrop hidden" id="sidebarBackdrop"></div>
 
-  <!-- MANDATORY WELCOME & AUTHENTICATION GATE (PRIVATE AI ACCESS) -->
-  <section class="auth-gate-screen hidden" id="authGateScreen" aria-label="INFFOLER AI Login and Sign Up Gate">
+  <!-- MANDATORY WELCOME & AUTHENTICATION GATE (VISIBLE IMMEDIATELY BEFORE LOGIN) -->
+  <section class="auth-gate-screen" id="authGateScreen" aria-label="INFFOLER AI Sign In and Create Account">
     <div class="auth-gate-topbar">
       <div class="auth-gate-pill">
         <span class="status-dot"></span>
-        <span>PRIVATE AI ACCESS</span>
+        <span id="authSessionStatus">PRIVATE AI ACCESS</span>
       </div>
       <button type="button" class="icon-btn" id="btnThemeToggleGate" aria-label="Toggle light or dark theme" title="Switch Theme">
         <span id="themeIconGate">&#x2600;&#xFE0F;</span>
@@ -45,30 +34,30 @@
     </div>
 
     <div class="auth-gate-container">
-      <!-- Animated Welcome Hero -->
+      <!-- Top Brand Header: INFFOLER AI Logo + Powered by Alankrit Pathak -->
       <div class="auth-gate-hero">
         <div class="auth-gate-emblem" aria-hidden="true">
           <div class="gate-orbit gate-orbit-1"></div>
           <div class="gate-orbit gate-orbit-2"></div>
-          <img src="./assets/whatif_brain_icon.png" alt="INFFOLER AI Core" class="gate-brain-img" />
+          <img src="./assets/whatif_brain_icon.png" alt="INFFOLER AI Logo" class="gate-brain-img" />
         </div>
-        <span class="badge-chip cyan">INFFOLER AI 2.0</span>
+        <div class="auth-gate-wordmark">INFFOLER <span class="cyan-accent">AI</span> <em>2.0</em></div>
+        <p class="auth-gate-creator">Powered by Alankrit Pathak</p>
         <h1 class="auth-gate-title">Your Intelligence.<br /><span class="gradient-text">Your Assistant. Your Future.</span></h1>
         <p class="auth-gate-subtitle">
-          Multimodal Gemini reasoning, Markdown &amp; code intelligence, 6-stage WHAT IF simulations,
-          and cloud-synced conversations &mdash; protected inside your personal account.
+          Sign in to unlock multimodal Gemini AI chat, Markdown &amp; code intelligence,
+          6-stage WHAT IF simulations, and private cloud-synced history.
         </p>
-        <p class="auth-gate-creator">Created by Alankrit Pathak &middot; Powered by Google AI Studio</p>
       </div>
 
-      <!-- Auth Gate Card (ONLY Login & Sign Up Options) -->
-      <div class="glass-panel auth-gate-card">
+      <!-- Authentication Card: Continue with Google + Sign In + Create Account / Sign Up -->
+      <div class="glass-panel auth-gate-card" id="authGateCard">
         <div class="auth-gate-card-head">
-          <h2>Sign In to Enter Workspace</h2>
-          <p>Authentication is required to access INFFOLER AI chat and Gemini features.</p>
+          <h2 id="authCardHeading">Sign In</h2>
+          <p id="authCardSub">Access your private INFFOLER AI workspace</p>
         </div>
 
-        <!-- 1. Continue with Google -->
+        <!-- Continue with Google -->
         <button type="button" class="google-signin-btn" id="btnGoogleSignIn">
           <svg class="google-g-svg" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
             <path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.2-2.27H12v4.3h6.45a5.52 5.52 0 0 1-2.39 3.62v3.01h3.87c2.26-2.08 3.56-5.15 3.56-8.66z"/>
@@ -79,40 +68,56 @@
           <span>Continue with Google</span>
         </button>
 
-        <div class="auth-divider"><span>or</span></div>
+        <div class="auth-divider"><span>or use email &amp; password</span></div>
 
-        <!-- Auth Mode Tabs (Email Login, Create Account, Forgot Password?) -->
+        <!-- Auth Mode Tabs (Sign In, Create Account / Sign Up, Forgot Password) -->
         <div class="auth-tabs" role="tablist">
-          <button type="button" class="auth-tab active" data-auth-tab="login" role="tab">Email Login</button>
-          <button type="button" class="auth-tab" data-auth-tab="signup" role="tab">Create Account</button>
-          <button type="button" class="auth-tab" data-auth-tab="reset" role="tab">Forgot Password</button>
+          <button type="button" class="auth-tab active" data-auth-tab="login" role="tab" aria-selected="true">Sign In</button>
+          <button type="button" class="auth-tab" data-auth-tab="signup" role="tab" aria-selected="false">Sign Up</button>
+          <button type="button" class="auth-tab" data-auth-tab="reset" role="tab" aria-selected="false">Forgot?</button>
         </div>
 
         <div id="authFeedbackBox" class="auth-feedback hidden" role="alert"></div>
 
-        <!-- Email & Password Login -->
+        <!-- Email & Password Sign In -->
         <form id="emailLoginForm" class="auth-form">
           <label class="field-label" for="loginEmail">Email Address</label>
           <input type="email" id="loginEmail" class="modal-input" required placeholder="you@example.com" autocomplete="email" />
 
           <label class="field-label" for="loginPassword">Password</label>
-          <input type="password" id="loginPassword" class="modal-input" required placeholder="Enter your password" autocomplete="current-password" />
+          <div class="password-field-wrap">
+            <input type="password" id="loginPassword" class="modal-input" required placeholder="Enter your password" autocomplete="current-password" />
+            <button type="button" class="pwd-toggle-btn" id="btnToggleLoginPwd" aria-label="Show password">&#x1F441;</button>
+          </div>
 
-          <button type="submit" class="gradient-cta-btn" id="btnEmailLoginSubmit">Log In with Email</button>
+          <button type="submit" class="gradient-cta-btn" id="btnEmailLoginSubmit">Sign In</button>
+
+          <div class="auth-switch-row">
+            <button type="button" class="text-link-btn" id="btnQuickSwitchSignup">Create Account / Sign Up</button>
+            <button type="button" class="text-link-btn muted" id="btnQuickSwitchReset">Forgot Password?</button>
+          </div>
         </form>
 
-        <!-- Create Account -->
+        <!-- Create Account / Sign Up -->
         <form id="emailSignupForm" class="auth-form hidden">
-          <label class="field-label" for="signupName">Display Name</label>
+          <label class="field-label" for="signupName">Full Name</label>
           <input type="text" id="signupName" class="modal-input" required maxlength="80" placeholder="Your name" autocomplete="name" />
 
           <label class="field-label" for="signupEmail">Email Address</label>
           <input type="email" id="signupEmail" class="modal-input" required placeholder="you@example.com" autocomplete="email" />
 
           <label class="field-label" for="signupPassword">Password (min 6 characters)</label>
-          <input type="password" id="signupPassword" class="modal-input" required minlength="6" placeholder="Create a strong password" autocomplete="new-password" />
+          <div class="password-field-wrap">
+            <input type="password" id="signupPassword" class="modal-input" required minlength="6" placeholder="Create a password" autocomplete="new-password" />
+            <button type="button" class="pwd-toggle-btn" id="btnToggleSignupPwd" aria-label="Show password">&#x1F441;</button>
+          </div>
 
           <button type="submit" class="gradient-cta-btn" id="btnEmailSignupSubmit">Create Account</button>
+
+          <div class="auth-switch-row">
+            <span>Already have an account?</span>
+            <button type="button" class="text-link-btn" id="btnQuickSwitchLogin">Sign In</button>
+          </div>
         </form>
 
         <!-- Forgot Password -->
@@ -121,22 +126,26 @@
           <input type="email" id="resetEmail" class="modal-input" required placeholder="you@example.com" autocomplete="email" />
           <p class="field-hint">We will send a secure password reset link via Firebase Authentication.</p>
           <button type="submit" class="gradient-cta-btn" id="btnResetPasswordSubmit">Send Password Reset Email</button>
+
+          <div class="auth-switch-row">
+            <button type="button" class="text-link-btn" id="btnQuickBackLogin">&larr; Back to Sign In</button>
+          </div>
         </form>
 
         <div class="auth-gate-security-note">
-          <span>&#x1F512; End-to-end verified Firebase Auth &middot; Token-gated AI proxy</span>
+          <span>&#x1F512; Verified Firebase Authentication &middot; Private Cloud Sync</span>
         </div>
       </div>
     </div>
 
     <div class="auth-gate-footer">
-      <span>Made with &hearts; by Alankrit Pathak</span>
+      <span>Powered by Alankrit Pathak &middot; INFFOLER AI 2.0</span>
       <a href="https://github.com/xalan-aesthetic/INFFOLER-AI" target="_blank" rel="noopener noreferrer">View on GitHub &#x2197;</a>
     </div>
   </section>
 
   <!-- AUTHENTICATED DASHBOARD SHELL (HIDDEN & INERT UNTIL LOGIN) -->
-  <div class="app-shell hidden" id="appShell" inert>
+  <div class="app-shell hidden" id="appShell" inert aria-hidden="true">
     <!-- Animated Sidebar / Slide-Out Drawer -->
     <aside class="sidebar" id="appSidebar" aria-label="INFFOLER AI Sidebar">
       <div class="sidebar-head">

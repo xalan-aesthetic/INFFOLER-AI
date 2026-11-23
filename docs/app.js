@@ -403,19 +403,26 @@ function mapFirebaseError(err) {
 
 async function initAuthSession(callback) {
   await persistenceReady;
-  try {
-    await getRedirectResult(auth);
-  } catch (err) {
-    console.warn("Auth redirect result warning:", err?.code || err?.message);
-  }
-  return onAuthStateChanged(auth, callback);
+  const unsub = onAuthStateChanged(auth, callback);
+  getRedirectResult(auth)
+    .then(async result => {
+      if (result?.user) {
+        await ensureUserProfile(result.user);
+      }
+    })
+    .catch(err => {
+      if (err?.code) {
+        setAuthFeedback(mapFirebaseError(err));
+      }
+    });
+  return unsub;
 }
 
 async function signInWithGoogle() {
   await persistenceReady;
   try {
     const result = await signInWithPopup(auth, googleProvider);
-    await ensureUserProfile(result.user);
+    await ensureUserProfile(result.user).catch(err => console.warn("Profile sync:", err?.message));
     return result.user;
   } catch (err) {
     if (
@@ -432,7 +439,7 @@ async function signInWithGoogle() {
 async function signInWithEmail(email, password) {
   await persistenceReady;
   const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
-  await ensureUserProfile(cred.user);
+  await ensureUserProfile(cred.user).catch(err => console.warn("Profile sync:", err?.message));
   return cred.user;
 }
 
@@ -440,14 +447,18 @@ async function signUpWithEmail(displayName, email, password) {
   await persistenceReady;
   const cleanName = displayName.trim().slice(0, 80) || "INFFOLER Explorer";
   const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
-  await updateProfile(cred.user, { displayName: cleanName });
-  await ensureUserProfile({
-    ...cred.user,
+  await updateProfile(cred.user, { displayName: cleanName }).catch(() => {});
+  const userWithProfile = {
     uid: cred.user.uid,
     displayName: cleanName,
     email: cred.user.email,
     photoURL: cred.user.photoURL,
-  });
+    providerData: cred.user.providerData,
+  };
+  await ensureUserProfile(userWithProfile).catch(err => console.warn("Profile sync:", err?.message));
+  if (currentUser?.uid === cred.user.uid) {
+    updateAuthUI(cred.user);
+  }
   return cred.user;
 }
 
@@ -794,11 +805,28 @@ function setAuthBusy(busy) {
 function switchAuthTab(tabName) {
   setAuthFeedback("");
   document.querySelectorAll(".auth-tab[data-auth-tab]").forEach(btn => {
-    btn.classList.toggle("active", btn.getAttribute("data-auth-tab") === tabName);
+    const isActive = btn.getAttribute("data-auth-tab") === tabName;
+    btn.classList.toggle("active", isActive);
+    btn.setAttribute("aria-selected", isActive ? "true" : "false");
   });
   document.getElementById("emailLoginForm")?.classList.toggle("hidden", tabName !== "login");
   document.getElementById("emailSignupForm")?.classList.toggle("hidden", tabName !== "signup");
   document.getElementById("resetPasswordForm")?.classList.toggle("hidden", tabName !== "reset");
+
+  const heading = document.getElementById("authCardHeading");
+  const sub = document.getElementById("authCardSub");
+  if (heading && sub) {
+    if (tabName === "signup") {
+      heading.textContent = "Create Account";
+      sub.textContent = "Join INFFOLER AI to save & sync your personal chats";
+    } else if (tabName === "reset") {
+      heading.textContent = "Reset Password";
+      sub.textContent = "Receive a secure Firebase reset link via email";
+    } else {
+      heading.textContent = "Sign In";
+      sub.textContent = "Access your private INFFOLER AI workspace";
+    }
+  }
 }
 
 function applyMandatoryAccessGate(isAuthenticated) {
@@ -887,14 +915,19 @@ async function onAuthChange(user) {
   detachCloudSubscriptions();
   stopCurrentGeneration();
   currentUser = user || null;
+  authBootSettled = true;
 
-  if (!authBootSettled) {
-    authBootSettled = true;
-    hideStartupSplash();
+  const statusPill = document.getElementById("authSessionStatus");
+  if (statusPill) {
+    statusPill.textContent = currentUser ? "VERIFIED SESSION" : "PRIVATE AI ACCESS";
   }
 
   if (currentUser) {
     updateAuthUI(currentUser);
+    navigateTo("chat");
+    renderChatMessages();
+    renderSidebarChats();
+    updateActiveChatHeader();
     try {
       await ensureUserProfile(currentUser, {
         theme: document.documentElement.getAttribute("data-theme") || "dark",
@@ -2215,6 +2248,25 @@ function bindEvents() {
     btn.addEventListener("click", () => switchAuthTab(btn.getAttribute("data-auth-tab")));
   });
 
+  document.getElementById("btnQuickSwitchSignup")?.addEventListener("click", () => switchAuthTab("signup"));
+  document.getElementById("btnQuickSwitchReset")?.addEventListener("click", () => switchAuthTab("reset"));
+  document.getElementById("btnQuickSwitchLogin")?.addEventListener("click", () => switchAuthTab("login"));
+  document.getElementById("btnQuickBackLogin")?.addEventListener("click", () => switchAuthTab("login"));
+
+  const bindPwdToggle = (btnId, inputId) => {
+    const btn = document.getElementById(btnId);
+    const input = document.getElementById(inputId);
+    if (!btn || !input) return;
+    btn.addEventListener("click", () => {
+      const hidden = input.type === "password";
+      input.type = hidden ? "text" : "password";
+      btn.setAttribute("aria-label", hidden ? "Hide password" : "Show password");
+      btn.textContent = hidden ? "\uD83D\uDE48" : "\uD83D\uDC41";
+    });
+  };
+  bindPwdToggle("btnToggleLoginPwd", "loginPassword");
+  bindPwdToggle("btnToggleSignupPwd", "signupPassword");
+
   document.getElementById("btnGoogleSignIn").addEventListener("click", async () => {
     setAuthFeedback("");
     setAuthBusy(true);
@@ -2381,16 +2433,6 @@ function bindEvents() {
   });
 }
 
-/* ==================== BOOT SEQUENCE ==================== */
-function hideStartupSplash() {
-  const splash = document.getElementById("startupSplash");
-  if (!splash) return;
-  setTimeout(() => {
-    splash.classList.add("fade-out");
-    setTimeout(() => splash.remove(), 480);
-  }, 650);
-}
-
 function boot() {
   // Remove any legacy unauthenticated guest chat storage
   try {
@@ -2406,17 +2448,9 @@ function boot() {
   initParticleCanvas();
   initBrainCanvas();
 
-  // Hold appShell hidden & inert until Firebase Authentication verifies session
+  // Show authGateScreen & hold appShell hidden/inert until Firebase verifies login
   applyMandatoryAccessGate(false);
   initAuthSession(onAuthChange);
-
-  // Failsafe in case auth observer delays unexpectedly
-  setTimeout(() => {
-    if (!authBootSettled) {
-      authBootSettled = true;
-      hideStartupSplash();
-    }
-  }, 3500);
 }
 
 boot();
