@@ -133,6 +133,9 @@ async function verifyAuthorizedDomainForHostname() {
 }
 
 const STORAGE_THEME = "inffoler_v2_theme";
+const STORAGE_SFX = "inffoler_v2_sfx";
+const STORAGE_MUSIC = "inffoler_v2_music";
+const STORAGE_VOLUME = "inffoler_v2_volume";
 
 const INSTAGRAM_ACCOUNTS = [
   { username: "@xalan_vetrnen", url: "https://www.instagram.com/xalan_vetrnen?cplk=b2c4NXRjcTkxbWR3" },
@@ -227,20 +230,227 @@ let stopTypingRequested = false;
 let renamingChatId = null;
 let corePulseBoost = 0;
 
-let subscriptionState = {
-  planId: "free",
-  planName: "Free",
-  status: "active",
-  expiresAt: null,
-  daysRemaining: null,
-  renewalRequired: false,
-  isAdmin: false,
-  hasPendingVerification: false,
-};
-let userOrders = [];
-let adminOrders = [];
-let adminOrderFilter = "pending_verification";
-let activeCheckoutSession = null;
+/* ==================== SOUND EFFECTS & ROYALTY-FREE MUSIC ENGINE ==================== */
+let audioCtx = null;
+let masterGainNode = null;
+let musicIntervalId = null;
+let thinkingIntervalId = null;
+let hasUserInteracted = false;
+let audioSuspendedForHidden = false;
+
+let sfxEnabled = loadPrefSafe(STORAGE_SFX, "on") !== "off";
+let musicEnabled = loadPrefSafe(STORAGE_MUSIC, "off") === "on";
+const rawVolPref = Number(loadPrefSafe(STORAGE_VOLUME, "65"));
+let audioVolumePct = Number.isFinite(rawVolPref) ? Math.min(100, Math.max(0, rawVolPref)) : 65;
+
+function loadPrefSafe(key, fallback) {
+  try {
+    return localStorage.getItem(key) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function savePrefSafe(key, val) {
+  try {
+    localStorage.setItem(key, String(val));
+  } catch { /* ignore */ }
+}
+
+function getAudioContextClass() {
+  if (typeof window === "undefined") return null;
+  return window.AudioContext || window.webkitAudioContext || null;
+}
+
+function ensureAudioReady() {
+  if (!hasUserInteracted || typeof document === "undefined" || document.hidden) return false;
+  const Ctor = getAudioContextClass();
+  if (!Ctor) return false;
+  try {
+    if (!audioCtx) {
+      audioCtx = new Ctor();
+      masterGainNode = audioCtx.createGain();
+      masterGainNode.gain.value = (audioVolumePct / 100) * 0.42;
+      masterGainNode.connect(audioCtx.destination);
+    }
+    if (audioCtx.state === "suspended") {
+      audioCtx.resume().catch(() => {});
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function applyMasterVolume() {
+  if (!audioCtx || !masterGainNode) return;
+  try {
+    const level = (audioVolumePct / 100) * 0.42;
+    masterGainNode.gain.setTargetAtTime(level, audioCtx.currentTime, 0.04);
+  } catch { /* ignore */ }
+}
+
+function playSynthTone({ freqStart, freqEnd = null, duration = 0.08, type = "sine", gain = 0.14, delay = 0 }) {
+  if (!ensureAudioReady()) return;
+  try {
+    const now = audioCtx.currentTime + delay;
+    const osc = audioCtx.createOscillator();
+    const amp = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freqStart, now);
+    if (freqEnd) {
+      osc.frequency.exponentialRampToValueAtTime(Math.max(40, freqEnd), now + duration);
+    }
+    amp.gain.setValueAtTime(0.0001, now);
+    amp.gain.exponentialRampToValueAtTime(Math.max(0.001, gain), now + Math.min(0.015, duration * 0.25));
+    amp.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    osc.connect(amp);
+    amp.connect(masterGainNode);
+    osc.start(now);
+    osc.stop(now + duration + 0.02);
+  } catch { /* ignore */ }
+}
+
+function playClickSfx() {
+  if (!sfxEnabled || !hasUserInteracted) return;
+  playSynthTone({ freqStart: 920, freqEnd: 620, duration: 0.038, type: "triangle", gain: 0.1 });
+}
+
+function playSentSfx() {
+  if (!sfxEnabled || !hasUserInteracted) return;
+  playSynthTone({ freqStart: 523.25, freqEnd: 783.99, duration: 0.12, type: "sine", gain: 0.15 });
+  playSynthTone({ freqStart: 783.99, freqEnd: 1046.5, duration: 0.11, type: "triangle", gain: 0.1, delay: 0.06 });
+}
+
+function playReceivedSfx() {
+  if (!sfxEnabled || !hasUserInteracted) return;
+  playSynthTone({ freqStart: 659.25, duration: 0.14, type: "sine", gain: 0.12 });
+  playSynthTone({ freqStart: 987.77, duration: 0.2, type: "sine", gain: 0.12, delay: 0.07 });
+  playSynthTone({ freqStart: 1318.5, duration: 0.26, type: "triangle", gain: 0.08, delay: 0.13 });
+}
+
+function startThinkingSfx() {
+  stopThinkingSfx();
+  if (!sfxEnabled || !hasUserInteracted || !isGenerating) return;
+  const beat = () => {
+    if (!sfxEnabled || !isGenerating || document.hidden) return;
+    playSynthTone({ freqStart: 392, freqEnd: 440, duration: 0.14, type: "sine", gain: 0.05 });
+  };
+  beat();
+  thinkingIntervalId = setInterval(beat, 950);
+}
+
+function stopThinkingSfx() {
+  if (thinkingIntervalId) {
+    clearInterval(thinkingIntervalId);
+    thinkingIntervalId = null;
+  }
+}
+
+const AMBIENT_CHORDS = [
+  [261.63, 329.63, 392.0, 493.88], // Cmaj7
+  [220.0, 261.63, 329.63, 392.0],  // Am7
+  [174.61, 220.0, 261.63, 329.63], // Fmaj7
+  [196.0, 246.94, 293.66, 392.0],  // G6
+];
+let ambientStep = 0;
+
+function playAmbientBar() {
+  if (!musicEnabled || !hasUserInteracted || document.hidden || !ensureAudioReady()) return;
+  const chord = AMBIENT_CHORDS[ambientStep % AMBIENT_CHORDS.length];
+  ambientStep += 1;
+  chord.forEach((freq, idx) => {
+    try {
+      const now = audioCtx.currentTime + idx * 0.08;
+      const osc = audioCtx.createOscillator();
+      const filter = audioCtx.createBiquadFilter();
+      const amp = audioCtx.createGain();
+      osc.type = idx % 2 === 0 ? "sine" : "triangle";
+      osc.frequency.setValueAtTime(freq, now);
+      filter.type = "lowpass";
+      filter.frequency.setValueAtTime(900, now);
+      amp.gain.setValueAtTime(0.0001, now);
+      amp.gain.linearRampToValueAtTime(0.045, now + 0.9);
+      amp.gain.linearRampToValueAtTime(0.0001, now + 3.4);
+      osc.connect(filter);
+      filter.connect(amp);
+      amp.connect(masterGainNode);
+      osc.start(now);
+      osc.stop(now + 3.5);
+    } catch { /* ignore */ }
+  });
+}
+
+function startAmbientMusic() {
+  stopAmbientMusic();
+  if (!musicEnabled || !hasUserInteracted || (typeof document !== "undefined" && document.hidden)) return;
+  playAmbientBar();
+  musicIntervalId = setInterval(playAmbientBar, 3600);
+}
+
+function stopAmbientMusic() {
+  if (musicIntervalId) {
+    clearInterval(musicIntervalId);
+    musicIntervalId = null;
+  }
+}
+
+function syncAudioUi() {
+  const topSfxBtn = document.getElementById("btnSoundToggleTop");
+  const topSfxIcon = document.getElementById("soundIconTop");
+  if (topSfxBtn) {
+    topSfxBtn.classList.toggle("active", sfxEnabled);
+    topSfxBtn.setAttribute("aria-pressed", sfxEnabled ? "true" : "false");
+  }
+  if (topSfxIcon) topSfxIcon.textContent = sfxEnabled ? "\uD83D\uDD0A" : "\uD83D\uDD07";
+
+  const topMusicBtn = document.getElementById("btnMusicToggleTop");
+  const topMusicIcon = document.getElementById("musicIconTop");
+  if (topMusicBtn) {
+    topMusicBtn.classList.toggle("active", musicEnabled);
+    topMusicBtn.setAttribute("aria-pressed", musicEnabled ? "true" : "false");
+  }
+  if (topMusicIcon) topMusicIcon.textContent = musicEnabled ? "\uD83C\uDFB5" : "\uD83C\uDFB6";
+
+  const sfxSwitch = document.getElementById("toggleSfxSwitch");
+  if (sfxSwitch) {
+    sfxSwitch.classList.toggle("active", sfxEnabled);
+    sfxSwitch.setAttribute("aria-pressed", sfxEnabled ? "true" : "false");
+    sfxSwitch.textContent = sfxEnabled ? "Sound FX: ON" : "Sound FX: OFF";
+  }
+
+  const musicSwitch = document.getElementById("toggleMusicSwitch");
+  if (musicSwitch) {
+    musicSwitch.classList.toggle("active", musicEnabled);
+    musicSwitch.setAttribute("aria-pressed", musicEnabled ? "true" : "false");
+    musicSwitch.textContent = musicEnabled ? "Music: ON" : "Music: OFF";
+  }
+
+  const volSlider = document.getElementById("audioVolumeSlider");
+  const volLabel = document.getElementById("audioVolumeValue");
+  if (volSlider) volSlider.value = String(audioVolumePct);
+  if (volLabel) volLabel.textContent = `${audioVolumePct}%`;
+}
+
+function toggleSoundEffects() {
+  hasUserInteracted = true;
+  sfxEnabled = !sfxEnabled;
+  savePrefSafe(STORAGE_SFX, sfxEnabled ? "on" : "off");
+  if (!sfxEnabled) stopThinkingSfx();
+  else playClickSfx();
+  syncAudioUi();
+  showToast(sfxEnabled ? "Sound effects turned ON" : "Sound effects muted");
+}
+
+function toggleAmbientMusic() {
+  hasUserInteracted = true;
+  musicEnabled = !musicEnabled;
+  savePrefSafe(STORAGE_MUSIC, musicEnabled ? "on" : "off");
+  if (musicEnabled) startAmbientMusic();
+  else stopAmbientMusic();
+  syncAudioUi();
+  showToast(musicEnabled ? "Ambient music playing" : "Ambient music paused");
+}
 
 /* ==================== SAFE MARKDOWN & SYNTAX HIGHLIGHTER ==================== */
 function escapeHtml(str) {
@@ -919,7 +1129,8 @@ function applyMandatoryAccessGate(isAuthenticated) {
     shell?.removeAttribute("aria-hidden");
   } else {
     closeSidebar();
-    clearCheckoutSession();
+    stopThinkingSfx();
+    stopAmbientMusic();
     document.getElementById("settingsModal")?.classList.add("hidden");
     document.getElementById("renameModal")?.classList.add("hidden");
     document.getElementById("igModal")?.classList.add("hidden");
@@ -1046,7 +1257,6 @@ async function onAuthChange(user) {
       err => console.warn("Sims listener:", err?.message)
     );
 
-    refreshSubscriptionStatus(true).catch(() => {});
   } else {
     chats = [];
     activeChatId = null;
@@ -1054,20 +1264,6 @@ async function onAuthChange(user) {
     simulations = [];
     pendingImages = [];
     searchQuery = "";
-    subscriptionState = {
-      planId: "free",
-      planName: "Free",
-      status: "active",
-      expiresAt: null,
-      daysRemaining: null,
-      renewalRequired: false,
-      isAdmin: false,
-      hasPendingVerification: false,
-    };
-    userOrders = [];
-    adminOrders = [];
-    clearCheckoutSession();
-    renderSubscriptionUI();
     renderAttachmentPreviews();
     const chatMessagesEl = document.getElementById("chatMessages");
     if (chatMessagesEl) chatMessagesEl.innerHTML = "";
@@ -1433,465 +1629,6 @@ async function callProxyOnce(modelId, contents, systemInstruction, responseMimeT
   }
 }
 
-/* ==================== SUBSCRIPTIONS, PRIVACY CHECKOUT & ADMIN VERIFICATION ==================== */
-async function callAuthorizedWorkerJson(path, { method = "GET", body = null } = {}) {
-  if (!auth.currentUser) throw new Error("Sign in required.");
-  const exec = async forceRefresh => {
-    const idToken = await auth.currentUser.getIdToken(forceRefresh);
-    const opts = {
-      method,
-      headers: {
-        Authorization: `Bearer ${idToken}`,
-      },
-    };
-    if (body !== null) {
-      opts.headers["Content-Type"] = "application/json";
-      opts.body = JSON.stringify(body);
-    }
-    return fetch(`${PUBLIC_PROXY_URL}${path}`, opts);
-  };
-
-  let res = await exec(false);
-  if (res.status === 401 && auth.currentUser) {
-    res = await exec(true);
-  }
-  const text = await res.text();
-  let json = {};
-  try {
-    json = text ? JSON.parse(text) : {};
-  } catch { /* ignore */ }
-  if (!res.ok) {
-    const err = new Error(json?.error || `HTTP ${res.status}`);
-    err.status = res.status;
-    err.code = json?.code;
-    throw err;
-  }
-  return json;
-}
-
-function formatShortDate(ms) {
-  if (!ms) return "";
-  try {
-    return new Date(Number(ms)).toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  } catch {
-    return "";
-  }
-}
-
-function renderSubscriptionUI() {
-  const planId = subscriptionState.planId || "free";
-  const isExpired = subscriptionState.status === "expired";
-  const topBadge = document.getElementById("topbarPlanBadge");
-  const topLabel = document.getElementById("topbarPlanLabel");
-  if (topBadge && topLabel) {
-    topBadge.classList.remove("tier-premium", "tier-ultimate");
-    if (planId === "premium") topBadge.classList.add("tier-premium");
-    if (planId === "ultimate") topBadge.classList.add("tier-ultimate");
-    topLabel.textContent = planId.toUpperCase();
-  }
-
-  const pill = document.getElementById("subBannerStatusPill");
-  const heading = document.getElementById("subCurrentPlanHeading");
-  const expirySummary = document.getElementById("subExpirySummary");
-  const renewBtn = document.getElementById("btnRenewActivePlan");
-  const modalName = document.getElementById("modalPlanName");
-  const modalExp = document.getElementById("modalPlanExpiry");
-
-  const priceText = planId === "ultimate" ? "₹599/month" : planId === "premium" ? "₹299/month" : "₹0/forever";
-  if (pill) {
-    pill.classList.toggle("expired", isExpired);
-    if (isExpired) {
-      pill.textContent = "EXPIRED · RENEW";
-    } else if (subscriptionState.hasPendingVerification && planId === "free") {
-      pill.textContent = "PENDING VERIFICATION";
-    } else {
-      pill.textContent = `${planId.toUpperCase()} PLAN`;
-    }
-  }
-  if (heading) {
-    heading.textContent = `${subscriptionState.planName || "Free"} Plan (${priceText})`;
-  }
-
-  let detailLine = "Standard access · 15 req/min · 120 req/day";
-  if (isExpired && subscriptionState.expiredPlanId) {
-    detailLine = `Previous ${subscriptionState.expiredPlanId.toUpperCase()} plan expired on ${formatShortDate(subscriptionState.expiresAt)}. Renew anytime.`;
-  } else if (planId !== "free" && subscriptionState.expiresAt) {
-    const reqInfo = planId === "ultimate" ? "60 req/min · 1,500 req/day" : "30 req/min · 450 req/day";
-    detailLine = `Active until ${formatShortDate(subscriptionState.expiresAt)} (${subscriptionState.daysRemaining}d remaining) · ${reqInfo}`;
-  } else if (subscriptionState.hasPendingVerification) {
-    detailLine = "Payment submitted · Waiting for verification before Premium activates.";
-  }
-
-  if (expirySummary) expirySummary.textContent = detailLine;
-  if (modalName) modalName.textContent = `${subscriptionState.planName || "Free"} Plan`;
-  if (modalExp) modalExp.textContent = detailLine;
-
-  if (renewBtn) {
-    const showRenew =
-      (planId !== "free" && subscriptionState.renewalRequired) ||
-      (isExpired && Boolean(subscriptionState.expiredPlanId));
-    renewBtn.classList.toggle("hidden", !showRenew);
-    renewBtn.setAttribute(
-      "data-checkout-plan",
-      isExpired ? subscriptionState.expiredPlanId || "premium" : planId
-    );
-  }
-
-  document.querySelectorAll("[data-plan-card]").forEach(card => {
-    const cardPlan = card.getAttribute("data-plan-card");
-    card.classList.toggle("active-tier", cardPlan === planId);
-  });
-
-  const btnPremium = document.getElementById("btnChoosePremium");
-  const btnUltimate = document.getElementById("btnChooseUltimate");
-  if (btnPremium) {
-    btnPremium.textContent =
-      planId === "premium" ? "Extend / Renew Premium · ₹299" : "Upgrade to Premium · ₹299";
-  }
-  if (btnUltimate) {
-    btnUltimate.textContent =
-      planId === "ultimate" ? "Extend / Renew Ultimate · ₹599" : "Go Ultimate · ₹599";
-  }
-
-  renderUserOrdersList();
-
-  const adminPanel = document.getElementById("adminVerificationPanel");
-  if (adminPanel) {
-    adminPanel.classList.toggle("hidden", !subscriptionState.isAdmin);
-  }
-}
-
-function renderUserOrdersList() {
-  const container = document.getElementById("userOrdersList");
-  if (!container) return;
-  if (!userOrders || userOrders.length === 0) {
-    container.innerHTML =
-      '<div class="history-empty">No subscription payments submitted yet. Choose Premium (₹299) or Ultimate (₹599) above to start.</div>';
-    return;
-  }
-
-  container.innerHTML = userOrders
-    .map(ord => {
-      const safeStatus = escapeHtml(ord.status || "awaiting_payment");
-      const label = safeStatus.replace(/_/g, " ");
-      const utrPart = ord.maskedUtr ? ` · Ref: ${escapeHtml(ord.maskedUtr)}` : "";
-      const appPart = ord.paymentApp ? ` · ${escapeHtml(ord.paymentApp)}` : "";
-      const reasonLine = ord.rejectionReason
-        ? `<p class="order-meta-line" style="color:var(--error);">Reason: ${escapeHtml(ord.rejectionReason)}</p>`
-        : "";
-      return `
-        <div class="order-row-card">
-          <div class="order-row-top">
-            <strong>${escapeHtml(ord.planName || ord.planId)} &middot; &#x20B9;${Number(ord.amountInr || 0)}</strong>
-            <span class="order-status-badge ${safeStatus}">${label}</span>
-          </div>
-          <div class="order-meta-line">
-            Order ${escapeHtml(ord.orderId)}${appPart}${utrPart} &middot; ${escapeHtml(formatShortDate(ord.createdAt))}
-          </div>
-          ${reasonLine}
-        </div>
-      `;
-    })
-    .join("");
-}
-
-function renderAdminOrdersList() {
-  const container = document.getElementById("adminOrdersList");
-  if (!container) return;
-  const filtered = adminOrders.filter(o => adminOrderFilter === "all" || o.status === adminOrderFilter);
-  if (filtered.length === 0) {
-    container.innerHTML = '<div class="history-empty">No payment submissions in this filter.</div>';
-    return;
-  }
-
-  container.innerHTML = filtered
-    .map(ord => {
-      const safeStatus = escapeHtml(ord.status || "pending_verification");
-      const canAct = ord.status === "pending_verification";
-      return `
-        <div class="order-row-card" data-admin-order="${escapeHtml(ord.orderId)}">
-          <div class="order-row-top">
-            <strong>${escapeHtml(ord.planName || ord.planId)} &middot; &#x20B9;${Number(ord.amountInr || 0)}</strong>
-            <span class="order-status-badge ${safeStatus}">${escapeHtml(safeStatus.replace(/_/g, " "))}</span>
-          </div>
-          <div class="order-meta-line">
-            User: ${escapeHtml(ord.email || ord.uid)} &middot; Order: ${escapeHtml(ord.orderId)}
-          </div>
-          <div class="order-meta-line">
-            UTR: <strong>${escapeHtml(ord.utr || "N/A")}</strong> (${escapeHtml(ord.paymentApp || "UPI")})${ord.payerName ? ` &middot; Payer: ${escapeHtml(ord.payerName)}` : ""}
-          </div>
-          ${
-            canAct
-              ? `<div class="modal-actions" style="margin-top:4px;">
-                  <button type="button" class="gradient-cta-btn small" data-admin-approve="${escapeHtml(ord.orderId)}">Verify &amp; Activate</button>
-                  <button type="button" class="icon-chip-btn danger" data-admin-reject="${escapeHtml(ord.orderId)}">Reject</button>
-                </div>`
-              : `<div class="order-meta-line">${ord.verifiedBy ? `Reviewed by ${escapeHtml(ord.verifiedBy)}` : ""}${ord.rejectionReason ? ` · ${escapeHtml(ord.rejectionReason)}` : ""}</div>`
-          }
-        </div>
-      `;
-    })
-    .join("");
-
-  container.querySelectorAll("[data-admin-approve]").forEach(btn => {
-    btn.addEventListener("click", () => handleAdminVerifyOrder(btn.getAttribute("data-admin-approve"), "approve"));
-  });
-  container.querySelectorAll("[data-admin-reject]").forEach(btn => {
-    btn.addEventListener("click", () => handleAdminVerifyOrder(btn.getAttribute("data-admin-reject"), "reject"));
-  });
-}
-
-async function refreshSubscriptionStatus(silent = false) {
-  if (!currentUser) return;
-  try {
-    const data = await callAuthorizedWorkerJson("/subscription/status", { method: "GET" });
-    if (data?.subscription) {
-      subscriptionState = {
-        ...data.subscription,
-        isAdmin: Boolean(data.isAdmin),
-        hasPendingVerification: Boolean(data.hasPendingVerification),
-      };
-    }
-    userOrders = Array.isArray(data?.orders) ? data.orders : [];
-    renderSubscriptionUI();
-    if (subscriptionState.isAdmin) {
-      await loadAdminPayments();
-    }
-  } catch (err) {
-    if (!silent) showToast(err.message || "Unable to load subscription status.");
-  }
-}
-
-async function loadAdminPayments() {
-  if (!currentUser || !subscriptionState.isAdmin) return;
-  try {
-    const data = await callAuthorizedWorkerJson("/admin/payments", { method: "GET" });
-    adminOrders = Array.isArray(data?.items) ? data.items : [];
-    renderAdminOrdersList();
-  } catch (err) {
-    showToast(err.message || "Could not load payment queue.");
-  }
-}
-
-async function handleAdminVerifyOrder(orderId, action) {
-  if (!orderId || !subscriptionState.isAdmin) return;
-  let reason = "";
-  if (action === "reject") {
-    const entered = window.prompt("Reason for rejecting this UTR submission (optional):", "UTR did not match statement");
-    if (entered === null) return;
-    reason = entered;
-  }
-  try {
-    const data = await callAuthorizedWorkerJson("/admin/payments/verify", {
-      method: "POST",
-      body: { orderId, action, reason },
-    });
-    showToast(data?.status === "verified" ? "Payment verified & subscription activated!" : "Payment submission rejected.");
-    await refreshSubscriptionStatus(true);
-  } catch (err) {
-    showToast(err.message || "Verification update failed.");
-  }
-}
-
-function setCheckoutFeedback(message, isSuccess = false) {
-  const box = document.getElementById("checkoutFeedbackBox");
-  if (!box) return;
-  if (!message) {
-    box.classList.add("hidden");
-    box.textContent = "";
-    box.classList.remove("success");
-    return;
-  }
-  box.textContent = message;
-  box.classList.remove("hidden");
-  box.classList.toggle("success", isSuccess);
-}
-
-function clearCheckoutSession() {
-  activeCheckoutSession = null;
-  setCheckoutFeedback("");
-  const area = document.getElementById("checkoutDynamicArea");
-  if (area) area.innerHTML = "";
-  document.getElementById("checkoutModal")?.classList.add("hidden");
-}
-
-function renderCheckoutDynamicArea(session) {
-  const area = document.getElementById("checkoutDynamicArea");
-  if (!area) return;
-
-  if (session.mode === "gateway_link" && /^https:\/\//i.test(session.gatewayUrl || "")) {
-    area.innerHTML = `
-      <div class="checkout-summary-box">
-        <strong>${escapeHtml(session.planName)} &middot; &#x20B9;${Number(session.amountInr)}/month</strong>
-        <p class="modal-desc">Order ID: <code>${escapeHtml(session.orderId)}</code></p>
-        <p class="modal-desc">${escapeHtml(session.privacyNotice || "Secure hosted payment gateway.")}</p>
-      </div>
-      <a href="${escapeHtml(session.gatewayUrl)}" target="_blank" rel="noopener noreferrer" class="gradient-cta-btn upi-app-deep-link" id="btnOpenGatewayCheckout">
-        Continue to Secure Payment Gateway &#x2197;
-      </a>
-      <button type="button" class="outline-pill-btn" id="btnCheckoutDoneRefresh">I Completed Payment &middot; Refresh Status</button>
-    `;
-    document.getElementById("btnCheckoutDoneRefresh")?.addEventListener("click", async () => {
-      clearCheckoutSession();
-      await refreshSubscriptionStatus(false);
-    });
-    return;
-  }
-
-  if (session.mode === "gateway_razorpay") {
-    area.innerHTML = `
-      <div class="checkout-summary-box">
-        <strong>${escapeHtml(session.planName)} &middot; &#x20B9;${Number(session.amountInr)}/month</strong>
-        <p class="modal-desc">Order ID: <code>${escapeHtml(session.orderId)}</code></p>
-        <p class="modal-desc">Gateway Order: <code>${escapeHtml(session.razorpayOrderId)}</code></p>
-        <p class="modal-desc">${escapeHtml(session.privacyNotice || "Gateway checkout keeps personal UPI IDs private.")}</p>
-      </div>
-      <button type="button" class="gradient-cta-btn" id="btnLaunchRazorpayCheckout">Pay &#x20B9;${Number(session.amountInr)} via Gateway</button>
-    `;
-    document.getElementById("btnLaunchRazorpayCheckout")?.addEventListener("click", () => {
-      if (typeof window.Razorpay === "function") {
-        const rzp = new window.Razorpay({
-          key: session.razorpayKeyId,
-          amount: session.amountPaise,
-          currency: session.currency || "INR",
-          name: "INFFOLER AI",
-          description: `${session.planName} Monthly Membership`,
-          order_id: session.razorpayOrderId,
-          handler: async resp => {
-            try {
-              await callAuthorizedWorkerJson("/subscription/verify-gateway", {
-                method: "POST",
-                body: { orderId: session.orderId, ...resp },
-              });
-              clearCheckoutSession();
-              await refreshSubscriptionStatus(true);
-              showToast(`${session.planName} activated!`);
-            } catch (err) {
-              setCheckoutFeedback(err.message || "Gateway verification failed.");
-            }
-          },
-        });
-        rzp.open();
-      } else {
-        setCheckoutFeedback("Razorpay script not loaded. Load checkout.js or use hosted gateway link.");
-      }
-    });
-    return;
-  }
-
-  // Ephemeral manual UPI checkout (only populated while checkout modal is open)
-  const safeUpiHref = /^upi:\/\/pay\?/i.test(session.upiUri || "") ? session.upiUri : "#";
-  area.innerHTML = `
-    <div class="checkout-summary-box">
-      <strong>${escapeHtml(session.planName)} Plan &middot; &#x20B9;${Number(session.amountInr)}/month</strong>
-      <p class="modal-desc">Order Reference: <code>${escapeHtml(session.orderId)}</code></p>
-      <p class="modal-desc">${escapeHtml(session.guardianNotice || "Parent/Guardian-managed payment account.")}</p>
-    </div>
-
-    <div>
-      <span class="field-label">Active Checkout UPI Destination (Pay &#x20B9;${Number(session.amountInr)})</span>
-      <div class="checkout-upi-row" style="margin-top:6px;">
-        <code id="checkoutUpiText">${escapeHtml(session.upiId || "")}</code>
-        <button type="button" class="icon-chip-btn" id="btnCopyCheckoutUpi">Copy</button>
-      </div>
-      <p class="field-hint" style="margin-top:4px;">Payee: ${escapeHtml(session.payeeName || "Guardian Account")}</p>
-    </div>
-
-    <a href="${escapeHtml(safeUpiHref)}" class="gradient-cta-btn upi-app-deep-link" id="btnOpenUpiAppLink">
-      Open UPI App (GPay / PhonePe / Paytm)
-    </a>
-
-    <hr class="modal-divider" />
-
-    <form id="utrSubmitForm" class="auth-form">
-      <label class="field-label" for="utrInput">Enter 12-Digit UTR / UPI Transaction ID After Paying</label>
-      <input
-        type="text"
-        id="utrInput"
-        class="modal-input"
-        required
-        minlength="10"
-        maxlength="24"
-        pattern="[A-Za-z0-9]{10,24}"
-        placeholder="e.g. 412345678901"
-      />
-
-      <label class="field-label" for="utrPaymentAppSelect">Payment App Used</label>
-      <select id="utrPaymentAppSelect" class="modal-input">
-        <option value="GPay">Google Pay (GPay)</option>
-        <option value="PhonePe">PhonePe</option>
-        <option value="Paytm">Paytm</option>
-        <option value="BHIM">BHIM UPI</option>
-        <option value="Other">Other UPI App</option>
-      </select>
-
-      <label class="field-label" for="utrPayerNameInput">Payer Name (Optional)</label>
-      <input type="text" id="utrPayerNameInput" class="modal-input" maxlength="60" placeholder="Name on bank/UPI account" />
-
-      <button type="submit" class="gradient-cta-btn" id="btnSubmitUtr">Submit UTR for Verification</button>
-    </form>
-  `;
-
-  document.getElementById("btnCopyCheckoutUpi")?.addEventListener("click", async () => {
-    if (!session.upiId || !navigator.clipboard) return;
-    try {
-      await navigator.clipboard.writeText(session.upiId);
-      showToast("Payment address copied for this checkout");
-    } catch { /* ignore */ }
-  });
-
-  document.getElementById("utrSubmitForm")?.addEventListener("submit", async e => {
-    e.preventDefault();
-    const submitBtn = document.getElementById("btnSubmitUtr");
-    if (submitBtn) submitBtn.disabled = true;
-    setCheckoutFeedback("");
-    try {
-      const utr = document.getElementById("utrInput").value.trim();
-      const paymentApp = document.getElementById("utrPaymentAppSelect").value;
-      const payerName = document.getElementById("utrPayerNameInput").value.trim();
-      const resp = await callAuthorizedWorkerJson("/subscription/submit-utr", {
-        method: "POST",
-        body: { orderId: session.orderId, utr, paymentApp, payerName },
-      });
-      clearCheckoutSession();
-      showToast(resp?.message || "UTR submitted for verification!");
-      await refreshSubscriptionStatus(true);
-    } catch (err) {
-      setCheckoutFeedback(err.message || "Could not submit UTR.");
-    } finally {
-      if (submitBtn) submitBtn.disabled = false;
-    }
-  });
-}
-
-async function startPlanCheckout(planId) {
-  if (!currentUser) {
-    showToast("Please sign in first.");
-    return;
-  }
-  const modal = document.getElementById("checkoutModal");
-  const area = document.getElementById("checkoutDynamicArea");
-  setCheckoutFeedback("");
-  if (area) area.innerHTML = '<div class="history-empty">Initializing secure checkout…</div>';
-  modal?.classList.remove("hidden");
-
-  try {
-    const session = await callAuthorizedWorkerJson("/subscription/checkout", {
-      method: "POST",
-      body: { planId },
-    });
-    activeCheckoutSession = session;
-    renderCheckoutDynamicArea(session);
-  } catch (err) {
-    if (area) area.innerHTML = "";
-    setCheckoutFeedback(err.message || "Could not start checkout.");
-  }
-}
-
 async function executeGeminiWithFallback(primaryModel, contents, systemInstruction, responseMimeType, signal) {
   const chain = FALLBACK_CHAINS[primaryModel] || [primaryModel, "gemini-3.5-flash-lite"];
   const delays = [800, 1800];
@@ -1924,16 +1661,29 @@ function setGeneratingUi(active) {
   isGenerating = active;
   const sendBtn = document.getElementById("chatSendBtn");
   const sendIcon = document.getElementById("sendBtnIcon");
+  const homeDot = document.getElementById("homeBrainDot");
+  const homeLabel = document.getElementById("homeBrainPulseLabel");
+  const coreText = document.getElementById("coreStatusText");
+
   if (active) {
     sendBtn.classList.add("stopping");
     sendBtn.setAttribute("type", "button");
     sendBtn.setAttribute("aria-label", "Stop generating");
     sendIcon.textContent = "\u23F9";
+    homeDot?.classList.add("thinking");
+    if (homeLabel) homeLabel.textContent = "NEURAL CORE THINKING…";
+    if (coreText) coreText.textContent = "AI CORE: THINKING…";
+    corePulseBoost = 1;
+    startThinkingSfx();
   } else {
     sendBtn.classList.remove("stopping");
     sendBtn.setAttribute("type", "submit");
     sendBtn.setAttribute("aria-label", "Send message");
     sendIcon.textContent = "\u27A4";
+    homeDot?.classList.remove("thinking");
+    if (homeLabel) homeLabel.textContent = "NEURAL CORE READY";
+    if (coreText) coreText.textContent = "AI CORE: ACTIVE";
+    stopThinkingSfx();
   }
 }
 
@@ -2000,11 +1750,11 @@ function renderChatMessages() {
       if (msg.isTypingPlaceholder) {
         return `
           <div class="msg-turn model msg-enter">
-            <div class="msg-avatar model-badge">AI</div>
+            <div class="msg-avatar model-badge thinking">AI</div>
             <div class="msg-body model-card">
               <div class="typing-indicator" aria-label="INFFOLER AI is typing">
                 <span></span><span></span><span></span>
-                <em>Synthesizing response…</em>
+                <em>Thinking &amp; synthesizing…</em>
               </div>
             </div>
           </div>
@@ -2039,7 +1789,7 @@ function renderChatMessages() {
       return `
         <div class="msg-turn model msg-enter">
           <div class="msg-avatar model-badge">AI</div>
-          <div class="msg-body model-card ${msg.isError ? "error" : ""}">
+          <div class="msg-body model-card ${msg.isError ? "error" : ""} ${msg.justCompleted ? "response-glow" : ""}">
             <div class="model-turn-header">
               <span>INFFOLER AI${msg.modelId ? ` &middot; ${escapeHtml(msg.modelId)}` : ""}</span>
             </div>
@@ -2197,6 +1947,7 @@ async function sendChatMessage(rawPrompt, overrideImages = null) {
     feedback: "none",
   };
   activeMessages.push(userMsg);
+  playSentSfx();
 
   try {
     await addCloudMessage(currentUser.uid, activeChatId, userMsgId, {
@@ -2260,6 +2011,8 @@ async function dispatchAiCompletion(priorTurns, promptText, imagesToSend) {
     );
 
     const revealedMsg = await animateTypingReveal(text, modelId);
+    revealedMsg.justCompleted = true;
+    playReceivedSfx();
 
     if (currentUser && activeChatId) {
       await addCloudMessage(currentUser.uid, activeChatId, revealedMsg.id, {
@@ -2471,21 +2224,22 @@ function renderExplore() {
   });
 }
 
-/* ==================== BACKGROUND PARTICLES & 3D BRAIN ANIMATIONS ==================== */
+/* ==================== MOBILE-OPTIMIZED PARTICLES & DUAL AI BRAIN CANVASES ==================== */
 function initParticleCanvas() {
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
   const canvas = document.getElementById("particleCanvas");
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
-  const count = window.innerWidth < 768 ? 22 : 42;
+  const isMobile = window.innerWidth < 768;
+  const count = isMobile ? 16 : 36;
   const particles = Array.from({ length: count }, () => ({
     x: Math.random(),
     y: Math.random(),
-    r: 1 + Math.random() * 1.8,
-    vx: (Math.random() - 0.5) * 0.0004,
-    vy: (Math.random() - 0.5) * 0.0004,
+    r: 1 + Math.random() * 1.7,
+    vx: (Math.random() - 0.5) * 0.00035,
+    vy: (Math.random() - 0.5) * 0.00035,
     hue: Math.random() > 0.5 ? "0, 229, 255" : "168, 85, 247",
-    alpha: 0.25 + Math.random() * 0.4,
+    alpha: 0.24 + Math.random() * 0.36,
   }));
 
   function resize() {
@@ -2496,22 +2250,24 @@ function initParticleCanvas() {
   window.addEventListener("resize", resize);
 
   function tick() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    for (const p of particles) {
-      p.x = (p.x + p.vx + 1) % 1;
-      p.y = (p.y + p.vy + 1) % 1;
-      ctx.fillStyle = `rgba(${p.hue}, ${p.alpha})`;
-      ctx.beginPath();
-      ctx.arc(p.x * canvas.width, p.y * canvas.height, p.r, 0, Math.PI * 2);
-      ctx.fill();
+    if (!document.hidden) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      for (const p of particles) {
+        p.x = (p.x + p.vx + 1) % 1;
+        p.y = (p.y + p.vy + 1) % 1;
+        ctx.fillStyle = `rgba(${p.hue}, ${p.alpha})`;
+        ctx.beginPath();
+        ctx.arc(p.x * canvas.width, p.y * canvas.height, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
     requestAnimationFrame(tick);
   }
   requestAnimationFrame(tick);
 }
 
-function initBrainCanvas() {
-  const canvas = document.getElementById("brainCanvas");
+function createNeuralBrainRenderer(canvasId) {
+  const canvas = document.getElementById(canvasId);
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
   const nodes = [];
@@ -2538,82 +2294,135 @@ function initBrainCanvas() {
 
   let t = 0;
   function frame() {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const rect = canvas.getBoundingClientRect();
-    if (rect.width > 0) {
-      if (canvas.width !== Math.floor(rect.width * dpr)) {
-        canvas.width = Math.floor(rect.width * dpr);
-        canvas.height = Math.floor(rect.height * dpr);
+    if (!document.hidden) {
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.8);
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width > 0) {
+        if (canvas.width !== Math.floor(rect.width * dpr)) {
+          canvas.width = Math.floor(rect.width * dpr);
+          canvas.height = Math.floor(rect.height * dpr);
+        }
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        const w = rect.width;
+        const h = rect.height;
+        const thinkingFactor = isGenerating ? 1 + 0.09 * Math.sin(t * 7.5) : 1;
+        const cx = w / 2;
+        const cy = h / 2 + Math.sin(t * 1.4) * (isGenerating ? 6 : 4);
+        const radius = Math.min(w, h) * 0.28 * thinkingFactor * (1 + corePulseBoost * 0.15);
+
+        ctx.clearRect(0, 0, w, h);
+
+        const grad = ctx.createRadialGradient(cx, cy, 4, cx, cy, Math.min(w, h) * 0.48);
+        grad.addColorStop(0, isGenerating ? "rgba(0, 229, 255, 0.46)" : "rgba(168, 85, 247, 0.34)");
+        grad.addColorStop(0.5, "rgba(0, 229, 255, 0.14)");
+        grad.addColorStop(1, "transparent");
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(cx, cy, Math.min(w, h) * 0.48, 0, Math.PI * 2);
+        ctx.fill();
+
+        [0, 1, 2].forEach(idx => {
+          ctx.save();
+          ctx.translate(cx, cy);
+          ctx.rotate((idx - 1) * 0.45 + Math.sin(t * (isGenerating ? 2 : 1) + idx) * 0.09);
+          ctx.strokeStyle = idx === 0 ? "rgba(0,229,255,0.48)" : "rgba(168,85,247,0.48)";
+          ctx.lineWidth = isGenerating ? 2 : 1.5;
+          ctx.beginPath();
+          ctx.ellipse(0, 0, Math.min(w, h) * (0.37 + idx * 0.03), Math.min(w, h) * 0.14, 0, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        });
+
+        const yaw = t * (isGenerating ? 0.95 : 0.45) + corePulseBoost * 1.6;
+        const cosY = Math.cos(yaw);
+        const sinY = Math.sin(yaw);
+        const proj = nodes.map(n => {
+          const x1 = n.x * cosY - n.z * sinY;
+          const z1 = n.x * sinY + n.z * cosY;
+          const p = 3.2 / (3.2 - z1 * 0.8);
+          return { x: cx + x1 * radius * p, y: cy + n.y * radius * p, side: n.side, p };
+        });
+
+        edges.forEach(([i, j], k) => {
+          const a = proj[i];
+          const b = proj[j];
+          ctx.strokeStyle = a.side < 0 ? "rgba(168,85,247,0.5)" : "rgba(0,229,255,0.5)";
+          ctx.lineWidth = isGenerating ? 1.6 : 1.25;
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+
+          const phase = (t * (isGenerating ? 1.7 : 0.8) + k * 0.13) % 1;
+          ctx.fillStyle = "#F5F7FF";
+          ctx.beginPath();
+          ctx.arc(a.x + (b.x - a.x) * phase, a.y + (b.y - a.y) * phase, isGenerating ? 2.4 : 1.9, 0, Math.PI * 2);
+          ctx.fill();
+        });
+
+        proj.forEach(pt => {
+          ctx.fillStyle = pt.side < 0 ? "#C084FC" : pt.side > 0 ? "#00E5FF" : "#00F5D4";
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, (isGenerating ? 4.5 : 3.8) * pt.p, 0, Math.PI * 2);
+          ctx.fill();
+        });
       }
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      const w = rect.width;
-      const h = rect.height;
-      const cx = w / 2;
-      const cy = h / 2 + Math.sin(t * 1.4) * 5;
-      const radius = Math.min(w, h) * 0.28 * (1 + corePulseBoost * 0.15);
-
-      ctx.clearRect(0, 0, w, h);
-
-      const grad = ctx.createRadialGradient(cx, cy, 4, cx, cy, Math.min(w, h) * 0.48);
-      grad.addColorStop(0, "rgba(168, 85, 247, 0.35)");
-      grad.addColorStop(0.5, "rgba(0, 229, 255, 0.15)");
-      grad.addColorStop(1, "transparent");
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(cx, cy, Math.min(w, h) * 0.48, 0, Math.PI * 2);
-      ctx.fill();
-
-      [0, 1, 2].forEach(idx => {
-        ctx.save();
-        ctx.translate(cx, cy);
-        ctx.rotate((idx - 1) * 0.45 + Math.sin(t + idx) * 0.08);
-        ctx.strokeStyle = idx === 0 ? "rgba(0,229,255,0.45)" : "rgba(168,85,247,0.45)";
-        ctx.lineWidth = 1.6;
-        ctx.beginPath();
-        ctx.ellipse(0, 0, Math.min(w, h) * (0.37 + idx * 0.03), Math.min(w, h) * 0.14, 0, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.restore();
-      });
-
-      const yaw = t * 0.45 + corePulseBoost * 1.6;
-      const cosY = Math.cos(yaw);
-      const sinY = Math.sin(yaw);
-      const proj = nodes.map(n => {
-        const x1 = n.x * cosY - n.z * sinY;
-        const z1 = n.x * sinY + n.z * cosY;
-        const p = 3.2 / (3.2 - z1 * 0.8);
-        return { x: cx + x1 * radius * p, y: cy + n.y * radius * p, side: n.side, p };
-      });
-
-      edges.forEach(([i, j], k) => {
-        const a = proj[i];
-        const b = proj[j];
-        ctx.strokeStyle = a.side < 0 ? "rgba(168,85,247,0.48)" : "rgba(0,229,255,0.48)";
-        ctx.lineWidth = 1.3;
-        ctx.beginPath();
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
-        ctx.stroke();
-
-        const phase = (t * 0.8 + k * 0.13) % 1;
-        ctx.fillStyle = "#F5F7FF";
-        ctx.beginPath();
-        ctx.arc(a.x + (b.x - a.x) * phase, a.y + (b.y - a.y) * phase, 2, 0, Math.PI * 2);
-        ctx.fill();
-      });
-
-      proj.forEach(pt => {
-        ctx.fillStyle = pt.side < 0 ? "#C084FC" : pt.side > 0 ? "#00E5FF" : "#00F5D4";
-        ctx.beginPath();
-        ctx.arc(pt.x, pt.y, 4 * pt.p, 0, Math.PI * 2);
-        ctx.fill();
-      });
+      t += isGenerating ? 0.024 : 0.016;
+      if (corePulseBoost > 0) corePulseBoost = Math.max(0, corePulseBoost - 0.03);
     }
-    t += 0.016;
-    if (corePulseBoost > 0) corePulseBoost = Math.max(0, corePulseBoost - 0.03);
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
+}
+
+function initBrainCanvas() {
+  createNeuralBrainRenderer("brainCanvas");
+  createNeuralBrainRenderer("homeBrainCanvas");
+}
+
+function attachInteractiveRipplesAndAudio() {
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const unlock = e => {
+    hasUserInteracted = true;
+    const btn = e.target?.closest?.("button, .feature-tile, .starter-card, .home-brain-card");
+    if (!btn) return;
+    if (btn.id !== "btnSoundToggleTop" && btn.id !== "toggleSfxSwitch" && btn.id !== "btnMusicToggleTop" && btn.id !== "toggleMusicSwitch") {
+      playClickSfx();
+    }
+    if (musicEnabled && !musicIntervalId) {
+      startAmbientMusic();
+    }
+    if (reducedMotion || typeof btn.getBoundingClientRect !== "function" || typeof btn.appendChild !== "function") return;
+    const rect = btn.getBoundingClientRect();
+    if (!rect || rect.width <= 0) return;
+    btn.classList.add("ripple-target");
+    const size = Math.max(rect.width, rect.height);
+    const ripple = document.createElement("span");
+    ripple.className = "btn-ripple";
+    const x = typeof e.clientX === "number" ? e.clientX - rect.left - size / 2 : rect.width / 2 - size / 2;
+    const y = typeof e.clientY === "number" ? e.clientY - rect.top - size / 2 : rect.height / 2 - size / 2;
+    ripple.style.width = `${size}px`;
+    ripple.style.height = `${size}px`;
+    ripple.style.left = `${x}px`;
+    ripple.style.top = `${y}px`;
+    btn.appendChild(ripple);
+    setTimeout(() => ripple.remove?.(), 520);
+  };
+
+  if (typeof document.addEventListener === "function") {
+    document.addEventListener("pointerdown", unlock, { passive: true });
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        audioSuspendedForHidden = true;
+        stopThinkingSfx();
+        stopAmbientMusic();
+      } else if (audioSuspendedForHidden) {
+        audioSuspendedForHidden = false;
+        if (musicEnabled && hasUserInteracted) startAmbientMusic();
+        if (isGenerating && sfxEnabled && hasUserInteracted) startThinkingSfx();
+      }
+    });
+  }
 }
 
 /* ==================== EVENT BINDINGS ==================== */
@@ -2764,14 +2573,20 @@ function bindEvents() {
   const activateCore = () => {
     if (!currentUser) return;
     corePulseBoost = 1;
-    document.getElementById("coreTapHint").textContent = "INITIALIZING INFFOLER CORE…";
+    const tapHint = document.getElementById("coreTapHint");
+    if (tapHint) tapHint.textContent = "INITIALIZING INFFOLER CORE…";
     setTimeout(() => {
-      document.getElementById("coreTapHint").textContent = "TAP BRAIN TO ACTIVATE CHAT";
+      if (tapHint) tapHint.textContent = "TAP BRAIN TO ACTIVATE CHAT";
       navigateTo("chat");
-    }, 440);
+    }, 360);
   };
   document.getElementById("brainTapTarget").addEventListener("click", activateCore);
   document.getElementById("btnActivateCore").addEventListener("click", activateCore);
+  document.getElementById("homeBrainTapTarget")?.addEventListener("click", activateCore);
+  document.getElementById("btnHomeOpenChat")?.addEventListener("click", e => {
+    e.stopPropagation();
+    activateCore();
+  });
 
   document.getElementById("whatIfForm").addEventListener("submit", e => {
     e.preventDefault();
@@ -2988,46 +2803,33 @@ function bindEvents() {
     }
   });
 
-  // Subscription plans, checkout, UTR verification & admin dashboard bindings
-  document.getElementById("btnChoosePremium")?.addEventListener("click", () => startPlanCheckout("premium"));
-  document.getElementById("btnChooseUltimate")?.addEventListener("click", () => startPlanCheckout("ultimate"));
-  document.getElementById("btnRenewActivePlan")?.addEventListener("click", e => {
-    const plan = e.currentTarget?.getAttribute("data-checkout-plan") || "premium";
-    startPlanCheckout(plan);
-  });
-  document.getElementById("btnRefreshSubStatus")?.addEventListener("click", () => refreshSubscriptionStatus(false));
-  document.getElementById("btnAdminRefreshPayments")?.addEventListener("click", () => loadAdminPayments());
-  document.getElementById("btnModalManagePlan")?.addEventListener("click", () => {
-    document.getElementById("settingsModal")?.classList.add("hidden");
-    navigateTo("plans");
-  });
-  document.getElementById("closeCheckoutModal")?.addEventListener("click", clearCheckoutSession);
-  document.getElementById("checkoutModal")?.addEventListener("click", e => {
-    if (e.target.id === "checkoutModal") clearCheckoutSession();
-  });
-  document.querySelectorAll("[data-admin-filter]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      adminOrderFilter = btn.getAttribute("data-admin-filter") || "pending_verification";
-      document.querySelectorAll("[data-admin-filter]").forEach(el => {
-        el.classList.toggle("active", el.getAttribute("data-admin-filter") === adminOrderFilter);
-      });
-      renderAdminOrdersList();
-    });
+  // Sound effects, ambient music & volume controls
+  document.getElementById("btnSoundToggleTop")?.addEventListener("click", toggleSoundEffects);
+  document.getElementById("toggleSfxSwitch")?.addEventListener("click", toggleSoundEffects);
+  document.getElementById("btnMusicToggleTop")?.addEventListener("click", toggleAmbientMusic);
+  document.getElementById("toggleMusicSwitch")?.addEventListener("click", toggleAmbientMusic);
+  document.getElementById("audioVolumeSlider")?.addEventListener("input", e => {
+    hasUserInteracted = true;
+    audioVolumePct = Math.min(100, Math.max(0, Number(e.target.value) || 0));
+    savePrefSafe(STORAGE_VOLUME, audioVolumePct);
+    applyMasterVolume();
+    syncAudioUi();
   });
 }
 
 function boot() {
-  // Remove any legacy unauthenticated guest chat storage
   try {
     localStorage.removeItem("inffoler_v2_guest_chats");
     localStorage.removeItem("inffoler_v2_guest_sims");
   } catch { /* ignore */ }
 
   setTheme(loadPref(STORAGE_THEME, "dark"), false);
+  syncAudioUi();
   renderInstagramLists();
   renderGlobalFooters();
   renderExplore();
   bindEvents();
+  attachInteractiveRipplesAndAudio();
   initParticleCanvas();
   initBrainCanvas();
 
