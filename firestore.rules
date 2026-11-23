@@ -1,0 +1,169 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidModel(modelId) {
+      return modelId in ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-4-argon'];
+    }
+
+    function isValidUserProfile(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+             (!('email' in data) || data.email == null || (data.email is string && data.email.size() <= 160)) &&
+             (!('photoURL' in data) || data.photoURL == null || (data.photoURL is string && data.photoURL.size() <= 600)) &&
+             (!('theme' in data) || data.theme in ['dark', 'light']) &&
+             (!('preferredModel' in data) || isValidModel(data.preferredModel));
+    }
+
+    function isValidChat(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+             data.modelId is string && isValidModel(data.modelId) &&
+             data.isSaved is bool &&
+             data.messageCount is int && data.messageCount >= 0 && data.messageCount <= 5000 &&
+             data.lastMessagePreview is string && data.lastMessagePreview.size() <= 240;
+    }
+
+    function isValidChatMessage(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.role in ['user', 'model'] &&
+             data.text is string && data.text.size() >= 1 && data.text.size() <= 32000 &&
+             (!('modelId' in data) || data.modelId == null || (data.modelId is string && data.modelId.size() <= 64)) &&
+             (!('hasImage' in data) || data.hasImage is bool) &&
+             (!('imageName' in data) || data.imageName == null || (data.imageName is string && data.imageName.size() <= 120)) &&
+             data.feedback in ['none', 'up', 'down'];
+    }
+
+    function isValidSimulation(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.question is string && data.question.size() >= 1 && data.question.size() <= 600 &&
+             data.initialScenario is string && data.initialScenario.size() <= 4000 &&
+             data.immediateConsequences is string && data.immediateConsequences.size() <= 4000 &&
+             data.shortTermPossibilities is string && data.shortTermPossibilities.size() <= 4000 &&
+             data.longTermPossibilities is string && data.longTermPossibilities.size() <= 4000 &&
+             data.alternativeOutcomes is string && data.alternativeOutcomes.size() <= 4000 &&
+             data.factsVsSpeculation is string && data.factsVsSpeculation.size() <= 4000;
+    }
+
+    // Owner-only user profile (PII protected; list prohibited to prevent enumeration)
+    match /users/{userId} {
+      allow get: if isSignedIn() && request.auth.uid == userId && isValidId(userId);
+      allow list: if false;
+
+      allow create: if isSignedIn() &&
+                       request.auth.uid == userId &&
+                       isValidId(userId) &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().keys().hasAll(['userId', 'displayName', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'displayName', 'email', 'photoURL', 'theme', 'preferredModel', 'createdAt', 'updatedAt']) &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+
+      allow update: if isSignedIn() &&
+                       request.auth.uid == userId &&
+                       isValidId(userId) &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'photoURL', 'theme', 'preferredModel', 'updatedAt']);
+
+      allow delete: if isSignedIn() && request.auth.uid == userId && isValidId(userId);
+
+      // Personal conversations
+      match /chats/{chatId} {
+        allow get: if isSignedIn() && request.auth.uid == userId && isValidId(chatId);
+        allow list: if isSignedIn() && request.auth.uid == userId;
+
+        allow create: if isSignedIn() &&
+                         request.auth.uid == userId &&
+                         isValidId(chatId) &&
+                         incoming().userId == request.auth.uid &&
+                         incoming().keys().hasAll(['userId', 'title', 'modelId', 'isSaved', 'messageCount', 'lastMessagePreview', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'title', 'modelId', 'isSaved', 'messageCount', 'lastMessagePreview', 'createdAt', 'updatedAt']) &&
+                         isValidChat(incoming()) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
+
+        allow update: if isSignedIn() &&
+                         request.auth.uid == userId &&
+                         isValidId(chatId) &&
+                         isValidChat(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['title', 'modelId', 'isSaved', 'messageCount', 'lastMessagePreview', 'updatedAt']);
+
+        allow delete: if isSignedIn() && request.auth.uid == userId && isValidId(chatId);
+
+        // Messages inside a personal conversation
+        match /messages/{messageId} {
+          allow get: if isSignedIn() && request.auth.uid == userId && isValidId(chatId) && isValidId(messageId);
+          allow list: if isSignedIn() && request.auth.uid == userId && isValidId(chatId);
+
+          allow create: if isSignedIn() &&
+                           request.auth.uid == userId &&
+                           isValidId(chatId) &&
+                           isValidId(messageId) &&
+                           incoming().userId == request.auth.uid &&
+                           incoming().keys().hasAll(['userId', 'role', 'text', 'feedback', 'createdAt']) &&
+                           incoming().keys().hasOnly(['userId', 'role', 'text', 'modelId', 'hasImage', 'imageName', 'feedback', 'createdAt']) &&
+                           isValidChatMessage(incoming()) &&
+                           incoming().createdAt is timestamp && incoming().createdAt <= request.time;
+
+          allow update: if isSignedIn() &&
+                           request.auth.uid == userId &&
+                           isValidId(chatId) &&
+                           isValidId(messageId) &&
+                           isValidChatMessage(incoming()) &&
+                           incoming().userId == existing().userId &&
+                           incoming().role == existing().role &&
+                           incoming().createdAt == existing().createdAt &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['feedback']);
+
+          allow delete: if isSignedIn() && request.auth.uid == userId && isValidId(chatId) && isValidId(messageId);
+        }
+      }
+
+      // Personal WHAT IF simulations
+      match /simulations/{simId} {
+        allow get: if isSignedIn() && request.auth.uid == userId && isValidId(simId);
+        allow list: if isSignedIn() && request.auth.uid == userId;
+
+        allow create: if isSignedIn() &&
+                         request.auth.uid == userId &&
+                         isValidId(simId) &&
+                         incoming().userId == request.auth.uid &&
+                         incoming().keys().hasAll(['userId', 'question', 'initialScenario', 'immediateConsequences', 'shortTermPossibilities', 'longTermPossibilities', 'alternativeOutcomes', 'factsVsSpeculation', 'createdAt']) &&
+                         incoming().keys().hasOnly(['userId', 'question', 'initialScenario', 'immediateConsequences', 'shortTermPossibilities', 'longTermPossibilities', 'alternativeOutcomes', 'factsVsSpeculation', 'createdAt']) &&
+                         isValidSimulation(incoming()) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time;
+
+        allow update: if false;
+        allow delete: if isSignedIn() && request.auth.uid == userId && isValidId(simId);
+      }
+    }
+  }
+}

@@ -1,509 +1,748 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>INFFOLER AI — Created by Alankrit Pathak</title>
-  <meta name="description" content="INFFOLER AI — Your intelligent AI assistant, designed with Google AI Studio by Alankrit Pathak. Your Intelligence. Your Assistant. Your Future." />
+  <title>INFFOLER AI 2.0 — Created by Alankrit Pathak</title>
+  <meta name="description" content="INFFOLER AI 2.0 — Futuristic AI assistant with multimodal Gemini vision chat, personal cloud sync, and WHAT IF simulator. Made with ❤️ by Alankrit Pathak." />
   <meta name="theme-color" content="#05050A" />
   <link rel="icon" type="image/png" href="./assets/whatif_brain_icon.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
+  <!-- Animated Startup Brain Boot Splash -->
+  <div class="startup-splash" id="startupSplash" aria-hidden="true">
+    <div class="splash-core">
+      <div class="splash-orbit"></div>
+      <div class="splash-orbit splash-orbit-2"></div>
+      <img src="./assets/whatif_brain_icon.png" alt="" class="splash-brain-img" />
+    </div>
+    <div class="splash-brand">INFFOLER <span>AI</span> <em>2.0</em></div>
+    <p class="splash-sub">Made with &hearts; by Alankrit Pathak</p>
+  </div>
+
+  <!-- Ambient Futuristic Background & Particles -->
   <div class="bg-nebula" aria-hidden="true"></div>
   <div class="bg-grid" aria-hidden="true"></div>
+  <canvas id="particleCanvas" class="bg-particles" aria-hidden="true"></canvas>
 
-  <div class="app-shell">
-    <!-- Desktop Sidebar Rail -->
-    <aside class="nav-rail" aria-label="Primary navigation">
-      <div class="rail-brand" data-nav="home" role="button" tabindex="0">
-        <img src="./assets/whatif_brain_icon.png" alt="INFFOLER AI logo" class="rail-logo" />
-        <span class="rail-title">INFFOLER <em>AI</em></span>
+  <!-- Mobile Sidebar Backdrop -->
+  <div class="sidebar-backdrop hidden" id="sidebarBackdrop"></div>
+
+  <!-- MANDATORY WELCOME & AUTHENTICATION GATE (PRIVATE AI ACCESS) -->
+  <section class="auth-gate-screen hidden" id="authGateScreen" aria-label="INFFOLER AI Login and Sign Up Gate">
+    <div class="auth-gate-topbar">
+      <div class="auth-gate-pill">
+        <span class="status-dot"></span>
+        <span>PRIVATE AI ACCESS</span>
       </div>
-      <nav class="rail-links">
-        <button class="nav-btn active" data-nav="home">
-          <span class="nav-ico">&#x2302;</span><span>Home</span>
+      <button type="button" class="icon-btn" id="btnThemeToggleGate" aria-label="Toggle light or dark theme" title="Switch Theme">
+        <span id="themeIconGate">&#x2600;&#xFE0F;</span>
+      </button>
+    </div>
+
+    <div class="auth-gate-container">
+      <!-- Animated Welcome Hero -->
+      <div class="auth-gate-hero">
+        <div class="auth-gate-emblem" aria-hidden="true">
+          <div class="gate-orbit gate-orbit-1"></div>
+          <div class="gate-orbit gate-orbit-2"></div>
+          <img src="./assets/whatif_brain_icon.png" alt="INFFOLER AI Core" class="gate-brain-img" />
+        </div>
+        <span class="badge-chip cyan">INFFOLER AI 2.0</span>
+        <h1 class="auth-gate-title">Your Intelligence.<br /><span class="gradient-text">Your Assistant. Your Future.</span></h1>
+        <p class="auth-gate-subtitle">
+          Multimodal Gemini reasoning, Markdown &amp; code intelligence, 6-stage WHAT IF simulations,
+          and cloud-synced conversations &mdash; protected inside your personal account.
+        </p>
+        <p class="auth-gate-creator">Created by Alankrit Pathak &middot; Powered by Google AI Studio</p>
+      </div>
+
+      <!-- Auth Gate Card (ONLY Login & Sign Up Options) -->
+      <div class="glass-panel auth-gate-card">
+        <div class="auth-gate-card-head">
+          <h2>Sign In to Enter Workspace</h2>
+          <p>Authentication is required to access INFFOLER AI chat and Gemini features.</p>
+        </div>
+
+        <!-- 1. Continue with Google -->
+        <button type="button" class="google-signin-btn" id="btnGoogleSignIn">
+          <svg class="google-g-svg" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.2-2.27H12v4.3h6.45a5.52 5.52 0 0 1-2.39 3.62v3.01h3.87c2.26-2.08 3.56-5.15 3.56-8.66z"/>
+            <path fill="#34A853" d="M12 24c3.24 0 5.95-1.07 7.93-2.91l-3.87-3.01c-1.07.72-2.45 1.15-4.06 1.15-3.12 0-5.77-2.11-6.72-4.95H1.28v3.11A12 12 0 0 0 12 24z"/>
+            <path fill="#FBBC05" d="M5.28 14.28A7.2 7.2 0 0 1 4.9 12c0-.79.14-1.56.38-2.28V6.61H1.28A12 12 0 0 0 0 12c0 1.94.46 3.77 1.28 5.39l4-3.11z"/>
+            <path fill="#EA4335" d="M12 4.77c1.76 0 3.34.61 4.58 1.8l3.44-3.44C17.94 1.19 15.23 0 12 0A12 12 0 0 0 1.28 6.61l4 3.11c.95-2.84 3.6-4.95 6.72-4.95z"/>
+          </svg>
+          <span>Continue with Google</span>
         </button>
-        <button class="nav-btn" data-nav="core">
-          <span class="nav-ico">&#x2728;</span><span>Core</span>
+
+        <div class="auth-divider"><span>or</span></div>
+
+        <!-- Auth Mode Tabs (Email Login, Create Account, Forgot Password?) -->
+        <div class="auth-tabs" role="tablist">
+          <button type="button" class="auth-tab active" data-auth-tab="login" role="tab">Email Login</button>
+          <button type="button" class="auth-tab" data-auth-tab="signup" role="tab">Create Account</button>
+          <button type="button" class="auth-tab" data-auth-tab="reset" role="tab">Forgot Password</button>
+        </div>
+
+        <div id="authFeedbackBox" class="auth-feedback hidden" role="alert"></div>
+
+        <!-- Email & Password Login -->
+        <form id="emailLoginForm" class="auth-form">
+          <label class="field-label" for="loginEmail">Email Address</label>
+          <input type="email" id="loginEmail" class="modal-input" required placeholder="you@example.com" autocomplete="email" />
+
+          <label class="field-label" for="loginPassword">Password</label>
+          <input type="password" id="loginPassword" class="modal-input" required placeholder="Enter your password" autocomplete="current-password" />
+
+          <button type="submit" class="gradient-cta-btn" id="btnEmailLoginSubmit">Log In with Email</button>
+        </form>
+
+        <!-- Create Account -->
+        <form id="emailSignupForm" class="auth-form hidden">
+          <label class="field-label" for="signupName">Display Name</label>
+          <input type="text" id="signupName" class="modal-input" required maxlength="80" placeholder="Your name" autocomplete="name" />
+
+          <label class="field-label" for="signupEmail">Email Address</label>
+          <input type="email" id="signupEmail" class="modal-input" required placeholder="you@example.com" autocomplete="email" />
+
+          <label class="field-label" for="signupPassword">Password (min 6 characters)</label>
+          <input type="password" id="signupPassword" class="modal-input" required minlength="6" placeholder="Create a strong password" autocomplete="new-password" />
+
+          <button type="submit" class="gradient-cta-btn" id="btnEmailSignupSubmit">Create Account</button>
+        </form>
+
+        <!-- Forgot Password -->
+        <form id="resetPasswordForm" class="auth-form hidden">
+          <label class="field-label" for="resetEmail">Registered Email Address</label>
+          <input type="email" id="resetEmail" class="modal-input" required placeholder="you@example.com" autocomplete="email" />
+          <p class="field-hint">We will send a secure password reset link via Firebase Authentication.</p>
+          <button type="submit" class="gradient-cta-btn" id="btnResetPasswordSubmit">Send Password Reset Email</button>
+        </form>
+
+        <div class="auth-gate-security-note">
+          <span>&#x1F512; End-to-end verified Firebase Auth &middot; Token-gated AI proxy</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="auth-gate-footer">
+      <span>Made with &hearts; by Alankrit Pathak</span>
+      <a href="https://github.com/xalan-aesthetic/INFFOLER-AI" target="_blank" rel="noopener noreferrer">View on GitHub &#x2197;</a>
+    </div>
+  </section>
+
+  <!-- AUTHENTICATED DASHBOARD SHELL (HIDDEN & INERT UNTIL LOGIN) -->
+  <div class="app-shell hidden" id="appShell" inert>
+    <!-- Animated Sidebar / Slide-Out Drawer -->
+    <aside class="sidebar" id="appSidebar" aria-label="INFFOLER AI Sidebar">
+      <div class="sidebar-head">
+        <button type="button" class="brand-emblem-btn" data-nav="chat" aria-label="INFFOLER AI Home">
+          <div class="animated-logo-ring" aria-hidden="true">
+            <svg viewBox="0 0 64 64" class="logo-svg">
+              <defs>
+                <linearGradient id="logoNeonGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#F43F8E"/>
+                  <stop offset="50%" stop-color="#A855F7"/>
+                  <stop offset="100%" stop-color="#00E5FF"/>
+                </linearGradient>
+              </defs>
+              <ellipse cx="32" cy="32" rx="26" ry="13" fill="none" stroke="url(#logoNeonGrad)" stroke-width="2.4" class="logo-ring-spin"/>
+              <path d="M31 16 C17 15 12 28 16 38 C18 46 27 48 31 44" fill="none" stroke="url(#logoNeonGrad)" stroke-width="2.8" stroke-linecap="round"/>
+              <path d="M33 16 C47 15 52 28 48 38 C46 46 37 48 33 44" fill="none" stroke="#00E5FF" stroke-width="2.8" stroke-linecap="round"/>
+              <circle cx="24" cy="29" r="2.4" fill="#00E5FF"/>
+              <circle cx="40" cy="29" r="2.4" fill="#C084FC"/>
+              <circle cx="32" cy="24" r="2.4" fill="#00F5D4"/>
+            </svg>
+          </div>
+          <div class="brand-text-stack">
+            <span class="brand-wordmark">INFFOLER <em>AI</em></span>
+            <span class="brand-version-pill">2.0</span>
+          </div>
         </button>
-        <button class="nav-btn" data-nav="chat">
-          <span class="nav-ico">&#x1F4AC;</span><span>AI Chat</span>
+
+        <button type="button" class="icon-btn mobile-only" id="btnCloseSidebar" aria-label="Close sidebar">
+          &times;
         </button>
-        <button class="nav-btn" data-nav="whatif">
-          <span class="nav-ico">&#x269B;</span><span>WHAT IF</span>
+      </div>
+
+      <div class="sidebar-cta-wrap">
+        <button type="button" class="new-chat-btn" id="btnSidebarNewChat">
+          <span>+</span>
+          <span>New Chat</span>
         </button>
-        <button class="nav-btn" data-nav="explore">
-          <span class="nav-ico">&#x1F9ED;</span><span>Explore</span>
+      </div>
+
+      <!-- Search Chats -->
+      <div class="sidebar-search-wrap">
+        <span class="search-ico" aria-hidden="true">&#x1F50D;</span>
+        <input
+          type="search"
+          id="sidebarSearchInput"
+          class="sidebar-search-input"
+          placeholder="Search chats…"
+          aria-label="Search chats"
+        />
+      </div>
+
+      <!-- Workspace Mode Switcher -->
+      <nav class="sidebar-nav-section" aria-label="Workspace navigation">
+        <button type="button" class="side-nav-item active" data-nav="chat">
+          <span class="sni-ico">&#x1F4AC;</span><span>AI Chat</span>
         </button>
-        <button class="nav-btn" data-nav="history">
-          <span class="nav-ico">&#x1F552;</span><span>History</span>
+        <button type="button" class="side-nav-item" data-nav="home">
+          <span class="sni-ico">&#x2302;</span><span>Home Hub</span>
         </button>
-        <button class="nav-btn" data-nav="creator">
-          <span class="nav-ico">&#x1F451;</span><span>Creator</span>
+        <button type="button" class="side-nav-item" data-nav="core">
+          <span class="sni-ico">&#x2728;</span><span>Core Brain</span>
+        </button>
+        <button type="button" class="side-nav-item" data-nav="whatif">
+          <span class="sni-ico">&#x269B;</span><span>WHAT IF Lab</span>
+        </button>
+        <button type="button" class="side-nav-item" data-nav="explore">
+          <span class="sni-ico">&#x1F9ED;</span><span>Explore</span>
+        </button>
+        <button type="button" class="side-nav-item" data-nav="creator">
+          <span class="sni-ico">&#x1F451;</span><span>Creator &amp; About</span>
         </button>
       </nav>
-      <div class="rail-footer-badge">
-        <span class="status-dot" id="railStatusDot"></span>
-        <span id="railStatusLabel">AI READY</span>
+
+      <!-- Scrollable Conversation History (Saved + Recent) -->
+      <div class="sidebar-history-scroll">
+        <div id="savedChatsSection" class="history-group hidden">
+          <div class="history-group-label">&#x2B50; SAVED CHATS</div>
+          <div id="savedChatsList" class="chat-thread-list"></div>
+        </div>
+
+        <div class="history-group">
+          <div class="history-group-label">
+            <span>RECENT CONVERSATIONS</span>
+            <span id="historySyncBadge" class="sync-badge">LOCAL</span>
+          </div>
+          <div id="recentChatsList" class="chat-thread-list"></div>
+        </div>
+      </div>
+
+      <!-- Sidebar Footer: User Profile & Settings -->
+      <div class="sidebar-footer">
+        <div class="sidebar-footer-actions">
+          <button type="button" class="footer-mini-btn" id="btnSidebarSettings">
+            <span>&#x2699;&#xFE0F;</span><span>Settings</span>
+          </button>
+          <button type="button" class="footer-mini-btn" id="btnThemeToggleSidebar" aria-label="Toggle light or dark theme">
+            <span id="themeIconSidebar">&#x2600;&#xFE0F;</span><span id="themeLabelSidebar">Light</span>
+          </button>
+        </div>
+
+        <div class="user-card" id="sidebarUserCard">
+          <button type="button" class="user-card-trigger" id="btnSidebarAccount">
+            <div class="user-avatar-wrap" id="sidebarUserAvatar">
+              <span>AI</span>
+            </div>
+            <div class="user-meta">
+              <strong id="sidebarUserName">User</strong>
+              <small id="sidebarUserEmail">Verified session</small>
+            </div>
+          </button>
+          <button type="button" class="auth-action-pill" id="btnSidebarAuthAction">Log Out</button>
+        </div>
       </div>
     </aside>
 
-    <!-- Main Viewport -->
-    <main class="main-content" id="mainScroll">
-      <!-- VIEW: HOME -->
-      <section class="view active" id="view-home">
-        <header class="top-header">
-          <div class="brand-lockup">
-            <div class="mini-brain-wrap" aria-hidden="true">
-              <svg viewBox="0 0 64 64" class="mini-brain-svg">
-                <defs>
-                  <linearGradient id="neonGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                    <stop offset="0%" stop-color="#F43F8E"/>
-                    <stop offset="50%" stop-color="#A855F7"/>
-                    <stop offset="100%" stop-color="#00E5FF"/>
-                  </linearGradient>
-                </defs>
-                <ellipse cx="32" cy="32" rx="27" ry="15" fill="none" stroke="url(#neonGrad)" stroke-width="2.5" opacity="0.85"/>
-                <path d="M31 15 C16 14 11 28 15 39 C17 48 27 50 31 45" fill="none" stroke="url(#neonGrad)" stroke-width="3" stroke-linecap="round"/>
-                <path d="M33 15 C48 14 53 28 49 39 C47 48 37 50 33 45" fill="none" stroke="#00E5FF" stroke-width="3" stroke-linecap="round"/>
-                <circle cx="24" cy="29" r="2.5" fill="#00E5FF"/>
-                <circle cx="40" cy="29" r="2.5" fill="#C084FC"/>
-                <circle cx="32" cy="24" r="2.5" fill="#00F5D4"/>
-              </svg>
-            </div>
-            <div>
-              <div class="brand-row">
-                <span class="crown-icon" aria-hidden="true">&#x1F451;</span>
-                <h1 class="brand-title">INFFOLER <span class="cyan-accent">AI</span></h1>
-              </div>
-              <p class="brand-sub">&mdash; Your Ultimate AI Companion &mdash;</p>
-            </div>
-          </div>
-
-          <div class="header-actions">
-            <button class="circle-icon-btn" id="btnNotifications" aria-label="AI status and updates">
-              <span>&#x1F514;</span>
-              <span class="notif-dot"></span>
-            </button>
-            <button class="circle-icon-btn" id="btnSettings" aria-label="AI connection and cache settings">
-              <span>&#x2699;&#xFE0F;</span>
-            </button>
-          </div>
-        </header>
-
-        <!-- Founder / Creator Card -->
-        <article class="glass-card founder-card">
-          <div class="founder-top">
-            <div class="avatar-ring" data-nav="creator" role="button" tabindex="0" aria-label="Open Creator Profile">
-              <img src="./assets/creator_avatar.png" alt="Alankrit Pathak" class="creator-avatar" />
-              <span class="verified-pill" title="Verified Founder">&#x2713;</span>
-            </div>
-            <div class="founder-meta">
-              <div class="founder-title-row">
-                <div>
-                  <h2 class="founder-name">ALANKRIT PATHAK <span class="verified-inline">&#x2713;</span></h2>
-                  <p class="founder-role">Founder &amp; Creator of INFFOLER AI</p>
-                </div>
-                <button class="view-profile-btn" data-nav="creator">View Profile &rarr;</button>
-              </div>
-              <p class="founder-quote">&ldquo;Building ideas into intelligent experiences.&rdquo;</p>
-              <div class="founder-controls">
-                <button class="ig-dropdown-btn" id="btnToggleSixAccounts" aria-expanded="false">
-                  <span class="ig-mini-glyph"></span>
-                  <span>6 Accounts</span>
-                  <span id="sixAccountsChevron">&#x25BE;</span>
-                </button>
-                <div class="quick-nav-dots">
-                  <button class="mini-pill-btn" data-nav="core" title="Core AI Brain">&#x1F9E0;</button>
-                  <button class="mini-pill-btn" data-nav="chat" title="AI Chat">&#x1F4AC;</button>
-                  <button class="mini-pill-btn" data-nav="whatif" title="WHAT IF Mode">&#x269B;</button>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="expanded-accounts hidden" id="expandedSixAccounts"></div>
-        </article>
-
-        <!-- Hero Artwork Banner -->
-        <div class="hero-banner" data-nav="core" role="button" tabindex="0" aria-label="Open Core AI Hologram">
-          <img src="./assets/hero_dream_banner.png" alt="Dream Bigger with INFFOLER AI" />
-          <div class="hero-banner-fade"></div>
-        </div>
-
-        <!-- Ask INFFOLER AI Prompt Card -->
-        <article class="glass-card ask-card">
-          <div class="ask-header">
-            <div class="ask-title-group">
-              <div class="sparkle-badge">&#x2728;</div>
-              <div>
-                <h3>INFFOLER AI</h3>
-                <p>Ask anything&hellip; get the best answer!</p>
-              </div>
-            </div>
-            <div class="gemini-badge">
-              <span class="gemini-g">G</span>
-              <div>
-                <small>Powered by</small>
-                <strong>Gemini</strong>
-              </div>
-            </div>
-          </div>
-
-          <form class="prompt-pill-form" id="homePromptForm">
-            <span class="prompt-leading">&#x2728;</span>
-            <input
-              type="text"
-              id="homePromptInput"
-              placeholder="Ask INFFOLER AI anything…"
-              autocomplete="off"
-              aria-label="Ask INFFOLER AI anything"
-            />
-            <button type="submit" class="prompt-send-btn" aria-label="Send prompt">&#x27A4;</button>
-          </form>
-
-          <div class="chip-row">
-            <button type="button" class="suggestion-chip" id="chipGiveIdeas">&#x1F4A1; Give me ideas</button>
-            <button type="button" class="suggestion-chip" data-nav="explore">&#x1F680; Explore ideas</button>
-            <button type="button" class="suggestion-chip" id="chipRandomWhatIf">&#x1F3B2; Random What If</button>
-          </div>
-        </article>
-
-        <!-- 2x2 Feature Grid -->
-        <div class="feature-grid">
-          <button class="glass-card feature-tile" data-nav="core">
-            <div class="tile-icon cyan">&#x1F9E0;</div>
-            <div class="tile-copy">
-              <strong>Core AI</strong>
-              <span>Smart &amp; Powerful AI</span>
-            </div>
-            <span class="tile-arrow cyan-bg">&rarr;</span>
+    <!-- Main Workspace Column -->
+    <div class="workspace-col">
+      <!-- Slim Top Utility Bar -->
+      <header class="topbar">
+        <div class="topbar-left">
+          <button type="button" class="icon-btn" id="btnOpenSidebar" aria-label="Open sidebar">
+            &#x2630;
           </button>
-
-          <button class="glass-card feature-tile" data-nav="chat">
-            <div class="tile-icon purple">&#x1F4AC;</div>
-            <div class="tile-copy">
-              <strong>AI Chat</strong>
-              <span>Chat with INFFOLER AI</span>
-            </div>
-            <span class="tile-arrow blue-bg">&rarr;</span>
-          </button>
-
-          <button class="glass-card feature-tile" data-nav="whatif">
-            <div class="tile-icon violet">&#x2753;</div>
-            <div class="tile-copy">
-              <strong>WHAT IF</strong>
-              <span>Explore Possibilities</span>
-            </div>
-            <span class="tile-arrow blue-bg">&rarr;</span>
-          </button>
-
-          <button class="glass-card feature-tile" data-nav="explore">
-            <div class="tile-icon blue">&#x1F9ED;</div>
-            <div class="tile-copy">
-              <strong>Explore</strong>
-              <span>Discover More</span>
-            </div>
-            <span class="tile-arrow blue-bg">&rarr;</span>
-          </button>
-        </div>
-
-        <!-- CONNECT WITH ALANKRIT Card -->
-        <article class="glass-card connect-card">
-          <div class="connect-head">
-            <div class="ig-gradient-square"><span class="ig-white-glyph"></span></div>
-            <div>
-              <h3>CONNECT WITH ALANKRIT</h3>
-              <p>Follow for updates, edits &amp; more</p>
-            </div>
-          </div>
-          <div class="ig-orb-grid" id="homeIgGrid"></div>
-          <button type="button" class="gradient-cta-btn" id="btnOpenAllIg">
-            <span>Open All Instagram Profiles &rarr;</span>
-          </button>
-        </article>
-
-        <div class="global-footer-slot"></div>
-      </section>
-
-      <!-- VIEW: CORE AI (3D Holographic Brain) -->
-      <section class="view" id="view-core">
-        <div class="core-top-bar">
-          <div class="status-pill"><span class="status-dot"></span> <span id="coreStatusText">AI STATUS: READY</span></div>
-          <button class="outline-pill-btn" data-nav="creator">FOUNDER: ALANKRIT PATHAK</button>
-        </div>
-
-        <div class="core-stage">
-          <div class="brain-canvas-wrap" id="brainTapTarget" role="button" tabindex="0" aria-label="Tap holographic AI brain to activate chat">
-            <canvas id="brainCanvas"></canvas>
-          </div>
-          <p class="tap-hint" id="coreTapHint">TAP BRAIN TO ACTIVATE</p>
-          <h2 class="hero-headline">YOUR IMAGINATION STARTS HERE</h2>
-          <p class="hero-sub">Ask anything. Explore everything.</p>
-          <button type="button" class="gradient-cta-btn core-activate-btn" id="btnActivateCore">&#x26A1; ACTIVATE AI</button>
-        </div>
-
-        <div class="global-footer-slot"></div>
-      </section>
-
-      <!-- VIEW: AI CHAT -->
-      <section class="view" id="view-chat">
-        <div class="chat-shell glass-card">
-          <div class="chat-toolbar">
-            <div>
-              <div class="chat-title-row">
-                <h2>INFFOLER AI</h2>
-                <select id="modelSelect" class="model-select" aria-label="Select Gemini model">
-                  <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
-                  <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
-                  <option value="gemini-4-argon">Gemini 4 Argon</option>
-                </select>
-              </div>
-              <p class="chat-status-line" id="chatConnectionState">Checking AI endpoint…</p>
-            </div>
-            <div class="chat-toolbar-actions">
-              <button class="icon-chip-btn" id="btnConfigureAi" title="Proxy Status">&#x1F6E1;&#xFE0F; Status</button>
-              <button class="icon-chip-btn" id="btnNewChat" title="New Chat">+ New</button>
-              <button class="icon-chip-btn danger" id="btnClearChat" title="Clear Chat">Clear</button>
-            </div>
-          </div>
-
-          <div class="ai-setup-banner hidden" id="aiSetupBanner">
-            <div>
-              <strong>Public AI Proxy Endpoint Pending Configuration</strong>
-              <p>The site owner needs to set <code>PUBLIC_PROXY_URL</code> in <code>docs/app.js</code> to the deployed Cloudflare Worker URL. Visitors never need an API key.</p>
-            </div>
-            <button type="button" class="outline-pill-btn" id="btnBannerSetupAi">View Status</button>
-          </div>
-
-          <div class="chat-messages" id="chatMessages"></div>
-
-          <form class="chat-input-bar" id="chatForm">
-            <input
-              type="text"
-              id="chatInput"
-              placeholder="Ask INFFOLER AI anything…"
-              autocomplete="off"
-              aria-label="Chat message"
-            />
-            <button type="submit" class="prompt-send-btn" id="chatSendBtn" aria-label="Send">&#x27A4;</button>
-          </form>
-        </div>
-
-        <div class="global-footer-slot"></div>
-      </section>
-
-      <!-- VIEW: WHAT IF SIMULATOR -->
-      <section class="view" id="view-whatif">
-        <article class="glass-card section-card">
-          <div class="section-head">
-            <span class="badge-chip cyan">HYPOTHETICAL ENGINE</span>
-            <h2>WHAT IF SIMULATOR</h2>
-            <p>Explore structured 6-stage cascading possibilities for any hypothetical scenario.</p>
-          </div>
-          <form class="whatif-form" id="whatIfForm">
-            <textarea
-              id="whatIfInput"
-              rows="2"
-              placeholder="What if Earth's rotation slowed down by 50%?"
-              aria-label="What if scenario"
-            ></textarea>
-            <div class="whatif-actions">
-              <button type="button" class="suggestion-chip" id="btnRandomWhatIfFill">&#x1F3B2; Random Scenario</button>
-              <button type="submit" class="gradient-cta-btn small" id="btnRunWhatIf">RUN SIMULATION</button>
-            </div>
-          </form>
-          <div id="whatIfResultArea" class="whatif-results"></div>
-        </article>
-
-        <div class="global-footer-slot"></div>
-      </section>
-
-      <!-- VIEW: EXPLORE -->
-      <section class="view" id="view-explore">
-        <article class="glass-card section-card">
-          <div class="section-head">
-            <span class="badge-chip purple">CAPABILITIES</span>
-            <h2>EXPLORE CAPABILITIES</h2>
-            <p>Tap any intelligence module to launch a live session.</p>
-          </div>
-          <div class="explore-grid" id="exploreGrid"></div>
-        </article>
-
-        <div class="global-footer-slot"></div>
-      </section>
-
-      <!-- VIEW: HISTORY -->
-      <section class="view" id="view-history">
-        <article class="glass-card section-card">
-          <div class="history-head">
-            <div>
-              <span class="badge-chip cyan">LOCAL MEMORY</span>
-              <h2>CONVERSATION &amp; SIMULATION HISTORY</h2>
-            </div>
-            <div class="history-tools">
-              <button class="icon-chip-btn" id="btnClearWebCache">Clear Cache</button>
-              <button class="icon-chip-btn danger" id="btnClearAllHistory">Clear All</button>
-            </div>
-          </div>
-          <div id="historyList" class="history-list"></div>
-        </article>
-
-        <div class="global-footer-slot"></div>
-      </section>
-
-      <!-- VIEW: CREATOR PROFILE -->
-      <section class="view" id="view-creator">
-        <article class="glass-card creator-hero-card">
-          <span class="badge-chip teal">&#x2713; OFFICIAL CREATOR IDENTITY</span>
-          <div class="creator-hero-avatar-wrap">
-            <div class="creator-hero-halo"></div>
-            <img src="./assets/creator_avatar.png" alt="Alankrit Pathak" class="creator-hero-avatar" />
-          </div>
-          <h2>ALANKRIT PATHAK</h2>
-          <p class="creator-hero-role">Founder &amp; Creator of INFFOLER AI</p>
-          <p class="creator-hero-quote">&ldquo;Building ideas into intelligent experiences.&rdquo;</p>
-          <p class="creator-hero-sub">Your Intelligence. Your Assistant. Your Future.</p>
-
-          <div class="creator-cta-row">
-            <button type="button" class="gradient-cta-btn small" id="btnAskAboutCreator">&#x1F4AC; Ask AI</button>
-            <button type="button" class="outline-pill-btn" data-nav="whatif">&#x269B; WHAT IF Lab</button>
-          </div>
-
-          <a
-            href="https://github.com/xalan-aesthetic/INFFOLER-AI"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="github-cta-btn"
-          >
-            <span class="gh-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
-                <path d="M12 1.5A10.5 10.5 0 0 0 8.68 21.96c.53.1.72-.23.72-.5v-1.78c-2.92.63-3.54-1.41-3.54-1.41-.48-1.22-1.17-1.54-1.17-1.54-.96-.66.07-.65.07-.65 1.06.08 1.62 1.09 1.62 1.09.94 1.62 2.48 1.15 3.08.88.1-.68.37-1.15.67-1.41-2.33-.27-4.78-1.17-4.78-5.18 0-1.15.41-2.08 1.08-2.81-.11-.27-.47-1.34.1-2.78 0 0 .88-.28 2.89 1.07a10.1 10.1 0 0 1 5.26 0c2-1.35 2.88-1.07 2.88-1.07.57 1.44.21 2.51.1 2.78.68.73 1.08 1.66 1.08 2.81 0 4.02-2.46 4.91-4.8 5.17.38.33.72.97.72 1.96v2.9c0 .28.19.61.73.5A10.5 10.5 0 0 0 12 1.5Z"/>
-              </svg>
+          <div class="topbar-brand" data-nav="chat" role="button" tabindex="0">
+            <span class="topbar-title">INFFOLER <span class="cyan-accent">AI</span></span>
+            <span class="status-badge" id="topbarProxyBadge">
+              <span class="status-dot"></span>
+              <span id="topbarProxyLabel">PRIVATE VERIFIED</span>
             </span>
-            <span>View on GitHub</span>
-            <span>&#x2197;</span>
-          </a>
-        </article>
-
-        <div class="creator-info-grid">
-          <article class="glass-card section-card">
-            <span class="badge-chip purple">ABOUT ME</span>
-            <p class="body-copy">
-              I am Alankrit Pathak &mdash; Founder &amp; Creator of INFFOLER AI. Building ideas into intelligence,
-              turning ambitious concepts into modern, accessible, interactive experiences designed with Google AI Studio.
-            </p>
-          </article>
-
-          <article class="glass-card section-card">
-            <span class="badge-chip cyan">ABOUT INFFOLER AI</span>
-            <p class="body-copy">
-              INFFOLER AI is your intelligent AI assistant, combining conversational Q&amp;A, the 6-phase WHAT IF
-              hypothetical simulator, curated capability launchers, and persistent history across Android and the Web.
-            </p>
-          </article>
-
-          <article class="glass-card section-card">
-            <span class="badge-chip purple">VISION</span>
-            <ul class="bullet-list">
-              <li>Answer questions and understand concepts clearly.</li>
-              <li>Learn new things interactively.</li>
-              <li>Generate creative ideas and explore possibilities.</li>
-              <li>Solve everyday problems with intelligent reasoning.</li>
-              <li>Experience AI through a modern futuristic interface.</li>
-            </ul>
-          </article>
-
-          <article class="glass-card section-card">
-            <span class="badge-chip teal">TECHNOLOGY</span>
-            <ul class="bullet-list">
-              <li>Google AI Studio &amp; Gemini language models</li>
-              <li>Modern Kotlin + Jetpack Compose Android app</li>
-              <li>Responsive HTML5 Canvas &amp; CSS Glassmorphism Web UI</li>
-              <li>GitHub for development, CI/CD &amp; GitHub Pages hosting</li>
-            </ul>
-          </article>
+          </div>
         </div>
 
-        <article class="glass-card section-card">
-          <div class="section-head">
-            <span class="badge-chip purple">6 OFFICIAL PROFILES</span>
-            <h3>CONNECT WITH ALANKRIT</h3>
+        <div class="topbar-right">
+          <select id="modelSelect" class="model-select" aria-label="Select Gemini model">
+            <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
+            <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
+            <option value="gemini-4-argon">Gemini 4 Argon</option>
+          </select>
+
+          <button type="button" class="icon-btn" id="btnThemeToggleTop" aria-label="Toggle theme" title="Switch Theme">
+            <span id="themeIconTop">&#x2600;&#xFE0F;</span>
+          </button>
+
+          <button type="button" class="topbar-profile-chip" id="btnTopbarAuth" title="Account &amp; Profile">
+            <span class="topbar-avatar-mini" id="topbarUserAvatar"><span>AI</span></span>
+            <span id="topbarUserLabel">Profile</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- MAIN SCROLLABLE VIEWS -->
+      <main class="main-viewport" id="mainViewport">
+        <!-- VIEW 1 (DEFAULT): ADVANCED CHAT INTERFACE -->
+        <section class="view view-chat active" id="view-chat">
+          <div class="chat-subbar">
+            <div class="chat-thread-meta">
+              <span id="activeChatTitle" class="active-chat-title">New Exploration</span>
+              <span id="chatCloudHint" class="chat-cloud-hint">Private cloud sync &middot; Verified Firebase session</span>
+            </div>
+            <div class="chat-subbar-actions">
+              <button type="button" class="chip-action-btn" id="btnSaveActiveChat" title="Save or bookmark this chat">
+                &#x2606; Save
+              </button>
+              <button type="button" class="chip-action-btn" id="btnRenameActiveChat" title="Rename conversation">
+                &#x270E; Rename
+              </button>
+              <button type="button" class="chip-action-btn danger" id="btnClearChat" title="Clear active chat">
+                Clear
+              </button>
+            </div>
           </div>
-          <div class="creator-ig-list" id="creatorIgList"></div>
-        </article>
 
-        <div class="global-footer-slot"></div>
-      </section>
-    </main>
+          <div class="chat-feed-wrap" id="chatScrollArea">
+            <div class="chat-column" id="chatMessages"></div>
+          </div>
 
-    <!-- Mobile Bottom Navigation -->
-    <nav class="bottom-nav" aria-label="Mobile navigation">
-      <button class="bottom-nav-btn active" data-nav="home">
-        <span class="bn-ico">&#x2302;</span><span>Home</span>
-      </button>
-      <button class="bottom-nav-btn" data-nav="core">
-        <span class="bn-ico">&#x2728;</span><span>Core</span>
-      </button>
-      <button class="bottom-nav-btn" data-nav="explore">
-        <span class="bn-ico">&#x1F9ED;</span><span>Explore</span>
-      </button>
-      <button class="bottom-nav-btn" data-nav="history">
-        <span class="bn-ico">&#x1F552;</span><span>History</span>
-      </button>
-      <button class="bottom-nav-btn" data-nav="creator">
-        <span class="bn-ico">&#x1F451;</span><span>More</span>
-      </button>
-    </nav>
+          <!-- Fixed Bottom Rounded Composer -->
+          <div class="composer-dock">
+            <div class="composer-inner glass-panel">
+              <!-- Image Attachment Previews -->
+              <div class="attachment-preview-strip hidden" id="attachmentPreviewStrip"></div>
+
+              <form class="composer-form" id="chatForm">
+                <input
+                  type="file"
+                  id="imageUploadInput"
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  multiple
+                  class="hidden"
+                />
+                <button
+                  type="button"
+                  class="composer-attach-btn"
+                  id="btnAttachImage"
+                  title="Upload image (PNG, JPG, WebP, GIF)"
+                  aria-label="Upload image attachment"
+                >
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="3" width="18" height="18" rx="4"/>
+                    <circle cx="8.5" cy="8.5" r="1.5"/>
+                    <path d="M21 15l-5-5L5 21"/>
+                  </svg>
+                </button>
+
+                <textarea
+                  id="chatInput"
+                  rows="1"
+                  placeholder="Ask INFFOLER AI anything or upload an image…"
+                  aria-label="Message INFFOLER AI"
+                ></textarea>
+
+                <button
+                  type="submit"
+                  class="composer-send-btn"
+                  id="chatSendBtn"
+                  aria-label="Send message"
+                >
+                  <span id="sendBtnIcon">&#x27A4;</span>
+                </button>
+              </form>
+              <div class="composer-footnote">
+                <span>INFFOLER AI 2.0 &middot; Gemini Multimodal &middot; Made with &hearts; by Alankrit Pathak</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- VIEW 2: HOME HUB -->
+        <section class="view" id="view-home">
+          <div class="content-container">
+            <article class="glass-panel hero-welcome-card">
+              <div class="hero-welcome-top">
+                <div class="avatar-ring" data-nav="creator" role="button" tabindex="0" aria-label="Open Creator Profile">
+                  <img src="./assets/creator_avatar.png" alt="Alankrit Pathak" class="creator-avatar" />
+                  <span class="verified-pill" title="Verified Founder">&#x2713;</span>
+                </div>
+                <div class="founder-meta">
+                  <div class="founder-title-row">
+                    <div>
+                      <h1 class="founder-name">ALANKRIT PATHAK <span class="verified-inline">&#x2713;</span></h1>
+                      <p class="founder-role">Founder &amp; Creator of INFFOLER AI</p>
+                    </div>
+                    <button type="button" class="outline-pill-btn" data-nav="creator">About Creator &rarr;</button>
+                  </div>
+                  <p class="founder-quote">&ldquo;Building ideas into intelligent experiences.&rdquo;</p>
+                  <div class="founder-controls">
+                    <button type="button" class="ig-dropdown-btn" id="btnToggleSixAccounts" aria-expanded="false">
+                      <span class="ig-mini-glyph"></span>
+                      <span>6 Instagram Accounts</span>
+                      <span id="sixAccountsChevron">&#x25BE;</span>
+                    </button>
+                    <a href="https://github.com/xalan-aesthetic/INFFOLER-AI" target="_blank" rel="noopener noreferrer" class="ig-dropdown-btn">
+                      <span>GitHub &#x2197;</span>
+                    </a>
+                  </div>
+                </div>
+              </div>
+              <div class="expanded-accounts hidden" id="expandedSixAccounts"></div>
+            </article>
+
+            <div class="hero-banner" data-nav="core" role="button" tabindex="0" aria-label="Open Core AI Brain">
+              <img src="./assets/hero_dream_banner.png" alt="Dream Bigger with INFFOLER AI" />
+              <div class="hero-banner-fade"></div>
+              <div class="hero-banner-caption">
+                <span class="badge-chip cyan">INFFOLER AI 2.0</span>
+                <h2>Your Intelligence. Your Assistant. Your Future.</h2>
+              </div>
+            </div>
+
+            <article class="glass-panel ask-card">
+              <div class="ask-header">
+                <div class="ask-title-group">
+                  <div class="sparkle-badge">&#x2728;</div>
+                  <div>
+                    <h3>Quick Launch Prompt</h3>
+                    <p>Start an intelligent conversation or multimodal vision analysis</p>
+                  </div>
+                </div>
+              </div>
+              <form class="prompt-pill-form" id="homePromptForm">
+                <span class="prompt-leading">&#x2728;</span>
+                <input type="text" id="homePromptInput" placeholder="Ask INFFOLER AI anything…" autocomplete="off" />
+                <button type="submit" class="prompt-send-btn" aria-label="Send prompt">&#x27A4;</button>
+              </form>
+              <div class="chip-row">
+                <button type="button" class="suggestion-chip" id="chipGiveIdeas">&#x1F4A1; Futuristic project ideas</button>
+                <button type="button" class="suggestion-chip" data-nav="explore">&#x1F680; Explore capabilities</button>
+                <button type="button" class="suggestion-chip" id="chipRandomWhatIf">&#x1F3B2; Random What If</button>
+              </div>
+            </article>
+
+            <div class="feature-grid">
+              <button type="button" class="glass-panel feature-tile" data-nav="chat">
+                <div class="tile-icon purple">&#x1F4AC;</div>
+                <div class="tile-copy">
+                  <strong>AI Chat 2.0</strong>
+                  <span>Markdown, Code &amp; Vision</span>
+                </div>
+                <span class="tile-arrow blue-bg">&rarr;</span>
+              </button>
+              <button type="button" class="glass-panel feature-tile" data-nav="core">
+                <div class="tile-icon cyan">&#x1F9E0;</div>
+                <div class="tile-copy">
+                  <strong>Core Brain</strong>
+                  <span>3D Holographic Core</span>
+                </div>
+                <span class="tile-arrow cyan-bg">&rarr;</span>
+              </button>
+              <button type="button" class="glass-panel feature-tile" data-nav="whatif">
+                <div class="tile-icon violet">&#x269B;</div>
+                <div class="tile-copy">
+                  <strong>WHAT IF Lab</strong>
+                  <span>6-Stage Timeline Engine</span>
+                </div>
+                <span class="tile-arrow blue-bg">&rarr;</span>
+              </button>
+              <button type="button" class="glass-panel feature-tile" data-nav="explore">
+                <div class="tile-icon blue">&#x1F9ED;</div>
+                <div class="tile-copy">
+                  <strong>Explore</strong>
+                  <span>Curated Intelligence</span>
+                </div>
+                <span class="tile-arrow blue-bg">&rarr;</span>
+              </button>
+            </div>
+
+            <article class="glass-panel connect-card">
+              <div class="connect-head">
+                <div class="ig-gradient-square"><span class="ig-white-glyph"></span></div>
+                <div>
+                  <h3>CONNECT WITH ALANKRIT</h3>
+                  <p>Follow for updates, edits &amp; AI releases</p>
+                </div>
+              </div>
+              <div class="ig-orb-grid" id="homeIgGrid"></div>
+              <button type="button" class="gradient-cta-btn" id="btnOpenAllIg">
+                <span>Open All 6 Instagram Profiles &rarr;</span>
+              </button>
+            </article>
+
+            <div class="global-footer-slot"></div>
+          </div>
+        </section>
+
+        <!-- VIEW 3: CORE AI 3D HOLOGRAPHIC BRAIN -->
+        <section class="view" id="view-core">
+          <div class="content-container">
+            <div class="core-top-bar">
+              <div class="status-pill"><span class="status-dot"></span> <span id="coreStatusText">AI CORE: ACTIVE</span></div>
+              <button type="button" class="outline-pill-btn" data-nav="creator">FOUNDER: ALANKRIT PATHAK</button>
+            </div>
+
+            <div class="core-stage glass-panel">
+              <div class="brain-canvas-wrap" id="brainTapTarget" role="button" tabindex="0" aria-label="Tap holographic AI brain to launch chat">
+                <canvas id="brainCanvas"></canvas>
+              </div>
+              <p class="tap-hint" id="coreTapHint">TAP BRAIN TO ACTIVATE CHAT</p>
+              <h2 class="hero-headline">YOUR IMAGINATION STARTS HERE</h2>
+              <p class="hero-sub">Ask anything. Upload images. Explore everything.</p>
+              <button type="button" class="gradient-cta-btn core-activate-btn" id="btnActivateCore">&#x26A1; LAUNCH AI CHAT</button>
+            </div>
+
+            <div class="global-footer-slot"></div>
+          </div>
+        </section>
+
+        <!-- VIEW 4: WHAT IF SIMULATOR -->
+        <section class="view" id="view-whatif">
+          <div class="content-container">
+            <article class="glass-panel section-card">
+              <div class="section-head">
+                <span class="badge-chip cyan">HYPOTHETICAL ENGINE</span>
+                <h2>WHAT IF SIMULATOR</h2>
+                <p>Explore structured 6-stage cascading possibilities for any hypothetical scenario. Signed-in users sync simulations to the cloud.</p>
+              </div>
+              <form class="whatif-form" id="whatIfForm">
+                <textarea id="whatIfInput" rows="2" placeholder="What if Earth's rotation slowed down by 50%?" aria-label="What if scenario"></textarea>
+                <div class="whatif-actions">
+                  <button type="button" class="suggestion-chip" id="btnRandomWhatIfFill">&#x1F3B2; Random Scenario</button>
+                  <button type="submit" class="gradient-cta-btn small" id="btnRunWhatIf">RUN SIMULATION</button>
+                </div>
+              </form>
+              <div id="whatIfResultArea" class="whatif-results"></div>
+            </article>
+
+            <article class="glass-panel section-card" id="savedSimsCard">
+              <div class="section-head">
+                <span class="badge-chip purple">SIMULATION ARCHIVE</span>
+                <h3>RECENT WHAT IF RUNS</h3>
+              </div>
+              <div id="simulationsArchiveList" class="sim-archive-list"></div>
+            </article>
+
+            <div class="global-footer-slot"></div>
+          </div>
+        </section>
+
+        <!-- VIEW 5: EXPLORE CAPABILITIES -->
+        <section class="view" id="view-explore">
+          <div class="content-container">
+            <article class="glass-panel section-card">
+              <div class="section-head">
+                <span class="badge-chip purple">INTELLIGENCE MODULES</span>
+                <h2>EXPLORE CAPABILITIES</h2>
+                <p>Tap any capability to launch a live AI session or multimodal vision prompt.</p>
+              </div>
+              <div class="explore-grid" id="exploreGrid"></div>
+            </article>
+
+            <div class="global-footer-slot"></div>
+          </div>
+        </section>
+
+        <!-- VIEW 6: CREATOR PROFILE & ABOUT -->
+        <section class="view" id="view-creator">
+          <div class="content-container">
+            <article class="glass-panel creator-hero-card">
+              <span class="badge-chip teal">&#x2713; OFFICIAL CREATOR IDENTITY</span>
+              <div class="creator-hero-avatar-wrap">
+                <div class="creator-hero-halo"></div>
+                <img src="./assets/creator_avatar.png" alt="Alankrit Pathak" class="creator-hero-avatar" />
+              </div>
+              <h2>ALANKRIT PATHAK</h2>
+              <p class="creator-hero-role">Founder &amp; Creator of INFFOLER AI</p>
+              <p class="creator-hero-quote">&ldquo;Building ideas into intelligent experiences.&rdquo;</p>
+              <p class="creator-hero-sub">INFFOLER AI &middot; Made with &hearts; by Alankrit Pathak</p>
+
+              <div class="creator-cta-row">
+                <button type="button" class="gradient-cta-btn small" id="btnAskAboutCreator">&#x1F4AC; Ask AI About Creator</button>
+                <button type="button" class="outline-pill-btn" data-nav="whatif">&#x269B; WHAT IF Lab</button>
+              </div>
+
+              <a href="https://github.com/xalan-aesthetic/INFFOLER-AI" target="_blank" rel="noopener noreferrer" class="github-cta-btn">
+                <span class="gh-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                    <path d="M12 1.5A10.5 10.5 0 0 0 8.68 21.96c.53.1.72-.23.72-.5v-1.78c-2.92.63-3.54-1.41-3.54-1.41-.48-1.22-1.17-1.54-1.17-1.54-.96-.66.07-.65.07-.65 1.06.08 1.62 1.09 1.62 1.09.94 1.62 2.48 1.15 3.08.88.1-.68.37-1.15.67-1.41-2.33-.27-4.78-1.17-4.78-5.18 0-1.15.41-2.08 1.08-2.81-.11-.27-.47-1.34.1-2.78 0 0 .88-.28 2.89 1.07a10.1 10.1 0 0 1 5.26 0c2-1.35 2.88-1.07 2.88-1.07.57 1.44.21 2.51.1 2.78.68.73 1.08 1.66 1.08 2.81 0 4.02-2.46 4.91-4.8 5.17.38.33.72.97.72 1.96v2.9c0 .28.19.61.73.5A10.5 10.5 0 0 0 12 1.5Z"/>
+                  </svg>
+                </span>
+                <span>View on GitHub</span>
+                <span>&#x2197;</span>
+              </a>
+            </article>
+
+            <div class="creator-info-grid">
+              <article class="glass-panel section-card">
+                <span class="badge-chip purple">ABOUT ALANKRIT</span>
+                <p class="body-copy">
+                  I am Alankrit Pathak &mdash; Founder &amp; Creator of INFFOLER AI. Building ideas into intelligence,
+                  crafting modern, accessible, interactive AI products designed with Google AI Studio.
+                </p>
+              </article>
+
+              <article class="glass-panel section-card">
+                <span class="badge-chip cyan">ABOUT INFFOLER AI 2.0</span>
+                <p class="body-copy">
+                  INFFOLER AI 2.0 delivers multimodal Gemini conversations, Markdown &amp; syntax-highlighted code blocks,
+                  image analysis, personal cloud-synced chat history, Google &amp; Email authentication, and the 6-phase WHAT IF simulator.
+                </p>
+              </article>
+
+              <article class="glass-panel section-card">
+                <span class="badge-chip purple">VISION</span>
+                <ul class="bullet-list">
+                  <li>Answer complex questions with clarity and precision.</li>
+                  <li>Accelerate learning, coding, and visual understanding.</li>
+                  <li>Spark creativity through hypothetical timeline simulations.</li>
+                  <li>Deliver a fast, futuristic AI workspace across mobile and desktop.</li>
+                </ul>
+              </article>
+
+              <article class="glass-panel section-card">
+                <span class="badge-chip teal">ARCHITECTURE</span>
+                <ul class="bullet-list">
+                  <li>Google Gemini API via hardened Cloudflare Worker Secrets proxy</li>
+                  <li>Firebase Authentication (Google OAuth + Email/Password)</li>
+                  <li>Cloud Firestore personal per-user real-time chat sync</li>
+                  <li>Native Kotlin Jetpack Compose Android app + GitHub Pages Web UI</li>
+                </ul>
+              </article>
+            </div>
+
+            <article class="glass-panel section-card">
+              <div class="section-head">
+                <span class="badge-chip purple">6 OFFICIAL PROFILES</span>
+                <h3>CONNECT WITH ALANKRIT</h3>
+              </div>
+              <div class="creator-ig-list" id="creatorIgList"></div>
+            </article>
+
+            <div class="global-footer-slot"></div>
+          </div>
+        </section>
+      </main>
+    </div>
   </div>
 
-  <!-- Modal: Public AI Proxy Status & Web Controls -->
+  <!-- MODAL 1: USER PROFILE, ACCOUNT SETTINGS & APP SETTINGS -->
   <div class="modal-backdrop hidden" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsModalTitle">
-    <div class="glass-card modal-card">
+    <div class="glass-panel modal-card">
       <div class="modal-head">
-        <h3 id="settingsModalTitle">INFFOLER AI &middot; Proxy &amp; Web Status</h3>
-        <button class="circle-icon-btn small" id="closeSettingsModal" aria-label="Close">&times;</button>
+        <h3 id="settingsModalTitle">Profile &amp; Settings</h3>
+        <button type="button" class="circle-icon-btn small" id="closeSettingsModal" aria-label="Close settings">&times;</button>
       </div>
-      <span class="badge-chip cyan">PUBLIC ZERO-KEY ACCESS</span>
-      <p class="modal-desc" id="proxyStatusSummary">
-        Checking public Cloudflare Worker proxy connection&hellip;
-      </p>
 
-      <div class="phase-card">
-        <h4>SECURITY &amp; USAGE PROTECTION</h4>
-        <p>
-          Visitors never enter an API key. Requests route through a hardened Cloudflare Worker where
-          <code>GEMINI_API_KEY</code> is stored strictly as a server-side secret, with CORS restricted to
-          <code>xalan-aesthetic.github.io</code> and per-IP rate limits (15 req/min &middot; 120 req/day).
-        </p>
+      <!-- Profile Overview -->
+      <div id="accountSignedInBlock">
+        <div class="profile-summary-banner">
+          <div class="user-avatar-wrap large" id="modalUserAvatar"><span>AI</span></div>
+          <div>
+            <strong id="modalUserName">User</strong>
+            <p id="modalUserEmail" class="modal-desc"></p>
+            <div id="modalProviderBadges" class="provider-badges"></div>
+          </div>
+        </div>
+
+        <form id="profileUpdateForm" class="auth-form">
+          <label class="field-label" for="profileDisplayNameInput">Display Name</label>
+          <input type="text" id="profileDisplayNameInput" class="modal-input" maxlength="80" required />
+
+          <label class="field-label" for="profilePhotoUrlInput">Profile Picture URL (HTTPS)</label>
+          <input type="url" id="profilePhotoUrlInput" class="modal-input" maxlength="600" placeholder="https://..." />
+
+          <div class="modal-actions">
+            <button type="submit" class="gradient-cta-btn small" id="btnSaveProfile">Save Profile</button>
+            <button type="button" class="outline-pill-btn" id="btnModalSignOut">Log Out</button>
+          </div>
+        </form>
+
+        <hr class="modal-divider" />
+        <div class="phase-card">
+          <h4>ACCOUNT LINKING &amp; SECURITY</h4>
+          <p class="modal-desc">Link Google or Email/Password sign-in to the same account, or trigger a password reset.</p>
+          <div class="modal-actions" style="margin-top:8px;">
+            <button type="button" class="icon-chip-btn" id="btnLinkGoogle">Link Google Account</button>
+            <button type="button" class="icon-chip-btn" id="btnSendMyReset">Password Reset Email</button>
+          </div>
+          <form id="linkPasswordForm" class="auth-form hidden" style="margin-top:10px;">
+            <label class="field-label" for="linkNewPassword">Set Password for Email Login (Optional)</label>
+            <input type="password" id="linkNewPassword" class="modal-input" minlength="6" placeholder="Min 6 characters" />
+            <button type="submit" class="icon-chip-btn">Link Email &amp; Password</button>
+          </form>
+        </div>
+
+        <hr class="modal-divider" />
+        <div class="phase-card danger-zone">
+          <h4>DANGER ZONE</h4>
+          <p class="modal-desc">Permanently delete your INFFOLER AI account and all personal cloud chat history.</p>
+          <button type="button" class="icon-chip-btn danger" id="btnDeleteAccount" style="margin-top:8px;">Delete My Account</button>
+        </div>
       </div>
 
       <hr class="modal-divider" />
-      <div class="modal-actions">
-        <button type="button" class="icon-chip-btn" id="btnModalClearCache">Clear Web Cache</button>
-        <button type="button" class="icon-chip-btn danger" id="btnModalClearHistory">Clear Local History</button>
-        <a href="https://github.com/xalan-aesthetic/INFFOLER-AI" target="_blank" rel="noopener noreferrer" class="icon-chip-btn">GitHub Repo &#x2197;</a>
+      <div class="phase-card">
+        <h4>PROXY, THEME &amp; CACHE</h4>
+        <p class="modal-desc" id="proxyStatusSummary">
+          Protected Worker <code>https://inffoler-ai-proxy.xalanvetrnen.workers.dev</code> (Firebase ID token verified).
+        </p>
+        <div class="modal-actions" style="margin-top:8px;">
+          <button type="button" class="icon-chip-btn" id="btnThemeToggleModal">Switch Theme</button>
+          <button type="button" class="icon-chip-btn" id="btnModalClearCache">Clear Web Cache</button>
+          <a href="https://github.com/xalan-aesthetic/INFFOLER-AI" target="_blank" rel="noopener noreferrer" class="icon-chip-btn">GitHub Repo &#x2197;</a>
+        </div>
       </div>
     </div>
   </div>
 
-  <!-- Modal: All 6 Instagram Profiles -->
+  <!-- MODAL 3: RENAME CHAT -->
+  <div class="modal-backdrop hidden" id="renameModal" role="dialog" aria-modal="true" aria-labelledby="renameModalTitle">
+    <div class="glass-panel modal-card small-modal">
+      <div class="modal-head">
+        <h3 id="renameModalTitle">Rename Conversation</h3>
+        <button type="button" class="circle-icon-btn small" id="closeRenameModal" aria-label="Close">&times;</button>
+      </div>
+      <form id="renameChatForm" class="auth-form">
+        <label class="field-label" for="renameChatInput">Conversation Title</label>
+        <input type="text" id="renameChatInput" class="modal-input" maxlength="120" required />
+        <div class="modal-actions">
+          <button type="submit" class="gradient-cta-btn small">Save Title</button>
+          <button type="button" class="outline-pill-btn" id="btnCancelRename">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL 4: ALL 6 INSTAGRAM PROFILES -->
   <div class="modal-backdrop hidden" id="igModal" role="dialog" aria-modal="true" aria-labelledby="igModalTitle">
-    <div class="glass-card modal-card">
+    <div class="glass-panel modal-card">
       <div class="modal-head">
         <h3 id="igModalTitle">CONNECT WITH ALANKRIT</h3>
-        <button class="circle-icon-btn small" id="closeIgModal" aria-label="Close">&times;</button>
+        <button type="button" class="circle-icon-btn small" id="closeIgModal" aria-label="Close">&times;</button>
       </div>
       <p class="modal-desc">Tap any of Alankrit Pathak&rsquo;s 6 official Instagram profiles below:</p>
       <div class="creator-ig-list" id="modalIgList"></div>
     </div>
   </div>
 
+  <!-- MODAL 5: IMAGE LIGHTBOX -->
+  <div class="modal-backdrop hidden" id="imageLightbox" role="dialog" aria-modal="true" aria-label="Image preview">
+    <div class="lightbox-card">
+      <button type="button" class="circle-icon-btn" id="closeLightbox" aria-label="Close image preview">&times;</button>
+      <img id="lightboxImg" src="" alt="Full attachment preview" />
+    </div>
+  </div>
+
   <div class="toast hidden" id="toastBanner" role="status" aria-live="polite"></div>
 
-  <script src="./app.js"></script>
+  <script type="module" src="./app.js"></script>
 </body>
 </html>

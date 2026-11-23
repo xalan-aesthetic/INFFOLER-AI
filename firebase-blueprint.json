@@ -1,0 +1,105 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private user account profile and UI preferences.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Firebase Auth UID of the owner." },
+        "displayName": { "type": "string", "description": "User display name (1..80 chars)." },
+        "email": { "type": "string", "description": "User email address (optional)." },
+        "photoURL": { "type": "string", "description": "Profile picture URL (optional)." },
+        "theme": { "type": "string", "enum": ["dark", "light"], "description": "Preferred color theme." },
+        "preferredModel": {
+          "type": "string",
+          "enum": ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-4-argon"],
+          "description": "Preferred Gemini model."
+        },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp on creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp on update." }
+      },
+      "required": ["userId", "displayName", "createdAt", "updatedAt"]
+    },
+    "ChatConversation": {
+      "title": "ChatConversation",
+      "description": "A personal AI conversation belonging to a user.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner Firebase Auth UID." },
+        "title": { "type": "string", "description": "Conversation title (1..120 chars)." },
+        "modelId": {
+          "type": "string",
+          "enum": ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-4-argon"],
+          "description": "Model ID used in conversation."
+        },
+        "isSaved": { "type": "boolean", "description": "Whether the conversation is bookmarked/saved." },
+        "messageCount": { "type": "integer", "description": "Total number of messages in the thread." },
+        "lastMessagePreview": { "type": "string", "description": "Short preview of the latest message (<= 240 chars)." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp on creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp on update." }
+      },
+      "required": ["userId", "title", "modelId", "isSaved", "messageCount", "lastMessagePreview", "createdAt", "updatedAt"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "An individual user or model message inside a conversation.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner Firebase Auth UID." },
+        "role": { "type": "string", "enum": ["user", "model"], "description": "Message sender role." },
+        "text": { "type": "string", "description": "Message body (<= 32000 chars)." },
+        "modelId": { "type": "string", "description": "Model ID that generated this turn (optional)." },
+        "hasImage": { "type": "boolean", "description": "Whether the turn included an image attachment (optional)." },
+        "imageName": { "type": "string", "description": "Attached image filename (optional)." },
+        "feedback": { "type": "string", "enum": ["none", "up", "down"], "description": "User rating feedback." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp on creation." }
+      },
+      "required": ["userId", "role", "text", "feedback", "createdAt"]
+    },
+    "WhatIfSimulation": {
+      "title": "WhatIfSimulation",
+      "description": "Saved 6-phase WHAT IF simulation owned by a user.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner Firebase Auth UID." },
+        "question": { "type": "string", "description": "Hypothetical prompt (1..600 chars)." },
+        "initialScenario": { "type": "string" },
+        "immediateConsequences": { "type": "string" },
+        "shortTermPossibilities": { "type": "string" },
+        "longTermPossibilities": { "type": "string" },
+        "alternativeOutcomes": { "type": "string" },
+        "factsVsSpeculation": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp on creation." }
+      },
+      "required": [
+        "userId",
+        "question",
+        "initialScenario",
+        "immediateConsequences",
+        "shortTermPossibilities",
+        "longTermPossibilities",
+        "alternativeOutcomes",
+        "factsVsSpeculation",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User account profile & preferences (owner-only read/write)."
+    },
+    "/users/{userId}/chats/{chatId}": {
+      "schema": { "$ref": "#/entities/ChatConversation" },
+      "description": "Personal AI conversations owned by the user."
+    },
+    "/users/{userId}/chats/{chatId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Individual messages inside a user conversation."
+    },
+    "/users/{userId}/simulations/{simId}": {
+      "schema": { "$ref": "#/entities/WhatIfSimulation" },
+      "description": "Saved 6-phase WHAT IF simulator runs owned by the user."
+    }
+  }
+}

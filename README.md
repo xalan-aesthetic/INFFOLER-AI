@@ -19,35 +19,29 @@ To create a powerful, intelligent, and user-friendly AI assistant that helps peo
 
 ## Technology
 
-- **Google AI Studio** & **Gemini** AI-powered language models (via Firebase AI Logic on Android with App Check, automatic exponential backoff retries, and model fallback).
-- **Android Native App**: Kotlin, Jetpack Compose, Material 3, Room local persistence, custom 3D Canvas Holographic Brain.
-- **Web Companion (`docs/`)**: Responsive HTML5 Canvas 3D neural brain, AI Chat, 6-phase WHAT IF simulator, Explore, local History, Creator Profile, and automated GitHub Actions deployment.
-- **GitHub**: Project development, CI/CD workflow (`.github/workflows/deploy-pages.yml`), and GitHub Pages hosting.
+- **Google Gemini API** via hardened Cloudflare Worker Secrets proxy (`https://inffoler-ai-proxy.xalanvetrnen.workers.dev`, `gemini-3.8-flash` default + fallback chain + multimodal image upload).
+- **Firebase Authentication & Cloud Firestore**: Google Sign-In, Email/Password auth, password reset, account linking, account deletion, and per-user real-time chat & WHAT IF sync (`firestore.rules`).
+- **Web Companion (`docs/`)**: INFFOLER AI 2.0 futuristic dark/light glassmorphic UI, animated holographic brain, Markdown + syntax highlighting, image previews, slide-out sidebar, and Creator Profile.
+- **Android Native App (`app/`)**: Kotlin, Jetpack Compose, Material 3, Firebase AI Logic + App Check, Room local persistence.
+- **GitHub**: Project development, CI/CD workflow (`.github/workflows/deploy-pages.yml`), and GitHub Pages hosting (`https://xalan-aesthetic.github.io/INFFOLER-AI/`).
 
 ---
 
 ## Repository Structure
 
 - `app/` — Native Android application source code (Kotlin, Jetpack Compose, Firebase AI Logic, Room)
-- `docs/` — Production static web interface for GitHub Pages (`https://xalan-aesthetic.github.io/INFFOLER-AI/`)
+- `docs/` — Production static INFFOLER AI 2.0 web interface (`index.html`, `styles.css`, `app.js`, `markdown.js`, `firebase-client.js`)
+- `web-proxy/cloudflare-worker.js` — Hardened multimodal Gemini proxy (`GEMINI_API_KEY` stored only in Cloudflare Worker Secrets)
+- `firestore.rules`, `firebase-blueprint.json`, `firestore.test.js` — Verified zero-trust Firestore security rules & emulator test suite
 - `.github/workflows/deploy-pages.yml` — Automatic GitHub Pages deployment workflow on push to `main`
-- `web-proxy/cloudflare-worker.js` — Hardened serverless Gemini proxy so visitors never enter an API key and `GEMINI_API_KEY` remains a server-side Cloudflare Worker secret
 
-## Enabling GitHub Pages (`https://xalan-aesthetic.github.io/INFFOLER-AI/`)
+## Deployment Checklist
 
-1. Open your GitHub repository: `https://github.com/xalan-aesthetic/INFFOLER-AI`
-2. Go to **Settings → Pages**.
-3. Under **Build and deployment → Source**, choose **GitHub Actions** (or **Deploy from a branch → `main` → `/docs`**).
-4. Push to `main` (or trigger **Actions → Deploy INFFOLER AI to GitHub Pages → Run workflow**).
-
-## Connecting the Public Zero-Key AI Proxy
-
-1. Deploy `web-proxy/cloudflare-worker.js` as a Cloudflare Worker at `https://dash.cloudflare.com`.
-2. Add `GEMINI_API_KEY` under **Worker → Settings → Variables and Secrets** as a **Secret** (never plaintext).
-3. Verify your Worker health check at `https://<your-worker>.workers.dev/health` confirms `"ok": true` and `"secretConfigured": true`.
-4. Set `PUBLIC_PROXY_URL` at the top of `docs/app.js` to your live `https://<your-worker>.workers.dev` URL and push to `main`.
-
-> **Security Protections:** CORS restricted to `https://xalan-aesthetic.github.io`, model allow-list (`gemini-3.8-flash`, `gemini-3.5-flash-lite`, `gemini-4-argon`), 48 KB / 24-turn payload validation, `maxOutputTokens: 2048` cap, and per-IP rate limits (15 requests/minute, 120 requests/day).
+1. **Cloudflare Worker (`web-proxy/cloudflare-worker.js`)**: Update your Worker code at `https://dash.cloudflare.com` so multimodal image uploads (`inlineData`) and `4096` max tokens are live, keeping `GEMINI_API_KEY` as a Worker **Secret**.
+2. **Firebase Console (`gen-lang-client-0028400465`)**:
+   - Under **Authentication → Sign-in method**, ensure **Google** and **Email/Password** are enabled.
+   - Under **Authentication → Settings → Authorized domains**, add `xalan-aesthetic.github.io`.
+3. **GitHub Pages (`https://xalan-aesthetic.github.io/INFFOLER-AI/`)**: Push to `main` and confirm **Actions → Deploy INFFOLER AI to GitHub Pages** succeeds.
 
 ---
 
