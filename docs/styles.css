@@ -2442,12 +2442,26 @@ body {
 }
 
 .auth-gate-security-note {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   text-align: center;
   font-family: var(--font-mono);
   font-size: 0.67rem;
   color: var(--text-muted);
-  padding-top: 4px;
+  padding-top: 6px;
   border-top: 1px solid var(--border-subtle);
+}
+
+.auth-config-diagnostic {
+  font-size: 0.63rem;
+  line-height: 1.35;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+
+.auth-config-diagnostic.warn {
+  color: var(--error);
 }
 
 .auth-gate-footer {

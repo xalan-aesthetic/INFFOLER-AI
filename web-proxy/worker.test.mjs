@@ -485,6 +485,18 @@ test("End-to-end login flow: UI screen, Google & Email Sign-In/Sign-Up, redirect
     configurable: true,
   });
   globalThis.fetch = async (url, init = {}) => {
+    if (String(url).startsWith("https://www.googleapis.com/identitytoolkit/v3/relyingparty/getProjectConfig")) {
+      return new Response(
+        JSON.stringify({
+          projectId: "906302425564",
+          authorizedDomains: [
+            "gen-lang-client-0028400465.firebaseapp.com",
+            "xalan-aesthetic.github.io",
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
     if (String(url).startsWith("https://inffoler-ai-proxy.xalanvetrnen.workers.dev")) {
       return handleRequest(
         new Request(url, init),
@@ -594,7 +606,14 @@ test("End-to-end login flow: UI screen, Google & Email Sign-In/Sign-Up, redirect
     `;
 
     const mockFirebaseApp = `
-      export function initializeApp(cfg) { return { cfg }; }
+      const apps = [];
+      export function getApps() { return apps; }
+      export function getApp() { return apps[0]; }
+      export function initializeApp(cfg) {
+        const app = { cfg };
+        apps.push(app);
+        return app;
+      }
     `;
 
     const mockFirebaseFirestore = `
@@ -631,9 +650,15 @@ test("End-to-end login flow: UI screen, Google & Email Sign-In/Sign-Up, redirect
       .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js", "./firebase-firestore.js");
     fs.writeFileSync(path.join(tmpDir, "app.js"), patchedAppJs);
 
+    const { getApps } = await import(pathToFileURL(path.join(tmpDir, "firebase-app.js")).href);
     const { __state: authState } = await import(pathToFileURL(path.join(tmpDir, "firebase-auth.js")).href);
     await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
     await new Promise(r => setTimeout(r, 20));
+
+    assert.equal(getApps().length, 1, "Firebase App must initialize exactly once");
+    assert.equal(getApps()[0].cfg.projectId, PROJECT_ID);
+    assert.equal(getApps()[0].cfg.authDomain, `${PROJECT_ID}.firebaseapp.com`);
+    assert.match(document.getElementById("authConfigDiagnostic").textContent, /xalan-aesthetic\.github\.io/);
 
     // 1. Before login: Auth Gate MUST be visible, App Shell MUST be hidden & inert
     const gate = document.getElementById("authGateScreen");

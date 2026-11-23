@@ -12,7 +12,7 @@
  * - Startup Holographic Brain splash, Ambient Particle Canvas & 3D Brain Canvas
  */
 
-import { initializeApp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js";
+import { initializeApp, getApps, getApp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js";
 import {
   getAuth,
   GoogleAuthProvider,
@@ -60,22 +60,77 @@ const FIREBASE_PROJECT_ID = "gen-lang-client-0028400465";
 const FIRESTORE_DATABASE_ID = "ai-studio-android-projectw-eed495cb-c9e0-4272-91d8-f6c4d2255e49";
 
 // Public Firebase client configuration (Gemini API keys NEVER live here)
+// All project fields MUST belong to the exact same Firebase project checked by the Worker.
 const firebaseConfig = {
   apiKey: "AIzaSyAarUM20LCySBwCiY9wqu6me8ernkHeM2A",
-  authDomain: "gen-lang-client-0028400465.firebaseapp.com",
+  authDomain: `${FIREBASE_PROJECT_ID}.firebaseapp.com`,
   projectId: FIREBASE_PROJECT_ID,
-  storageBucket: "gen-lang-client-0028400465.firebasestorage.app",
+  storageBucket: `${FIREBASE_PROJECT_ID}.firebasestorage.app`,
   messagingSenderId: "906302425564",
   appId: "1:906302425564:web:e4b8a7c2d1f09876543210",
 };
 
-const firebaseApp = initializeApp(firebaseConfig);
+function validateFirebaseConfigConsistency(cfg) {
+  if (!cfg?.apiKey || !cfg?.projectId || !cfg?.authDomain) {
+    throw new Error("Incomplete Firebase client configuration.");
+  }
+  const expectedAuthDomain = `${cfg.projectId}.firebaseapp.com`;
+  const authHost = cfg.authDomain.split(".")[0];
+  if (authHost !== cfg.projectId && !cfg.authDomain.endsWith(expectedAuthDomain)) {
+    throw new Error(`Firebase config mismatch: authDomain (${cfg.authDomain}) does not match projectId (${cfg.projectId}).`);
+  }
+}
+
+validateFirebaseConfigConsistency(firebaseConfig);
+
+// Single-instance initialization guard: never create duplicate Firebase App or Auth instances
+const firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
 const auth = getAuth(firebaseApp);
 const db = getFirestore(firebaseApp, FIRESTORE_DATABASE_ID);
 
 const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: "select_account" });
 const persistenceReady = setPersistence(auth, browserLocalPersistence).catch(() => {});
+
+let liveAuthDomainCheck = null;
+
+async function verifyAuthorizedDomainForHostname() {
+  const host = typeof window !== "undefined" ? window.location?.hostname || "" : "";
+  const diagEl = typeof document !== "undefined" ? document.getElementById("authConfigDiagnostic") : null;
+  if (diagEl && host) {
+    diagEl.textContent = `Project: ${firebaseConfig.projectId} · Host: ${host}`;
+  }
+  if (!host || typeof fetch !== "function") return null;
+
+  try {
+    const res = await fetch(
+      `https://www.googleapis.com/identitytoolkit/v3/relyingparty/getProjectConfig?key=${encodeURIComponent(firebaseConfig.apiKey)}`
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const authorized = Array.isArray(data?.authorizedDomains) ? data.authorizedDomains : [];
+    const hostAllowed = authorized.includes(host);
+    liveAuthDomainCheck = {
+      host,
+      projectId: firebaseConfig.projectId,
+      projectNumber: data?.projectId || firebaseConfig.messagingSenderId,
+      authorizedDomains: authorized,
+      hostAllowed,
+    };
+    if (diagEl) {
+      if (hostAllowed) {
+        diagEl.classList.remove("warn");
+        diagEl.textContent = `Project ${firebaseConfig.projectId} · Domain '${host}' verified`;
+      } else {
+        diagEl.classList.add("warn");
+        diagEl.textContent = `Active project ${firebaseConfig.projectId} (#${liveAuthDomainCheck.projectNumber}) does not list '${host}' in Firebase Authorized domains yet.`;
+      }
+    }
+    return liveAuthDomainCheck;
+  } catch {
+    return null;
+  }
+}
 
 const STORAGE_THEME = "inffoler_v2_theme";
 
@@ -369,15 +424,21 @@ function normalizeModel(modelId) {
 
 function mapFirebaseError(err) {
   const code = err?.code || "";
+  const host = typeof window !== "undefined" ? window.location?.hostname || "" : "";
   switch (code) {
     case "auth/popup-closed-by-user":
       return "Google sign-in popup was closed before completing.";
     case "auth/cancelled-popup-request":
       return "Another sign-in popup was opened. Please try again.";
-    case "auth/unauthorized-domain":
-      return `Domain '${window.location.hostname}' must be added under Firebase Console → Authentication → Settings → Authorized domains.`;
+    case "auth/unauthorized-domain": {
+      const domainsText = liveAuthDomainCheck?.authorizedDomains?.length
+        ? ` Live authorized domains on this project: ${liveAuthDomainCheck.authorizedDomains.join(", ")}.`
+        : "";
+      return `Domain '${host}' is not authorized on Firebase project '${firebaseConfig.projectId}' (project #${firebaseConfig.messagingSenderId}, authDomain '${firebaseConfig.authDomain}'). If you added '${host}' to a different Firebase project, update firebaseConfig in docs/app.js and FIREBASE_PROJECT_ID in web-proxy/cloudflare-worker.js to match that project.${domainsText}`;
+    }
     case "auth/operation-not-allowed":
-      return "Enable this sign-in provider under Firebase Console → Authentication → Sign-in method.";
+    case "auth/admin-restricted-operation":
+      return `This sign-in provider is currently disabled on Firebase project '${firebaseConfig.projectId}'. Enable it under Firebase Console → Authentication → Sign-in method (or point docs/app.js to your configured Firebase project).`;
     case "auth/account-exists-with-different-credential":
       return "An account already exists with this email using another sign-in method. Log in first and link accounts in Settings.";
     case "auth/email-already-in-use":
@@ -402,6 +463,7 @@ function mapFirebaseError(err) {
 }
 
 async function initAuthSession(callback) {
+  verifyAuthorizedDomainForHostname().catch(() => {});
   await persistenceReady;
   const unsub = onAuthStateChanged(auth, callback);
   getRedirectResult(auth)
@@ -410,7 +472,10 @@ async function initAuthSession(callback) {
         await ensureUserProfile(result.user);
       }
     })
-    .catch(err => {
+    .catch(async err => {
+      if (err?.code === "auth/unauthorized-domain") {
+        await verifyAuthorizedDomainForHostname();
+      }
       if (err?.code) {
         setAuthFeedback(mapFirebaseError(err));
       }
