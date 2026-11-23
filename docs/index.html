@@ -218,6 +218,9 @@
         <button type="button" class="side-nav-item" data-nav="creator">
           <span class="sni-ico">&#x1F451;</span><span>Creator &amp; About</span>
         </button>
+        <button type="button" class="side-nav-item side-nav-pro" data-nav="plans" id="btnNavPlans">
+          <span class="sni-ico">&#x1F48E;</span><span>Plans &amp; Pro</span>
+        </button>
       </nav>
 
       <!-- Scrollable Conversation History (Saved + Recent) -->
@@ -280,6 +283,10 @@
         </div>
 
         <div class="topbar-right">
+          <button type="button" class="topbar-plan-pill" id="topbarPlanBadge" data-nav="plans" title="View Subscription Plans">
+            <span>&#x1F48E;</span><span id="topbarPlanLabel">FREE</span>
+          </button>
+
           <select id="modelSelect" class="model-select" aria-label="Select Gemini model">
             <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
             <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
@@ -639,6 +646,127 @@
             <div class="global-footer-slot"></div>
           </div>
         </section>
+
+        <!-- VIEW 7: INFFOLER AI SUBSCRIPTIONS & PAYMENT VERIFICATION -->
+        <section class="view view-plans" id="view-plans">
+          <div class="page-container plans-page-wrap">
+            <div class="section-banner glass-panel plans-hero-banner">
+              <div class="plans-hero-head">
+                <div>
+                  <span class="badge-chip cyan">INFFOLER AI MEMBERSHIP</span>
+                  <h2>Unlock <span class="gradient-text">Premium &amp; Ultimate</span> Intelligence</h2>
+                  <p class="body-copy">
+                    Scale your daily AI throughput, unlock priority Gemini 4 Argon reasoning, and manage renewals securely.
+                  </p>
+                </div>
+                <div class="sub-status-pill" id="subBannerStatusPill">FREE PLAN</div>
+              </div>
+
+              <div class="sub-status-meta-row" id="subStatusDetailsRow">
+                <div>
+                  <strong id="subCurrentPlanHeading">Free Plan (&#x20B9;0)</strong>
+                  <p class="modal-desc" id="subExpirySummary">Standard access &middot; 15 req/min &middot; 120 req/day</p>
+                </div>
+                <button type="button" class="gradient-cta-btn small hidden" id="btnRenewActivePlan">Renew Plan</button>
+              </div>
+            </div>
+
+            <!-- 3 Animated Subscription Plan Cards -->
+            <div class="plans-grid" id="subscriptionPlansGrid">
+              <!-- Free Plan -->
+              <article class="glass-panel plan-card" data-plan-card="free">
+                <div class="plan-card-head">
+                  <span class="badge-chip teal">STARTER</span>
+                  <h3>Free</h3>
+                  <div class="plan-price"><strong>&#x20B9;0</strong><span>/forever</span></div>
+                </div>
+                <ul class="bullet-list plan-features">
+                  <li>Gemini 3.8 Flash &amp; 3.5 Flash-Lite</li>
+                  <li>15 requests/min &middot; 120 requests/day</li>
+                  <li>Personal Firebase cloud chat sync</li>
+                  <li>6-Phase WHAT IF Simulator access</li>
+                </ul>
+                <button type="button" class="outline-pill-btn plan-cta-btn" id="btnPlanFree" disabled>Active Default Tier</button>
+              </article>
+
+              <!-- Premium Plan -->
+              <article class="glass-panel plan-card featured-premium" data-plan-card="premium">
+                <div class="plan-shimmer" aria-hidden="true"></div>
+                <div class="plan-card-head">
+                  <span class="badge-chip purple">MOST POPULAR</span>
+                  <h3>Premium</h3>
+                  <div class="plan-price"><strong>&#x20B9;299</strong><span>/month</span></div>
+                </div>
+                <ul class="bullet-list plan-features">
+                  <li>Everything in Free + Gemini 4 Argon</li>
+                  <li>30 requests/min &middot; 450 requests/day</li>
+                  <li>Priority multimodal image &amp; code analysis</li>
+                  <li>30-day verified membership cycle</li>
+                </ul>
+                <button type="button" class="gradient-cta-btn plan-cta-btn" id="btnChoosePremium" data-checkout-plan="premium">
+                  Upgrade to Premium &middot; &#x20B9;299
+                </button>
+              </article>
+
+              <!-- Ultimate Plan -->
+              <article class="glass-panel plan-card featured-ultimate" data-plan-card="ultimate">
+                <div class="plan-shimmer ultimate" aria-hidden="true"></div>
+                <div class="plan-card-head">
+                  <span class="badge-chip cyan">MAXIMUM POWER</span>
+                  <h3>Ultimate</h3>
+                  <div class="plan-price"><strong>&#x20B9;599</strong><span>/month</span></div>
+                </div>
+                <ul class="bullet-list plan-features">
+                  <li>Full Gemini 4 Argon &amp; deep reasoning</li>
+                  <li>60 requests/min &middot; 1,500 requests/day</li>
+                  <li>Highest priority proxy throughput</li>
+                  <li>Early access to next-gen INFFOLER tools</li>
+                </ul>
+                <button type="button" class="gradient-cta-btn ultimate-cta-btn plan-cta-btn" id="btnChooseUltimate" data-checkout-plan="ultimate">
+                  Go Ultimate &middot; &#x20B9;599
+                </button>
+              </article>
+            </div>
+
+            <!-- User's Own Payment Submissions & Verification Status -->
+            <article class="glass-panel section-card" id="userOrdersCard">
+              <div class="section-head-row">
+                <div>
+                  <span class="badge-chip cyan">BILLING ACTIVITY</span>
+                  <h3>Your Subscriptions &amp; Payment Verification</h3>
+                </div>
+                <button type="button" class="icon-chip-btn" id="btnRefreshSubStatus">Refresh Status</button>
+              </div>
+              <p class="modal-desc">
+                Paid memberships activate automatically after payment gateway confirmation or manual UTR verification.
+              </p>
+              <div id="userOrdersList" class="orders-list"></div>
+            </article>
+
+            <!-- Admin Payment Verification Dashboard (Hidden unless verified Admin) -->
+            <article class="glass-panel section-card hidden" id="adminVerificationPanel">
+              <div class="section-head-row">
+                <div>
+                  <span class="badge-chip purple">CREATOR ADMIN</span>
+                  <h3>Payment Verification Dashboard</h3>
+                </div>
+                <button type="button" class="icon-chip-btn" id="btnAdminRefreshPayments">Refresh Queue</button>
+              </div>
+              <p class="modal-desc">
+                Review submitted UTR references and activate or reject user subscriptions securely.
+              </p>
+              <div class="admin-filter-row">
+                <button type="button" class="chip-action-btn active" data-admin-filter="pending_verification">Pending</button>
+                <button type="button" class="chip-action-btn" data-admin-filter="verified">Verified</button>
+                <button type="button" class="chip-action-btn" data-admin-filter="rejected">Rejected</button>
+                <button type="button" class="chip-action-btn" data-admin-filter="all">All</button>
+              </div>
+              <div id="adminOrdersList" class="orders-list"></div>
+            </article>
+
+            <div class="global-footer-slot"></div>
+          </div>
+        </section>
       </main>
     </div>
   </div>
@@ -660,6 +788,14 @@
             <p id="modalUserEmail" class="modal-desc"></p>
             <div id="modalProviderBadges" class="provider-badges"></div>
           </div>
+        </div>
+
+        <div class="modal-plan-bar" id="modalPlanBar">
+          <div>
+            <strong id="modalPlanName">Free Plan</strong>
+            <p class="modal-desc" id="modalPlanExpiry">No expiry &middot; Upgrade anytime</p>
+          </div>
+          <button type="button" class="icon-chip-btn" id="btnModalManagePlan">Plans &amp; Pro</button>
         </div>
 
         <form id="profileUpdateForm" class="auth-form">
@@ -748,6 +884,18 @@
     <div class="lightbox-card">
       <button type="button" class="circle-icon-btn" id="closeLightbox" aria-label="Close image preview">&times;</button>
       <img id="lightboxImg" src="" alt="Full attachment preview" />
+    </div>
+  </div>
+
+  <!-- MODAL 6: EPHEMERAL CHECKOUT & UTR VERIFICATION MODAL -->
+  <div class="modal-backdrop hidden" id="checkoutModal" role="dialog" aria-modal="true" aria-labelledby="checkoutModalTitle">
+    <div class="glass-panel modal-card">
+      <div class="modal-head">
+        <h3 id="checkoutModalTitle">Complete Subscription Checkout</h3>
+        <button type="button" class="circle-icon-btn small" id="closeCheckoutModal" aria-label="Close checkout">&times;</button>
+      </div>
+      <div id="checkoutFeedbackBox" class="auth-feedback hidden" role="alert"></div>
+      <div id="checkoutDynamicArea" class="checkout-dynamic-area"></div>
     </div>
   </div>
 

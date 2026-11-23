@@ -227,6 +227,21 @@ let stopTypingRequested = false;
 let renamingChatId = null;
 let corePulseBoost = 0;
 
+let subscriptionState = {
+  planId: "free",
+  planName: "Free",
+  status: "active",
+  expiresAt: null,
+  daysRemaining: null,
+  renewalRequired: false,
+  isAdmin: false,
+  hasPendingVerification: false,
+};
+let userOrders = [];
+let adminOrders = [];
+let adminOrderFilter = "pending_verification";
+let activeCheckoutSession = null;
+
 /* ==================== SAFE MARKDOWN & SYNTAX HIGHLIGHTER ==================== */
 function escapeHtml(str) {
   return String(str ?? "")
@@ -904,6 +919,7 @@ function applyMandatoryAccessGate(isAuthenticated) {
     shell?.removeAttribute("aria-hidden");
   } else {
     closeSidebar();
+    clearCheckoutSession();
     document.getElementById("settingsModal")?.classList.add("hidden");
     document.getElementById("renameModal")?.classList.add("hidden");
     document.getElementById("igModal")?.classList.add("hidden");
@@ -1029,6 +1045,8 @@ async function onAuthChange(user) {
       },
       err => console.warn("Sims listener:", err?.message)
     );
+
+    refreshSubscriptionStatus(true).catch(() => {});
   } else {
     chats = [];
     activeChatId = null;
@@ -1036,6 +1054,20 @@ async function onAuthChange(user) {
     simulations = [];
     pendingImages = [];
     searchQuery = "";
+    subscriptionState = {
+      planId: "free",
+      planName: "Free",
+      status: "active",
+      expiresAt: null,
+      daysRemaining: null,
+      renewalRequired: false,
+      isAdmin: false,
+      hasPendingVerification: false,
+    };
+    userOrders = [];
+    adminOrders = [];
+    clearCheckoutSession();
+    renderSubscriptionUI();
     renderAttachmentPreviews();
     const chatMessagesEl = document.getElementById("chatMessages");
     if (chatMessagesEl) chatMessagesEl.innerHTML = "";
@@ -1398,6 +1430,465 @@ async function callProxyOnce(modelId, contents, systemInstruction, responseMimeT
   } finally {
     clearTimeout(timeoutId);
     if (signal) signal.removeEventListener("abort", onExternalAbort);
+  }
+}
+
+/* ==================== SUBSCRIPTIONS, PRIVACY CHECKOUT & ADMIN VERIFICATION ==================== */
+async function callAuthorizedWorkerJson(path, { method = "GET", body = null } = {}) {
+  if (!auth.currentUser) throw new Error("Sign in required.");
+  const exec = async forceRefresh => {
+    const idToken = await auth.currentUser.getIdToken(forceRefresh);
+    const opts = {
+      method,
+      headers: {
+        Authorization: `Bearer ${idToken}`,
+      },
+    };
+    if (body !== null) {
+      opts.headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(body);
+    }
+    return fetch(`${PUBLIC_PROXY_URL}${path}`, opts);
+  };
+
+  let res = await exec(false);
+  if (res.status === 401 && auth.currentUser) {
+    res = await exec(true);
+  }
+  const text = await res.text();
+  let json = {};
+  try {
+    json = text ? JSON.parse(text) : {};
+  } catch { /* ignore */ }
+  if (!res.ok) {
+    const err = new Error(json?.error || `HTTP ${res.status}`);
+    err.status = res.status;
+    err.code = json?.code;
+    throw err;
+  }
+  return json;
+}
+
+function formatShortDate(ms) {
+  if (!ms) return "";
+  try {
+    return new Date(Number(ms)).toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
+  } catch {
+    return "";
+  }
+}
+
+function renderSubscriptionUI() {
+  const planId = subscriptionState.planId || "free";
+  const isExpired = subscriptionState.status === "expired";
+  const topBadge = document.getElementById("topbarPlanBadge");
+  const topLabel = document.getElementById("topbarPlanLabel");
+  if (topBadge && topLabel) {
+    topBadge.classList.remove("tier-premium", "tier-ultimate");
+    if (planId === "premium") topBadge.classList.add("tier-premium");
+    if (planId === "ultimate") topBadge.classList.add("tier-ultimate");
+    topLabel.textContent = planId.toUpperCase();
+  }
+
+  const pill = document.getElementById("subBannerStatusPill");
+  const heading = document.getElementById("subCurrentPlanHeading");
+  const expirySummary = document.getElementById("subExpirySummary");
+  const renewBtn = document.getElementById("btnRenewActivePlan");
+  const modalName = document.getElementById("modalPlanName");
+  const modalExp = document.getElementById("modalPlanExpiry");
+
+  const priceText = planId === "ultimate" ? "₹599/month" : planId === "premium" ? "₹299/month" : "₹0/forever";
+  if (pill) {
+    pill.classList.toggle("expired", isExpired);
+    if (isExpired) {
+      pill.textContent = "EXPIRED · RENEW";
+    } else if (subscriptionState.hasPendingVerification && planId === "free") {
+      pill.textContent = "PENDING VERIFICATION";
+    } else {
+      pill.textContent = `${planId.toUpperCase()} PLAN`;
+    }
+  }
+  if (heading) {
+    heading.textContent = `${subscriptionState.planName || "Free"} Plan (${priceText})`;
+  }
+
+  let detailLine = "Standard access · 15 req/min · 120 req/day";
+  if (isExpired && subscriptionState.expiredPlanId) {
+    detailLine = `Previous ${subscriptionState.expiredPlanId.toUpperCase()} plan expired on ${formatShortDate(subscriptionState.expiresAt)}. Renew anytime.`;
+  } else if (planId !== "free" && subscriptionState.expiresAt) {
+    const reqInfo = planId === "ultimate" ? "60 req/min · 1,500 req/day" : "30 req/min · 450 req/day";
+    detailLine = `Active until ${formatShortDate(subscriptionState.expiresAt)} (${subscriptionState.daysRemaining}d remaining) · ${reqInfo}`;
+  } else if (subscriptionState.hasPendingVerification) {
+    detailLine = "Payment submitted · Waiting for verification before Premium activates.";
+  }
+
+  if (expirySummary) expirySummary.textContent = detailLine;
+  if (modalName) modalName.textContent = `${subscriptionState.planName || "Free"} Plan`;
+  if (modalExp) modalExp.textContent = detailLine;
+
+  if (renewBtn) {
+    const showRenew =
+      (planId !== "free" && subscriptionState.renewalRequired) ||
+      (isExpired && Boolean(subscriptionState.expiredPlanId));
+    renewBtn.classList.toggle("hidden", !showRenew);
+    renewBtn.setAttribute(
+      "data-checkout-plan",
+      isExpired ? subscriptionState.expiredPlanId || "premium" : planId
+    );
+  }
+
+  document.querySelectorAll("[data-plan-card]").forEach(card => {
+    const cardPlan = card.getAttribute("data-plan-card");
+    card.classList.toggle("active-tier", cardPlan === planId);
+  });
+
+  const btnPremium = document.getElementById("btnChoosePremium");
+  const btnUltimate = document.getElementById("btnChooseUltimate");
+  if (btnPremium) {
+    btnPremium.textContent =
+      planId === "premium" ? "Extend / Renew Premium · ₹299" : "Upgrade to Premium · ₹299";
+  }
+  if (btnUltimate) {
+    btnUltimate.textContent =
+      planId === "ultimate" ? "Extend / Renew Ultimate · ₹599" : "Go Ultimate · ₹599";
+  }
+
+  renderUserOrdersList();
+
+  const adminPanel = document.getElementById("adminVerificationPanel");
+  if (adminPanel) {
+    adminPanel.classList.toggle("hidden", !subscriptionState.isAdmin);
+  }
+}
+
+function renderUserOrdersList() {
+  const container = document.getElementById("userOrdersList");
+  if (!container) return;
+  if (!userOrders || userOrders.length === 0) {
+    container.innerHTML =
+      '<div class="history-empty">No subscription payments submitted yet. Choose Premium (₹299) or Ultimate (₹599) above to start.</div>';
+    return;
+  }
+
+  container.innerHTML = userOrders
+    .map(ord => {
+      const safeStatus = escapeHtml(ord.status || "awaiting_payment");
+      const label = safeStatus.replace(/_/g, " ");
+      const utrPart = ord.maskedUtr ? ` · Ref: ${escapeHtml(ord.maskedUtr)}` : "";
+      const appPart = ord.paymentApp ? ` · ${escapeHtml(ord.paymentApp)}` : "";
+      const reasonLine = ord.rejectionReason
+        ? `<p class="order-meta-line" style="color:var(--error);">Reason: ${escapeHtml(ord.rejectionReason)}</p>`
+        : "";
+      return `
+        <div class="order-row-card">
+          <div class="order-row-top">
+            <strong>${escapeHtml(ord.planName || ord.planId)} &middot; &#x20B9;${Number(ord.amountInr || 0)}</strong>
+            <span class="order-status-badge ${safeStatus}">${label}</span>
+          </div>
+          <div class="order-meta-line">
+            Order ${escapeHtml(ord.orderId)}${appPart}${utrPart} &middot; ${escapeHtml(formatShortDate(ord.createdAt))}
+          </div>
+          ${reasonLine}
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function renderAdminOrdersList() {
+  const container = document.getElementById("adminOrdersList");
+  if (!container) return;
+  const filtered = adminOrders.filter(o => adminOrderFilter === "all" || o.status === adminOrderFilter);
+  if (filtered.length === 0) {
+    container.innerHTML = '<div class="history-empty">No payment submissions in this filter.</div>';
+    return;
+  }
+
+  container.innerHTML = filtered
+    .map(ord => {
+      const safeStatus = escapeHtml(ord.status || "pending_verification");
+      const canAct = ord.status === "pending_verification";
+      return `
+        <div class="order-row-card" data-admin-order="${escapeHtml(ord.orderId)}">
+          <div class="order-row-top">
+            <strong>${escapeHtml(ord.planName || ord.planId)} &middot; &#x20B9;${Number(ord.amountInr || 0)}</strong>
+            <span class="order-status-badge ${safeStatus}">${escapeHtml(safeStatus.replace(/_/g, " "))}</span>
+          </div>
+          <div class="order-meta-line">
+            User: ${escapeHtml(ord.email || ord.uid)} &middot; Order: ${escapeHtml(ord.orderId)}
+          </div>
+          <div class="order-meta-line">
+            UTR: <strong>${escapeHtml(ord.utr || "N/A")}</strong> (${escapeHtml(ord.paymentApp || "UPI")})${ord.payerName ? ` &middot; Payer: ${escapeHtml(ord.payerName)}` : ""}
+          </div>
+          ${
+            canAct
+              ? `<div class="modal-actions" style="margin-top:4px;">
+                  <button type="button" class="gradient-cta-btn small" data-admin-approve="${escapeHtml(ord.orderId)}">Verify &amp; Activate</button>
+                  <button type="button" class="icon-chip-btn danger" data-admin-reject="${escapeHtml(ord.orderId)}">Reject</button>
+                </div>`
+              : `<div class="order-meta-line">${ord.verifiedBy ? `Reviewed by ${escapeHtml(ord.verifiedBy)}` : ""}${ord.rejectionReason ? ` · ${escapeHtml(ord.rejectionReason)}` : ""}</div>`
+          }
+        </div>
+      `;
+    })
+    .join("");
+
+  container.querySelectorAll("[data-admin-approve]").forEach(btn => {
+    btn.addEventListener("click", () => handleAdminVerifyOrder(btn.getAttribute("data-admin-approve"), "approve"));
+  });
+  container.querySelectorAll("[data-admin-reject]").forEach(btn => {
+    btn.addEventListener("click", () => handleAdminVerifyOrder(btn.getAttribute("data-admin-reject"), "reject"));
+  });
+}
+
+async function refreshSubscriptionStatus(silent = false) {
+  if (!currentUser) return;
+  try {
+    const data = await callAuthorizedWorkerJson("/subscription/status", { method: "GET" });
+    if (data?.subscription) {
+      subscriptionState = {
+        ...data.subscription,
+        isAdmin: Boolean(data.isAdmin),
+        hasPendingVerification: Boolean(data.hasPendingVerification),
+      };
+    }
+    userOrders = Array.isArray(data?.orders) ? data.orders : [];
+    renderSubscriptionUI();
+    if (subscriptionState.isAdmin) {
+      await loadAdminPayments();
+    }
+  } catch (err) {
+    if (!silent) showToast(err.message || "Unable to load subscription status.");
+  }
+}
+
+async function loadAdminPayments() {
+  if (!currentUser || !subscriptionState.isAdmin) return;
+  try {
+    const data = await callAuthorizedWorkerJson("/admin/payments", { method: "GET" });
+    adminOrders = Array.isArray(data?.items) ? data.items : [];
+    renderAdminOrdersList();
+  } catch (err) {
+    showToast(err.message || "Could not load payment queue.");
+  }
+}
+
+async function handleAdminVerifyOrder(orderId, action) {
+  if (!orderId || !subscriptionState.isAdmin) return;
+  let reason = "";
+  if (action === "reject") {
+    const entered = window.prompt("Reason for rejecting this UTR submission (optional):", "UTR did not match statement");
+    if (entered === null) return;
+    reason = entered;
+  }
+  try {
+    const data = await callAuthorizedWorkerJson("/admin/payments/verify", {
+      method: "POST",
+      body: { orderId, action, reason },
+    });
+    showToast(data?.status === "verified" ? "Payment verified & subscription activated!" : "Payment submission rejected.");
+    await refreshSubscriptionStatus(true);
+  } catch (err) {
+    showToast(err.message || "Verification update failed.");
+  }
+}
+
+function setCheckoutFeedback(message, isSuccess = false) {
+  const box = document.getElementById("checkoutFeedbackBox");
+  if (!box) return;
+  if (!message) {
+    box.classList.add("hidden");
+    box.textContent = "";
+    box.classList.remove("success");
+    return;
+  }
+  box.textContent = message;
+  box.classList.remove("hidden");
+  box.classList.toggle("success", isSuccess);
+}
+
+function clearCheckoutSession() {
+  activeCheckoutSession = null;
+  setCheckoutFeedback("");
+  const area = document.getElementById("checkoutDynamicArea");
+  if (area) area.innerHTML = "";
+  document.getElementById("checkoutModal")?.classList.add("hidden");
+}
+
+function renderCheckoutDynamicArea(session) {
+  const area = document.getElementById("checkoutDynamicArea");
+  if (!area) return;
+
+  if (session.mode === "gateway_link" && /^https:\/\//i.test(session.gatewayUrl || "")) {
+    area.innerHTML = `
+      <div class="checkout-summary-box">
+        <strong>${escapeHtml(session.planName)} &middot; &#x20B9;${Number(session.amountInr)}/month</strong>
+        <p class="modal-desc">Order ID: <code>${escapeHtml(session.orderId)}</code></p>
+        <p class="modal-desc">${escapeHtml(session.privacyNotice || "Secure hosted payment gateway.")}</p>
+      </div>
+      <a href="${escapeHtml(session.gatewayUrl)}" target="_blank" rel="noopener noreferrer" class="gradient-cta-btn upi-app-deep-link" id="btnOpenGatewayCheckout">
+        Continue to Secure Payment Gateway &#x2197;
+      </a>
+      <button type="button" class="outline-pill-btn" id="btnCheckoutDoneRefresh">I Completed Payment &middot; Refresh Status</button>
+    `;
+    document.getElementById("btnCheckoutDoneRefresh")?.addEventListener("click", async () => {
+      clearCheckoutSession();
+      await refreshSubscriptionStatus(false);
+    });
+    return;
+  }
+
+  if (session.mode === "gateway_razorpay") {
+    area.innerHTML = `
+      <div class="checkout-summary-box">
+        <strong>${escapeHtml(session.planName)} &middot; &#x20B9;${Number(session.amountInr)}/month</strong>
+        <p class="modal-desc">Order ID: <code>${escapeHtml(session.orderId)}</code></p>
+        <p class="modal-desc">Gateway Order: <code>${escapeHtml(session.razorpayOrderId)}</code></p>
+        <p class="modal-desc">${escapeHtml(session.privacyNotice || "Gateway checkout keeps personal UPI IDs private.")}</p>
+      </div>
+      <button type="button" class="gradient-cta-btn" id="btnLaunchRazorpayCheckout">Pay &#x20B9;${Number(session.amountInr)} via Gateway</button>
+    `;
+    document.getElementById("btnLaunchRazorpayCheckout")?.addEventListener("click", () => {
+      if (typeof window.Razorpay === "function") {
+        const rzp = new window.Razorpay({
+          key: session.razorpayKeyId,
+          amount: session.amountPaise,
+          currency: session.currency || "INR",
+          name: "INFFOLER AI",
+          description: `${session.planName} Monthly Membership`,
+          order_id: session.razorpayOrderId,
+          handler: async resp => {
+            try {
+              await callAuthorizedWorkerJson("/subscription/verify-gateway", {
+                method: "POST",
+                body: { orderId: session.orderId, ...resp },
+              });
+              clearCheckoutSession();
+              await refreshSubscriptionStatus(true);
+              showToast(`${session.planName} activated!`);
+            } catch (err) {
+              setCheckoutFeedback(err.message || "Gateway verification failed.");
+            }
+          },
+        });
+        rzp.open();
+      } else {
+        setCheckoutFeedback("Razorpay script not loaded. Load checkout.js or use hosted gateway link.");
+      }
+    });
+    return;
+  }
+
+  // Ephemeral manual UPI checkout (only populated while checkout modal is open)
+  const safeUpiHref = /^upi:\/\/pay\?/i.test(session.upiUri || "") ? session.upiUri : "#";
+  area.innerHTML = `
+    <div class="checkout-summary-box">
+      <strong>${escapeHtml(session.planName)} Plan &middot; &#x20B9;${Number(session.amountInr)}/month</strong>
+      <p class="modal-desc">Order Reference: <code>${escapeHtml(session.orderId)}</code></p>
+      <p class="modal-desc">${escapeHtml(session.guardianNotice || "Parent/Guardian-managed payment account.")}</p>
+    </div>
+
+    <div>
+      <span class="field-label">Active Checkout UPI Destination (Pay &#x20B9;${Number(session.amountInr)})</span>
+      <div class="checkout-upi-row" style="margin-top:6px;">
+        <code id="checkoutUpiText">${escapeHtml(session.upiId || "")}</code>
+        <button type="button" class="icon-chip-btn" id="btnCopyCheckoutUpi">Copy</button>
+      </div>
+      <p class="field-hint" style="margin-top:4px;">Payee: ${escapeHtml(session.payeeName || "Guardian Account")}</p>
+    </div>
+
+    <a href="${escapeHtml(safeUpiHref)}" class="gradient-cta-btn upi-app-deep-link" id="btnOpenUpiAppLink">
+      Open UPI App (GPay / PhonePe / Paytm)
+    </a>
+
+    <hr class="modal-divider" />
+
+    <form id="utrSubmitForm" class="auth-form">
+      <label class="field-label" for="utrInput">Enter 12-Digit UTR / UPI Transaction ID After Paying</label>
+      <input
+        type="text"
+        id="utrInput"
+        class="modal-input"
+        required
+        minlength="10"
+        maxlength="24"
+        pattern="[A-Za-z0-9]{10,24}"
+        placeholder="e.g. 412345678901"
+      />
+
+      <label class="field-label" for="utrPaymentAppSelect">Payment App Used</label>
+      <select id="utrPaymentAppSelect" class="modal-input">
+        <option value="GPay">Google Pay (GPay)</option>
+        <option value="PhonePe">PhonePe</option>
+        <option value="Paytm">Paytm</option>
+        <option value="BHIM">BHIM UPI</option>
+        <option value="Other">Other UPI App</option>
+      </select>
+
+      <label class="field-label" for="utrPayerNameInput">Payer Name (Optional)</label>
+      <input type="text" id="utrPayerNameInput" class="modal-input" maxlength="60" placeholder="Name on bank/UPI account" />
+
+      <button type="submit" class="gradient-cta-btn" id="btnSubmitUtr">Submit UTR for Verification</button>
+    </form>
+  `;
+
+  document.getElementById("btnCopyCheckoutUpi")?.addEventListener("click", async () => {
+    if (!session.upiId || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(session.upiId);
+      showToast("Payment address copied for this checkout");
+    } catch { /* ignore */ }
+  });
+
+  document.getElementById("utrSubmitForm")?.addEventListener("submit", async e => {
+    e.preventDefault();
+    const submitBtn = document.getElementById("btnSubmitUtr");
+    if (submitBtn) submitBtn.disabled = true;
+    setCheckoutFeedback("");
+    try {
+      const utr = document.getElementById("utrInput").value.trim();
+      const paymentApp = document.getElementById("utrPaymentAppSelect").value;
+      const payerName = document.getElementById("utrPayerNameInput").value.trim();
+      const resp = await callAuthorizedWorkerJson("/subscription/submit-utr", {
+        method: "POST",
+        body: { orderId: session.orderId, utr, paymentApp, payerName },
+      });
+      clearCheckoutSession();
+      showToast(resp?.message || "UTR submitted for verification!");
+      await refreshSubscriptionStatus(true);
+    } catch (err) {
+      setCheckoutFeedback(err.message || "Could not submit UTR.");
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  });
+}
+
+async function startPlanCheckout(planId) {
+  if (!currentUser) {
+    showToast("Please sign in first.");
+    return;
+  }
+  const modal = document.getElementById("checkoutModal");
+  const area = document.getElementById("checkoutDynamicArea");
+  setCheckoutFeedback("");
+  if (area) area.innerHTML = '<div class="history-empty">Initializing secure checkout…</div>';
+  modal?.classList.remove("hidden");
+
+  try {
+    const session = await callAuthorizedWorkerJson("/subscription/checkout", {
+      method: "POST",
+      body: { planId },
+    });
+    activeCheckoutSession = session;
+    renderCheckoutDynamicArea(session);
+  } catch (err) {
+    if (area) area.innerHTML = "";
+    setCheckoutFeedback(err.message || "Could not start checkout.");
   }
 }
 
@@ -2495,6 +2986,33 @@ function bindEvents() {
     if (e.target.id === "imageLightbox") {
       document.getElementById("imageLightbox").classList.add("hidden");
     }
+  });
+
+  // Subscription plans, checkout, UTR verification & admin dashboard bindings
+  document.getElementById("btnChoosePremium")?.addEventListener("click", () => startPlanCheckout("premium"));
+  document.getElementById("btnChooseUltimate")?.addEventListener("click", () => startPlanCheckout("ultimate"));
+  document.getElementById("btnRenewActivePlan")?.addEventListener("click", e => {
+    const plan = e.currentTarget?.getAttribute("data-checkout-plan") || "premium";
+    startPlanCheckout(plan);
+  });
+  document.getElementById("btnRefreshSubStatus")?.addEventListener("click", () => refreshSubscriptionStatus(false));
+  document.getElementById("btnAdminRefreshPayments")?.addEventListener("click", () => loadAdminPayments());
+  document.getElementById("btnModalManagePlan")?.addEventListener("click", () => {
+    document.getElementById("settingsModal")?.classList.add("hidden");
+    navigateTo("plans");
+  });
+  document.getElementById("closeCheckoutModal")?.addEventListener("click", clearCheckoutSession);
+  document.getElementById("checkoutModal")?.addEventListener("click", e => {
+    if (e.target.id === "checkoutModal") clearCheckoutSession();
+  });
+  document.querySelectorAll("[data-admin-filter]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      adminOrderFilter = btn.getAttribute("data-admin-filter") || "pending_verification";
+      document.querySelectorAll("[data-admin-filter]").forEach(el => {
+        el.classList.toggle("active", el.getAttribute("data-admin-filter") === adminOrderFilter);
+      });
+      renderAdminOrdersList();
+    });
   });
 }
 

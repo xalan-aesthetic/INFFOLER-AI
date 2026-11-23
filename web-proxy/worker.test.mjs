@@ -4,7 +4,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { webcrypto } from "node:crypto";
-import { handleRequest, clearJwkCache } from "./cloudflare-worker.js";
+import {
+  handleRequest,
+  clearJwkCache,
+  clearFallbackStore,
+  SUBSCRIPTION_PLANS,
+} from "./cloudflare-worker.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -292,6 +297,23 @@ test("Frontend integrity: DOM IDs match, no unauthenticated guest storage, all 6
   ]) {
     assert.ok(js.includes(handle), `Missing Instagram handle: ${handle}`);
   }
+  // Subscription privacy checks across all repo-tracked frontend/worker/env files
+  const css = fs.readFileSync(path.resolve(__dirname, "../docs/styles.css"), "utf8");
+  const workerSrc = fs.readFileSync(path.resolve(__dirname, "./cloudflare-worker.js"), "utf8");
+  const envExample = fs.readFileSync(path.resolve(__dirname, "../.env.example"), "utf8");
+  for (const [name, content] of [
+    ["docs/index.html", html],
+    ["docs/app.js", js],
+    ["docs/styles.css", css],
+    ["web-proxy/cloudflare-worker.js", workerSrc],
+    [".env.example", envExample],
+  ]) {
+    assert.ok(!/\b\d{8,12}@[a-z]{2,10}\b/i.test(content), `Private UPI address must NOT appear in ${name}`);
+  }
+  assert.ok(js.includes("/subscription/status"));
+  assert.ok(js.includes("/subscription/checkout"));
+  assert.ok(js.includes("/subscription/submit-utr"));
+  assert.ok(js.includes("/admin/payments"));
 });
 
 import os from "node:os";
@@ -366,13 +388,13 @@ function createLightweightDomFromHtml(html) {
         }
       },
       click: async () => {
-        await el.dispatchEvent({ type: "click", target: el, preventDefault() {} });
+        await el.dispatchEvent({ type: "click", target: el, currentTarget: el, preventDefault() {} });
       },
       requestSubmit: async () => {
-        await el.dispatchEvent({ type: "submit", target: el, preventDefault() {} });
+        await el.dispatchEvent({ type: "submit", target: el, currentTarget: el, preventDefault() {} });
       },
       submit: async () => {
-        await el.dispatchEvent({ type: "submit", target: el, preventDefault() {} });
+        await el.dispatchEvent({ type: "submit", target: el, currentTarget: el, preventDefault() {} });
       },
       focus: () => {},
       scrollIntoView: () => {},
@@ -474,6 +496,7 @@ test("End-to-end login flow: UI screen, Google & Email Sign-In/Sign-Up, redirect
     matchMedia: () => ({ matches: false }),
     addEventListener: () => {},
     confirm: () => true,
+    prompt: () => "UTR mismatch",
   };
   globalThis.requestAnimationFrame = cb => {
     if (cb?.name === "tick" || cb?.name === "frame") return 1;
@@ -748,6 +771,489 @@ test("End-to-end login flow: UI screen, Google & Email Sign-In/Sign-Up, redirect
     assert.equal(shell.classList.contains("hidden"), false);
     assert.equal(document.getElementById("view-chat").classList.contains("active"), true);
     assert.equal(document.getElementById("sidebarUserName").textContent, "Google Explorer");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+async function hmacSha256Hex(secret, message) {
+  const key = await subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await subtle.sign("HMAC", key, new TextEncoder().encode(message));
+  return Array.from(new Uint8Array(sig), b => b.toString(16).padStart(2, "0")).join("");
+}
+
+test("Subscription security, privacy, UTR verification, admin approval, expiry, and tier limits", async () => {
+  clearJwkCache();
+  clearFallbackStore();
+
+  const baseNow = Math.floor(Date.now() / 1000);
+  const userA2 = await generateTestKeyAndJwt(
+    { sub: "uid_sub_alice", email: "alice@example.com", email_verified: true, exp: baseNow + 45 * 86400 },
+    { kid: "kid-a" }
+  );
+  const userB2 = await generateTestKeyAndJwt(
+    { sub: "uid_sub_bob", email: "bob@example.com", email_verified: true },
+    { kid: "kid-b" }
+  );
+  const unverifiedAdmin2 = await generateTestKeyAndJwt(
+    { sub: "uid_unverified_admin", email: "nofakeamod@gmail.com", email_verified: false },
+    { kid: "kid-uadmin" }
+  );
+  const realAdmin2 = await generateTestKeyAndJwt(
+    { sub: "uid_real_admin", email: "nofakeamod@gmail.com", email_verified: true },
+    { kid: "kid-admin" }
+  );
+  const keysByKid = {
+    keys: [userA2.publicJwk, userB2.publicJwk, unverifiedAdmin2.publicJwk, realAdmin2.publicJwk],
+  };
+  const now = userA2.now;
+  let nowMs = now * 1000;
+
+  const mockFetch = async url => {
+    if (String(url) === GOOGLE_JWK_URL) {
+      return new Response(JSON.stringify(keysByKid), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "Cache-Control": "max-age=300" },
+      });
+    }
+    throw new Error(`Unexpected upstream fetch: ${url}`);
+  };
+
+  const baseEnv = {
+    GEMINI_API_KEY: "test-gemini-secret",
+    FIREBASE_PROJECT_ID: PROJECT_ID,
+    MERCHANT_UPI_VPA: "syntheticmerchant@exampleupi",
+    MERCHANT_PAYEE_NAME: "INFFOLER Guardian Account",
+    ADMIN_EMAILS: "nofakeamod@gmail.com",
+  };
+
+  const call = (pathname, { method = "GET", token = null, body = null, env = baseEnv, customNowMs = nowMs } = {}) =>
+    handleRequest(
+      new Request(`https://worker.example${pathname}`, {
+        method,
+        headers: {
+          Origin: "https://xalan-aesthetic.github.io",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(body ? { "Content-Type": "application/json" } : {}),
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      }),
+      env,
+      { fetchImpl: mockFetch, nowSec: Math.floor(customNowMs / 1000), nowMs: customNowMs }
+    );
+
+  // 1. Unauthenticated access rejected on all subscription/admin endpoints
+  for (const [p, m] of [
+    ["/subscription/status", "GET"],
+    ["/subscription/checkout", "POST"],
+    ["/subscription/submit-utr", "POST"],
+    ["/admin/payments", "GET"],
+    ["/admin/payments/verify", "POST"],
+  ]) {
+    const r = await call(p, { method: m, body: m === "POST" ? {} : null });
+    assert.equal(r.status, 401, `${m} ${p} must reject unauthenticated calls`);
+  }
+
+  // 2. /health and /subscription/status NEVER expose MERCHANT_UPI_VPA
+  const healthText = await (await call("/health")).text();
+  assert.ok(!healthText.includes("syntheticmerchant@exampleupi"));
+  const statusRes = await call("/subscription/status", { token: userA2.jwt });
+  assert.equal(statusRes.status, 200);
+  const statusText = await statusRes.text();
+  assert.ok(!statusText.includes("syntheticmerchant@exampleupi"));
+  const statusJson = JSON.parse(statusText);
+  assert.equal(statusJson.subscription.planId, "free");
+  assert.equal(statusJson.isAdmin, false);
+
+  // 3. Unconfigured payment secrets return 503 safely
+  const unconfRes = await call("/subscription/checkout", {
+    method: "POST",
+    token: userA2.jwt,
+    body: { planId: "premium" },
+    env: { GEMINI_API_KEY: "x", FIREBASE_PROJECT_ID: PROJECT_ID },
+  });
+  assert.equal(unconfRes.status, 503);
+
+  // 4. Checkout derives ₹299/₹599 on server even if frontend tries to spoof amountInr=1
+  const checkoutRes = await call("/subscription/checkout", {
+    method: "POST",
+    token: userA2.jwt,
+    body: { planId: "premium", amountInr: 1 },
+  });
+  assert.equal(checkoutRes.status, 200);
+  const checkoutJson = await checkoutRes.json();
+  assert.equal(checkoutJson.mode, "upi_manual");
+  assert.equal(checkoutJson.amountInr, SUBSCRIPTION_PLANS.premium.amountInr);
+  assert.equal(checkoutJson.upiId, "syntheticmerchant@exampleupi");
+  assert.ok(checkoutJson.upiUri.includes("am=299"));
+
+  // 5. Invalid UTR rejected; IDOR (User B submitting UTR for User A's order) rejected; valid UTR enters pending queue
+  const badUtrRes = await call("/subscription/submit-utr", {
+    method: "POST",
+    token: userA2.jwt,
+    body: { orderId: checkoutJson.orderId, utr: "123", paymentApp: "GPay" },
+  });
+  assert.equal(badUtrRes.status, 400);
+
+  const idorRes = await call("/subscription/submit-utr", {
+    method: "POST",
+    token: userB2.jwt,
+    body: { orderId: checkoutJson.orderId, utr: "412345678901", paymentApp: "GPay" },
+  });
+  assert.equal(idorRes.status, 404);
+
+  const submitUtrRes = await call("/subscription/submit-utr", {
+    method: "POST",
+    token: userA2.jwt,
+    body: { orderId: checkoutJson.orderId, utr: "412345678901", paymentApp: "GPay", payerName: "Alice" },
+  });
+  assert.equal(submitUtrRes.status, 200);
+
+  // User A MUST STILL BE FREE until payment is verified
+  const stillFree = await (await call("/subscription/status", { token: userA2.jwt })).json();
+  assert.equal(stillFree.subscription.planId, "free");
+  assert.equal(stillFree.hasPendingVerification, true);
+
+  // Duplicate UTR reuse by User B on their own order MUST fail with 409
+  const bobCheckout = await (
+    await call("/subscription/checkout", { method: "POST", token: userB2.jwt, body: { planId: "ultimate" } })
+  ).json();
+  const dupUtrRes = await call("/subscription/submit-utr", {
+    method: "POST",
+    token: userB2.jwt,
+    body: { orderId: bobCheckout.orderId, utr: "412345678901", paymentApp: "PhonePe" },
+  });
+  assert.equal(dupUtrRes.status, 409);
+
+  // 6. Non-admin & unverified-email admin blocked (403) from Payment Verification Dashboard
+  assert.equal((await call("/admin/payments", { token: userA2.jwt })).status, 403);
+  assert.equal((await call("/admin/payments", { token: unverifiedAdmin2.jwt })).status, 403);
+  assert.equal(
+    (await call("/admin/payments/verify", {
+      method: "POST",
+      token: userB2.jwt,
+      body: { orderId: checkoutJson.orderId, action: "approve" },
+    })).status,
+    403
+  );
+
+  // 7. Verified Admin views queue & approves User A's order -> activates 30-day Premium
+  const queueRes = await call("/admin/payments", { token: realAdmin2.jwt });
+  assert.equal(queueRes.status, 200);
+  const queueJson = await queueRes.json();
+  assert.equal(queueJson.items.length, 1);
+  assert.equal(queueJson.items[0].utr, "412345678901");
+
+  const approveRes = await call("/admin/payments/verify", {
+    method: "POST",
+    token: realAdmin2.jwt,
+    body: { orderId: checkoutJson.orderId, action: "approve" },
+  });
+  assert.equal(approveRes.status, 200);
+
+  const activeAfter = await (await call("/subscription/status", { token: userA2.jwt })).json();
+  assert.equal(activeAfter.subscription.planId, "premium");
+  assert.equal(activeAfter.subscription.status, "active");
+  assert.equal(activeAfter.subscription.daysRemaining, 30);
+  assert.equal(activeAfter.subscription.renewalRequired, false);
+
+  // 8. 27 days later -> renewal reminder flagged; 31 days later -> reverts to Free with expired status
+  const day27Ms = nowMs + 27 * 86400 * 1000;
+  const nearExpiry = await (
+    await call("/subscription/status", { token: userA2.jwt, customNowMs: day27Ms })
+  ).json();
+  assert.equal(nearExpiry.subscription.planId, "premium");
+  assert.equal(nearExpiry.subscription.renewalRequired, true);
+
+  const day31Ms = nowMs + 31 * 86400 * 1000;
+  const afterExpiry = await (
+    await call("/subscription/status", { token: userA2.jwt, customNowMs: day31Ms })
+  ).json();
+  assert.equal(afterExpiry.subscription.planId, "free");
+  assert.equal(afterExpiry.subscription.status, "expired");
+  assert.equal(afterExpiry.subscription.expiredPlanId, "premium");
+  assert.equal(afterExpiry.subscription.renewalRequired, true);
+});
+
+test("Gateway mode hides personal UPI ID and verifies Razorpay HMAC signatures", async () => {
+  clearJwkCache();
+  clearFallbackStore();
+
+  const alice = await generateTestKeyAndJwt({ sub: "uid_gw_alice", email: "alice@example.com", email_verified: true }, { kid: "gw-1" });
+  const now = alice.now;
+  const rzpSecret = "rzp_test_secret_hmac_key";
+
+  const envGateway = {
+    GEMINI_API_KEY: "test-gemini",
+    FIREBASE_PROJECT_ID: PROJECT_ID,
+    MERCHANT_UPI_VPA: "neverexposed@exampleupi",
+    RAZORPAY_KEY_ID: "rzp_test_12345",
+    RAZORPAY_KEY_SECRET: rzpSecret,
+  };
+
+  const mockFetch = async url => {
+    if (String(url) === GOOGLE_JWK_URL) {
+      return new Response(JSON.stringify({ keys: [alice.publicJwk] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "Cache-Control": "max-age=300" },
+      });
+    }
+    if (String(url) === "https://api.razorpay.com/v1/orders") {
+      return new Response(JSON.stringify({ id: "order_RZP_999", amount: 59900, currency: "INR" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  const coRes = await handleRequest(
+    new Request("https://worker.example/subscription/checkout", {
+      method: "POST",
+      headers: {
+        Origin: "https://xalan-aesthetic.github.io",
+        Authorization: `Bearer ${alice.jwt}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ planId: "ultimate" }),
+    }),
+    envGateway,
+    { fetchImpl: mockFetch, nowSec: now, nowMs: now * 1000 }
+  );
+  assert.equal(coRes.status, 200);
+  const coText = await coRes.text();
+  assert.ok(!coText.includes("neverexposed@exampleupi"), "Gateway mode must NEVER return personal UPI ID");
+  const coJson = JSON.parse(coText);
+  assert.equal(coJson.mode, "gateway_razorpay");
+  assert.equal(coJson.amountInr, 599);
+
+  // Invalid HMAC signature must reject
+  const badVerify = await handleRequest(
+    new Request("https://worker.example/subscription/verify-gateway", {
+      method: "POST",
+      headers: {
+        Origin: "https://xalan-aesthetic.github.io",
+        Authorization: `Bearer ${alice.jwt}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        orderId: coJson.orderId,
+        razorpay_order_id: "order_RZP_999",
+        razorpay_payment_id: "pay_RZP_111",
+        razorpay_signature: "0".repeat(64),
+      }),
+    }),
+    envGateway,
+    { fetchImpl: mockFetch, nowSec: now, nowMs: now * 1000 }
+  );
+  assert.equal(badVerify.status, 400);
+
+  // Valid HMAC signature must activate Ultimate immediately
+  const validSig = await hmacSha256Hex(rzpSecret, "order_RZP_999|pay_RZP_111");
+  const goodVerify = await handleRequest(
+    new Request("https://worker.example/subscription/verify-gateway", {
+      method: "POST",
+      headers: {
+        Origin: "https://xalan-aesthetic.github.io",
+        Authorization: `Bearer ${alice.jwt}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        orderId: coJson.orderId,
+        razorpay_order_id: "order_RZP_999",
+        razorpay_payment_id: "pay_RZP_111",
+        razorpay_signature: validSig,
+      }),
+    }),
+    envGateway,
+    { fetchImpl: mockFetch, nowSec: now, nowMs: now * 1000 }
+  );
+  assert.equal(goodVerify.status, 200);
+  const goodJson = await goodVerify.json();
+  assert.equal(goodJson.subscription.planId, "ultimate");
+});
+
+test("End-to-end UI subscription checkout, UTR submission, checkout wipe & admin approval", async () => {
+  clearJwkCache();
+  clearFallbackStore();
+
+  const payerTok = await generateTestKeyAndJwt(
+    { sub: "uid_ui_payer", user_id: "uid_ui_payer", email: "nofakeamod@gmail.com", email_verified: true },
+    { kid: "ui-sub-1" }
+  );
+  const now = payerTok.now;
+  const html = fs.readFileSync(path.resolve(__dirname, "../docs/index.html"), "utf8");
+  const originalJs = fs.readFileSync(path.resolve(__dirname, "../docs/app.js"), "utf8");
+
+  const { document } = createLightweightDomFromHtml(html);
+  const store = new Map();
+  globalThis.document = document;
+  globalThis.localStorage = {
+    getItem: k => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: k => store.delete(k),
+  };
+  globalThis.window = {
+    innerWidth: 412,
+    innerHeight: 915,
+    devicePixelRatio: 2,
+    location: { hostname: "xalan-aesthetic.github.io" },
+    matchMedia: () => ({ matches: false }),
+    addEventListener: () => {},
+    confirm: () => true,
+    prompt: () => "Receipt mismatch",
+  };
+  globalThis.requestAnimationFrame = cb => {
+    if (cb?.name === "tick" || cb?.name === "frame") return 1;
+    return setTimeout(() => cb(Date.now()), 0);
+  };
+  globalThis.cancelAnimationFrame = id => clearTimeout(id);
+  Object.defineProperty(globalThis, "navigator", {
+    value: { clipboard: { writeText: async () => {} } },
+    configurable: true,
+  });
+
+  const workerEnv = {
+    GEMINI_API_KEY: "server-secret-e2e",
+    FIREBASE_PROJECT_ID: PROJECT_ID,
+    MERCHANT_UPI_VPA: "syntheticmerchant@exampleupi",
+    MERCHANT_PAYEE_NAME: "INFFOLER Guardian Desk",
+    ADMIN_EMAILS: "nofakeamod@gmail.com",
+  };
+
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).startsWith("https://www.googleapis.com/identitytoolkit/v3/relyingparty/getProjectConfig")) {
+      return new Response(JSON.stringify({ authorizedDomains: ["xalan-aesthetic.github.io"] }), { status: 200 });
+    }
+    if (String(url).startsWith("https://inffoler-ai-proxy.xalanvetrnen.workers.dev")) {
+      return handleRequest(new Request(url, init), workerEnv, {
+        nowSec: now,
+        nowMs: now * 1000,
+        fetchImpl: async upstreamUrl => {
+          if (String(upstreamUrl) === GOOGLE_JWK_URL) {
+            return new Response(JSON.stringify({ keys: [payerTok.publicJwk] }), {
+              status: 200,
+              headers: { "Content-Type": "application/json", "Cache-Control": "max-age=300" },
+            });
+          }
+          return new Response("{}", { status: 200 });
+        },
+      });
+    }
+    throw new Error(`Unexpected fetch URL in UI subscription test: ${url}`);
+  };
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "inffoler-sub-e2e-"));
+  try {
+    fs.writeFileSync(
+      path.join(tmpDir, "firebase-app.js"),
+      `const apps = [];
+       export function getApps() { return apps; }
+       export function getApp() { return apps[0]; }
+       export function initializeApp(cfg) { const app = { cfg }; apps.push(app); return app; }`
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "firebase-auth.js"),
+      `export const __state = { currentUser: null, listeners: [] };
+       export class GoogleAuthProvider { setCustomParameters() {} }
+       export class EmailAuthProvider { static credential(e, p) { return { e, p }; } }
+       export const browserLocalPersistence = {};
+       export function getAuth() { return __state; }
+       export async function setPersistence() {}
+       export function onAuthStateChanged(_a, cb) { __state.listeners.push(cb); cb(__state.currentUser); return () => {}; }
+       export async function getRedirectResult() { return null; }
+       export async function signInWithEmailAndPassword(_a, email) {
+         const user = { uid: "uid_ui_payer", email, displayName: "Alankrit Admin", providerData: [{ providerId: "password" }], getIdToken: async () => ${JSON.stringify(payerTok.jwt)}, reload: async () => {} };
+         __state.currentUser = user;
+         await Promise.all(__state.listeners.map(fn => fn(user)));
+         return { user };
+       }
+       export async function createUserWithEmailAndPassword() {}
+       export async function updateProfile() {}
+       export async function signInWithPopup() {}
+       export async function signInWithRedirect() {}
+       export async function sendPasswordResetEmail() {}
+       export async function linkWithPopup() {}
+       export async function linkWithCredential() {}
+       export async function deleteUser() {}
+       export async function signOut() { __state.currentUser = null; await Promise.all(__state.listeners.map(fn => fn(null))); }`
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "firebase-firestore.js"),
+      `export function getFirestore() { return {}; }
+       export function doc(_db, ...p) { return p.join("/"); }
+       export function collection(_db, ...p) { return p.join("/"); }
+       export function query(c) { return c; }
+       export function orderBy() { return null; }
+       export function limit() { return null; }
+       export function serverTimestamp() { return new Date().toISOString(); }
+       export function increment(n) { return n; }
+       export async function getDoc() { return { exists: () => false, data: () => ({}) }; }
+       export async function setDoc() {}
+       export async function updateDoc() {}
+       export async function deleteDoc() {}
+       export async function getDocs() { return { docs: [] }; }
+       export function writeBatch() { return { set() {}, update() {}, delete() {}, async commit() {} }; }
+       export function onSnapshot(_q, onNext) { onNext({ docs: [] }); return () => {}; }`
+    );
+
+    const patchedAppJs = originalJs
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js", "./firebase-app.js")
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js", "./firebase-auth.js")
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js", "./firebase-firestore.js");
+    fs.writeFileSync(path.join(tmpDir, "app.js"), patchedAppJs);
+
+    await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
+    await new Promise(r => setTimeout(r, 20));
+
+    // Sign in
+    document.getElementById("loginEmail").value = "nofakeamod@gmail.com";
+    document.getElementById("loginPassword").value = "pass1234";
+    await document.getElementById("emailLoginForm").submit();
+    await new Promise(r => setTimeout(r, 40));
+
+    assert.equal(document.getElementById("topbarPlanLabel").textContent, "FREE");
+
+    // Navigate to Plans view & initiate Premium checkout
+    await document.getElementById("btnNavPlans").click();
+    assert.equal(document.getElementById("view-plans").classList.contains("active"), true);
+
+    await document.getElementById("btnChoosePremium").click();
+    await new Promise(r => setTimeout(r, 30));
+
+    // Checkout modal displays ephemeral UPI info & UTR form
+    assert.equal(document.getElementById("checkoutModal").classList.contains("hidden"), false);
+    assert.ok(document.getElementById("checkoutDynamicArea").innerHTML.includes("syntheticmerchant@exampleupi"));
+
+    // Submit UTR
+    document.getElementById("utrInput").value = "512345678901";
+    document.getElementById("utrPaymentAppSelect").value = "GPay";
+    document.getElementById("utrPayerNameInput").value = "Tester";
+    await document.getElementById("utrSubmitForm").submit();
+    await new Promise(r => setTimeout(r, 40));
+
+    // Checkout modal closes & ephemeral UPI DOM is wiped completely
+    assert.equal(document.getElementById("checkoutModal").classList.contains("hidden"), true);
+    assert.equal(document.getElementById("checkoutDynamicArea").innerHTML, "");
+    assert.equal(document.getElementById("topbarPlanLabel").textContent, "FREE");
+    assert.equal(document.getElementById("subBannerStatusPill").textContent, "PENDING VERIFICATION");
+
+    // Admin Dashboard renders pending submission & approves it
+    assert.equal(document.getElementById("adminVerificationPanel").classList.contains("hidden"), false);
+    const approveBtn = document.getElementById("adminOrdersList").querySelector("[data-admin-approve]");
+    assert.ok(approveBtn, "Admin dashboard must show Verify & Activate button for pending UTR");
+    await approveBtn.click();
+    await new Promise(r => setTimeout(r, 40));
+
+    assert.equal(document.getElementById("topbarPlanLabel").textContent, "PREMIUM");
+    assert.equal(document.getElementById("subBannerStatusPill").textContent, "PREMIUM PLAN");
+    assert.match(document.getElementById("subExpirySummary").textContent, /30d remaining/);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
