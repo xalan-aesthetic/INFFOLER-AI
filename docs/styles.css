@@ -2099,7 +2099,14 @@ body {
   place-items: center;
 }
 
-.google-signin-btn {
+.social-auth-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.google-signin-btn,
+.provider-btn {
   width: 100%;
   min-height: 46px;
   padding: 10px 16px;
@@ -2108,20 +2115,54 @@ body {
   background: #ffffff;
   color: #1f2937;
   font-family: var(--font-body);
-  font-size: 0.9rem;
+  font-size: 0.88rem;
   font-weight: 700;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 10px;
   cursor: pointer;
-  transition: transform 0.15s ease, box-shadow 0.2s ease;
+  transition: transform 0.15s ease, box-shadow 0.2s ease, border-color 0.2s ease;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
 }
 
-.google-signin-btn:hover {
+.provider-btn.microsoft {
+  background: #171d2c;
+  color: #f8fafc;
+  border-color: rgba(148, 163, 184, 0.28);
+}
+
+[data-theme="light"] .provider-btn.microsoft {
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+.provider-btn.apple {
+  background: #050507;
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+[data-theme="light"] .provider-btn.apple {
+  background: #0f172a;
+  color: #ffffff;
+}
+
+.provider-btn.phone {
+  background: linear-gradient(135deg, rgba(0, 229, 255, 0.14), rgba(168, 85, 247, 0.14));
+  color: var(--text-main);
+  border-color: rgba(0, 229, 255, 0.36);
+}
+
+.google-signin-btn:hover,
+.provider-btn:hover {
   transform: translateY(-1px);
   box-shadow: 0 8px 20px rgba(0, 229, 255, 0.22);
+}
+
+.provider-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
 }
 
 .auth-divider {
@@ -2142,12 +2183,18 @@ body {
 
 .auth-tabs {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 5px;
   padding: 4px;
   border-radius: 12px;
   background: var(--bg-input);
   border: 1px solid var(--border-subtle);
+}
+
+@media (max-width: 400px) {
+  .auth-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .auth-tab {
@@ -2164,6 +2211,62 @@ body {
 .auth-tab.active {
   background: rgba(168, 85, 247, 0.22);
   color: var(--text-main);
+}
+
+.phone-input-row {
+  display: grid;
+  grid-template-columns: minmax(128px, 0.44fr) 1fr;
+  gap: 8px;
+}
+
+@media (max-width: 420px) {
+  .phone-input-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.phone-country-select {
+  font-size: 0.84rem;
+  padding: 8px 10px;
+}
+
+.phone-recaptcha-slot {
+  display: flex;
+  justify-content: center;
+  min-height: 2px;
+  overflow-x: auto;
+}
+
+.otp-status-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(0, 229, 255, 0.08);
+  border: 1px solid rgba(0, 229, 255, 0.28);
+  font-size: 0.76rem;
+  color: var(--cyan);
+}
+
+.otp-timer-pill {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--teal);
+}
+
+.otp-code-input {
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 1.25rem;
+  letter-spacing: 0.35em;
+  font-weight: 700;
+}
+
+.badge-chip.blue {
+  color: #38bdf8;
 }
 
 .auth-feedback {

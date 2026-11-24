@@ -22,6 +22,16 @@ import {
   classifyTaskPreview,
   formatVerificationBadge,
 } from "../docs/reasoning-engine.js";
+import {
+  normalizePhoneInput,
+  validateOtpCode,
+  maskPhoneNumber,
+  isApplePrivateRelayEmail,
+  resolveDisplayIdentity,
+  getProviderBadgeList,
+  OtpRateLimiter,
+  mapMultiProviderAuthError,
+} from "../docs/auth-providers.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -263,6 +273,8 @@ test("CORS preflight allows Authorization and /health reports authRequired witho
   assert.ok(!healthText.includes("super-secret-value"));
   const healthJson = JSON.parse(healthText);
   assert.equal(healthJson.authRequired, true);
+  assert.deepEqual(healthJson.authProviders, ["google.com", "microsoft.com", "apple.com", "phone", "password"]);
+  assert.equal(healthJson.sessionEndpoint, "/auth/session");
   assert.equal(healthJson.freeForAll, true);
   assert.equal(healthJson.version, "2.3.0");
   assert.equal(healthJson.reasoningEngineVersion, "1.0.0");
@@ -359,11 +371,32 @@ test("Frontend integrity: DOM IDs match, no unauthenticated guest storage, all 6
     "engineActiveModel",
     "engineActiveMode",
     "engineGenerationStatus",
+    "btnMicrosoftSignIn",
+    "btnAppleSignIn",
+    "btnOpenPhoneAuth",
+    "phoneAuthForm",
+    "phoneCountrySelect",
+    "phoneNumberInput",
+    "phoneRecaptchaContainer",
+    "btnSendPhoneOtp",
+    "phoneOtpCodeInput",
+    "btnVerifyPhoneOtp",
+    "btnResendPhoneOtp",
+    "btnLinkMicrosoft",
+    "btnLinkApple",
+    "btnShowLinkPhone",
+    "linkPhoneForm",
+    "linkPhoneCountrySelect",
+    "linkPhoneNumberInput",
+    "linkPhoneOtpInput",
   ]) {
     assert.ok(html.includes(`id="${id}"`), `Missing upgraded HTML element #${id}`);
   }
+  assert.ok(html.includes('<option value="+91" selected>'), "India (+91) must be the default country code");
   assert.ok(!js.includes("FALLBACK_CHAINS"), "Silent model switching chains must not exist");
   assert.ok(js.includes("./reasoning-engine.js"), "app.js must import ./reasoning-engine.js");
+  assert.ok(js.includes("./auth-providers.js"), "app.js must import ./auth-providers.js");
+  assert.ok(!/PRIVATE KEY-----|client_secret/i.test(js + html), "Frontend must never expose OAuth secrets or Apple private keys");
 });
 
 import os from "node:os";
@@ -606,7 +639,9 @@ test("End-to-end login flow: UI screen, Google & Email Sign-In/Sign-Up, redirect
         calls: { google: 0, emailLogin: 0, emailSignup: 0, reset: 0, signOut: 0 },
       };
       export class GoogleAuthProvider { setCustomParameters() {} }
+      export class OAuthProvider { constructor(id) { this.providerId = id; } setCustomParameters() {} addScope() {} }
       export class EmailAuthProvider { static credential(e, p) { return { e, p }; } }
+      export class RecaptchaVerifier { clear() {} }
       export const browserLocalPersistence = {};
       export function getAuth() { return __state; }
       export async function setPersistence() {}
@@ -668,9 +703,12 @@ test("End-to-end login flow: UI screen, Google & Email Sign-In/Sign-Up, redirect
         return { user };
       }
       export async function signInWithRedirect() {}
+      export async function signInWithPhoneNumber() { return { async confirm() { return { user: null }; } }; }
       export async function sendPasswordResetEmail() { __state.calls.reset++; }
       export async function linkWithPopup() {}
+      export async function linkWithRedirect() {}
       export async function linkWithCredential() {}
+      export async function linkWithPhoneNumber() { return { async confirm() { return { user: null }; } }; }
       export async function deleteUser() {}
       export async function signOut() {
         __state.calls.signOut++;
@@ -725,6 +763,10 @@ test("End-to-end login flow: UI screen, Google & Email Sign-In/Sign-Up, redirect
     fs.copyFileSync(
       path.resolve(__dirname, "../docs/reasoning-engine.js"),
       path.join(tmpDir, "reasoning-engine.js")
+    );
+    fs.copyFileSync(
+      path.resolve(__dirname, "../docs/auth-providers.js"),
+      path.join(tmpDir, "auth-providers.js")
     );
 
     const { getApps } = await import(pathToFileURL(path.join(tmpDir, "firebase-app.js")).href);
@@ -958,7 +1000,9 @@ test("Audio SFX, ambient music, volume persistence, no autoplay, and AI thinking
       path.join(tmpDir, "firebase-auth.js"),
       `export const __state = { currentUser: null, listeners: [] };
        export class GoogleAuthProvider { setCustomParameters() {} }
+       export class OAuthProvider { constructor(id) { this.providerId = id; } setCustomParameters() {} addScope() {} }
        export class EmailAuthProvider { static credential(e, p) { return { e, p }; } }
+       export class RecaptchaVerifier { clear() {} }
        export const browserLocalPersistence = {};
        export function getAuth() { return __state; }
        export async function setPersistence() {}
@@ -974,9 +1018,12 @@ test("Audio SFX, ambient music, volume persistence, no autoplay, and AI thinking
        export async function updateProfile() {}
        export async function signInWithPopup() {}
        export async function signInWithRedirect() {}
+       export async function signInWithPhoneNumber() { return { async confirm() { return { user: null }; } }; }
        export async function sendPasswordResetEmail() {}
        export async function linkWithPopup() {}
+       export async function linkWithRedirect() {}
        export async function linkWithCredential() {}
+       export async function linkWithPhoneNumber() { return { async confirm() { return { user: null }; } }; }
        export async function deleteUser() {}
        export async function signOut() {}`
     );
@@ -1007,6 +1054,10 @@ test("Audio SFX, ambient music, volume persistence, no autoplay, and AI thinking
     fs.copyFileSync(
       path.resolve(__dirname, "../docs/reasoning-engine.js"),
       path.join(tmpDir, "reasoning-engine.js")
+    );
+    fs.copyFileSync(
+      path.resolve(__dirname, "../docs/auth-providers.js"),
+      path.join(tmpDir, "auth-providers.js")
     );
 
     await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
@@ -1265,7 +1316,9 @@ test("Frontend quota/5xx handling: safe backoff, bounded retries, Retry button, 
       path.join(tmpDir, "firebase-auth.js"),
       `export const __state = { currentUser: null, listeners: [] };
        export class GoogleAuthProvider { setCustomParameters() {} }
+       export class OAuthProvider { constructor(id) { this.providerId = id; } setCustomParameters() {} addScope() {} }
        export class EmailAuthProvider { static credential(e, p) { return { e, p }; } }
+       export class RecaptchaVerifier { clear() {} }
        export const browserLocalPersistence = {};
        export function getAuth() { return __state; }
        export async function setPersistence() {}
@@ -1281,9 +1334,12 @@ test("Frontend quota/5xx handling: safe backoff, bounded retries, Retry button, 
        export async function updateProfile() {}
        export async function signInWithPopup() {}
        export async function signInWithRedirect() {}
+       export async function signInWithPhoneNumber() { return { async confirm() { return { user: null }; } }; }
        export async function sendPasswordResetEmail() {}
        export async function linkWithPopup() {}
+       export async function linkWithRedirect() {}
        export async function linkWithCredential() {}
+       export async function linkWithPhoneNumber() { return { async confirm() { return { user: null }; } }; }
        export async function deleteUser() {}
        export async function signOut() {}`
     );
@@ -1314,6 +1370,10 @@ test("Frontend quota/5xx handling: safe backoff, bounded retries, Retry button, 
     fs.copyFileSync(
       path.resolve(__dirname, "../docs/reasoning-engine.js"),
       path.join(tmpDir, "reasoning-engine.js")
+    );
+    fs.copyFileSync(
+      path.resolve(__dirname, "../docs/auth-providers.js"),
+      path.join(tmpDir, "auth-providers.js")
     );
 
     await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
@@ -1799,8 +1859,10 @@ test("Reasoning Engine Scenario 10 & E2E: Reasoning mode switcher, status bar, e
       return new Response(JSON.stringify({ authorizedDomains: ["xalan-aesthetic.github.io"] }), { status: 200 });
     }
     if (String(url).startsWith("https://inffoler-ai-proxy.xalanvetrnen.workers.dev")) {
-      workerRequestCount += 1;
-      lastWorkerRequestBody = JSON.parse(init.body);
+      if (!String(url).endsWith("/auth/session")) {
+        workerRequestCount += 1;
+        lastWorkerRequestBody = init.body ? JSON.parse(init.body) : null;
+      }
       return handleRequest(
         new Request(url, init),
         { GEMINI_API_KEY: "secret-e2e-key", FIREBASE_PROJECT_ID: PROJECT_ID },
@@ -1851,7 +1913,9 @@ test("Reasoning Engine Scenario 10 & E2E: Reasoning mode switcher, status bar, e
       path.join(tmpDir, "firebase-auth.js"),
       `export const __state = { currentUser: null, listeners: [] };
        export class GoogleAuthProvider { setCustomParameters() {} }
+       export class OAuthProvider { constructor(id) { this.providerId = id; } setCustomParameters() {} addScope() {} }
        export class EmailAuthProvider { static credential(e, p) { return { e, p }; } }
+       export class RecaptchaVerifier { clear() {} }
        export const browserLocalPersistence = {};
        export function getAuth() { return __state; }
        export async function setPersistence() {}
@@ -1867,9 +1931,12 @@ test("Reasoning Engine Scenario 10 & E2E: Reasoning mode switcher, status bar, e
        export async function updateProfile() {}
        export async function signInWithPopup() {}
        export async function signInWithRedirect() {}
+       export async function signInWithPhoneNumber() { return { async confirm() { return { user: null }; } }; }
        export async function sendPasswordResetEmail() {}
        export async function linkWithPopup() {}
+       export async function linkWithRedirect() {}
        export async function linkWithCredential() {}
+       export async function linkWithPhoneNumber() { return { async confirm() { return { user: null }; } }; }
        export async function deleteUser() {}
        export async function signOut() {}`
     );
@@ -1900,6 +1967,10 @@ test("Reasoning Engine Scenario 10 & E2E: Reasoning mode switcher, status bar, e
     fs.copyFileSync(
       path.resolve(__dirname, "../docs/reasoning-engine.js"),
       path.join(tmpDir, "reasoning-engine.js")
+    );
+    fs.copyFileSync(
+      path.resolve(__dirname, "../docs/auth-providers.js"),
+      path.join(tmpDir, "auth-providers.js")
     );
 
     await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
@@ -1959,6 +2030,522 @@ test("Reasoning Engine Scenario 10 & E2E: Reasoning mode switcher, status bar, e
 
     assert.match(document.getElementById("engineGenerationStatus").textContent, /Cancelled by user/);
     assert.ok(document.getElementById("chatMessages").innerHTML.includes("Generation stopped."));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+/* ==================== MULTI-PROVIDER AUTHENTICATION TESTS ==================== */
+
+test("Worker /auth/session validates Microsoft, Apple Private Relay, Phone OTP tokens and rejects anonymous tokens", async () => {
+  clearJwkCache();
+  const env = { GEMINI_API_KEY: "secret-auth-test", FIREBASE_PROJECT_ID: PROJECT_ID };
+
+  // 1. Microsoft OIDC token
+  const ms = await generateTestKeyAndJwt(
+    {
+      sub: "uid_ms_user",
+      user_id: "uid_ms_user",
+      email: "explorer@outlook.com",
+      email_verified: true,
+      firebase: { sign_in_provider: "microsoft.com" },
+    },
+    { kid: "ms-kid-1" }
+  );
+  const msRes = await handleRequest(
+    new Request("https://worker.example/auth/session", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${ms.jwt}`, Origin: "https://xalan-aesthetic.github.io" },
+    }),
+    env,
+    {
+      nowSec: ms.now,
+      fetchImpl: async url => {
+        if (String(url) === GOOGLE_JWK_URL) {
+          return new Response(JSON.stringify({ keys: [ms.publicJwk] }), { status: 200 });
+        }
+        throw new Error("Unexpected upstream call");
+      },
+    }
+  );
+  assert.equal(msRes.status, 200);
+  const msJson = await msRes.json();
+  assert.equal(msJson.verified, true);
+  assert.equal(msJson.uid, "uid_ms_user");
+  assert.equal(msJson.signInProvider, "microsoft.com");
+  assert.equal(msJson.isApplePrivateRelay, false);
+
+  // 2. Apple Private Relay token
+  clearJwkCache();
+  const apple = await generateTestKeyAndJwt(
+    {
+      sub: "uid_apple_user",
+      user_id: "uid_apple_user",
+      email: "x9k2m8@privaterelay.appleid.com",
+      email_verified: true,
+      firebase: { sign_in_provider: "apple.com" },
+    },
+    { kid: "apple-kid-1" }
+  );
+  const appleRes = await handleRequest(
+    new Request("https://worker.example/auth/session", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${apple.jwt}`, Origin: "https://xalan-aesthetic.github.io" },
+    }),
+    env,
+    {
+      nowSec: apple.now,
+      fetchImpl: async () => new Response(JSON.stringify({ keys: [apple.publicJwk] }), { status: 200 }),
+    }
+  );
+  assert.equal(appleRes.status, 200);
+  const appleJson = await appleRes.json();
+  assert.equal(appleJson.signInProvider, "apple.com");
+  assert.equal(appleJson.isApplePrivateRelay, true);
+
+  // 3. Phone OTP token (+91 India)
+  clearJwkCache();
+  const phoneTok = await generateTestKeyAndJwt(
+    {
+      sub: "uid_phone_in",
+      user_id: "uid_phone_in",
+      email: undefined,
+      phone_number: "+919876543210",
+      firebase: { sign_in_provider: "phone" },
+    },
+    { kid: "phone-kid-1" }
+  );
+  const phoneRes = await handleRequest(
+    new Request("https://worker.example/auth/session", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${phoneTok.jwt}`, Origin: "https://xalan-aesthetic.github.io" },
+    }),
+    env,
+    {
+      nowSec: phoneTok.now,
+      fetchImpl: async () => new Response(JSON.stringify({ keys: [phoneTok.publicJwk] }), { status: 200 }),
+    }
+  );
+  assert.equal(phoneRes.status, 200);
+  const phoneJson = await phoneRes.json();
+  assert.equal(phoneJson.signInProvider, "phone");
+  assert.equal(phoneJson.hasPhoneNumber, true);
+  assert.equal(phoneJson.phoneNumberMasked, "+91••••••3210");
+
+  // 4. Reject anonymous Firebase sessions
+  clearJwkCache();
+  const anon = await generateTestKeyAndJwt(
+    {
+      sub: "uid_anon_blocked",
+      user_id: "uid_anon_blocked",
+      firebase: { sign_in_provider: "anonymous" },
+    },
+    { kid: "anon-kid-1" }
+  );
+  const anonRes = await handleRequest(
+    new Request("https://worker.example/auth/session", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${anon.jwt}`, Origin: "https://xalan-aesthetic.github.io" },
+    }),
+    env,
+    {
+      nowSec: anon.now,
+      fetchImpl: async () => new Response(JSON.stringify({ keys: [anon.publicJwk] }), { status: 200 }),
+    }
+  );
+  assert.equal(anonRes.status, 401);
+  const anonJson = await anonRes.json();
+  assert.equal(anonJson.code, "ANONYMOUS_NOT_ALLOWED");
+});
+
+test("Phone OTP validation, rate limiter abuse protection, Apple Private Relay identity, and safe non-merging error messages", () => {
+  // India (+91) default validation & normalization
+  assert.deepEqual(normalizePhoneInput("98765 43210", "+91"), { ok: true, e164: "+919876543210" });
+  assert.deepEqual(normalizePhoneInput("09876543210", "+91"), { ok: true, e164: "+919876543210" });
+  assert.equal(normalizePhoneInput("1234567890", "+91").ok, false);
+  assert.equal(normalizePhoneInput("98765", "+91").ok, false);
+  assert.deepEqual(normalizePhoneInput("+14155550199", "+91"), { ok: true, e164: "+14155550199" });
+  assert.equal(maskPhoneNumber("+919876543210"), "+91 ••••••3210");
+
+  // OTP format validation
+  assert.deepEqual(validateOtpCode(" 482 910 "), { ok: true, code: "482910" });
+  assert.equal(validateOtpCode("12ab56").ok, false);
+  assert.equal(validateOtpCode("1234").ok, false);
+
+  // Rate limiter: cooldown, window cap, failed attempt lockout, expiry
+  const limiter = new OtpRateLimiter({
+    cooldownSec: 45,
+    expirySec: 300,
+    maxSendPerWindow: 3,
+    sendWindowMs: 600000,
+    maxVerifyAttempts: 5,
+  });
+  let t = 1_000_000;
+  assert.equal(limiter.canSendOtp(t).allowed, true);
+  limiter.recordOtpSent(t);
+  assert.equal(limiter.canSendOtp(t + 10_000).allowed, false);
+  assert.equal(limiter.canSendOtp(t + 10_000).waitSec, 35);
+
+  t += 46_000;
+  assert.equal(limiter.canSendOtp(t).allowed, true);
+  limiter.recordOtpSent(t);
+  t += 46_000;
+  limiter.recordOtpSent(t);
+  t += 46_000;
+  assert.equal(limiter.canSendOtp(t).allowed, false, "Must enforce 3-send window cap");
+
+  // Failed attempt lockout after 5 wrong tries
+  for (let i = 0; i < 5; i++) {
+    assert.equal(limiter.canAttemptVerify(t + 1000).allowed, true);
+    limiter.recordFailedVerifyAttempt();
+  }
+  assert.equal(limiter.canAttemptVerify(t + 1000).locked, true);
+
+  // Expiry check
+  limiter.recordOtpSent(t + 10_000);
+  assert.equal(limiter.canAttemptVerify(t + 10_000 + 305_000).expired, true);
+
+  // Apple Private Relay identity & provider badges
+  assert.equal(isApplePrivateRelayEmail("abc@privaterelay.appleid.com"), true);
+  const relayIdentity = resolveDisplayIdentity({
+    uid: "uid_apple_1",
+    email: "hidden@privaterelay.appleid.com",
+    providerData: [{ providerId: "apple.com" }],
+  });
+  assert.equal(relayIdentity.isPrivateRelay, true);
+  assert.match(relayIdentity.subtitle, /Apple Private Relay/);
+  const badges = getProviderBadgeList({
+    email: "hidden@privaterelay.appleid.com",
+    phoneNumber: "+919876543210",
+    providerData: [{ providerId: "apple.com" }, { providerId: "microsoft.com" }, { providerId: "phone" }],
+  });
+  assert.ok(badges.some(b => b.id === "microsoft.com"));
+  assert.ok(badges.some(b => b.id === "apple-relay"));
+  assert.ok(badges.some(b => b.id === "phone"));
+
+  // Safe non-merging guidance on account conflict
+  const conflictMsg = mapMultiProviderAuthError(
+    { code: "auth/account-exists-with-different-credential", customData: { email: "user@example.com" } },
+    "microsoft.com"
+  );
+  assert.match(conflictMsg, /Sign in with your original method first/i);
+  assert.match(
+    mapMultiProviderAuthError({ code: "auth/operation-not-allowed" }, "apple.com"),
+    /Apple sign-in is not yet enabled/i
+  );
+});
+
+test("E2E Multi-Provider Auth: Microsoft, Apple Private Relay, Phone OTP (+91), Backend Verification & Account Linking", async () => {
+  clearJwkCache();
+  const { jwt: msJwt, publicJwk, now } = await generateTestKeyAndJwt(
+    {
+      sub: "uid_multi_e2e",
+      user_id: "uid_multi_e2e",
+      email: "user@outlook.com",
+      email_verified: true,
+      firebase: { sign_in_provider: "microsoft.com" },
+    },
+    { kid: "multi-kid-1" }
+  );
+  const { jwt: phoneJwt, publicJwk: publicJwkPhone } = await generateTestKeyAndJwt(
+    {
+      sub: "uid_phone_e2e",
+      user_id: "uid_phone_e2e",
+      email: undefined,
+      phone_number: "+919876543210",
+      firebase: { sign_in_provider: "phone" },
+    },
+    { kid: "multi-kid-phone" }
+  );
+
+  const html = fs.readFileSync(path.resolve(__dirname, "../docs/index.html"), "utf8");
+  const originalJs = fs.readFileSync(path.resolve(__dirname, "../docs/app.js"), "utf8");
+  const { document } = createLightweightDomFromHtml(html);
+
+  const store = new Map();
+  globalThis.document = document;
+  globalThis.localStorage = {
+    getItem: k => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: k => store.delete(k),
+  };
+  globalThis.window = {
+    innerWidth: 412,
+    innerHeight: 915,
+    devicePixelRatio: 2,
+    location: { hostname: "xalan-aesthetic.github.io" },
+    matchMedia: () => ({ matches: false }),
+    addEventListener: () => {},
+    confirm: () => true,
+  };
+  globalThis.requestAnimationFrame = cb => {
+    if (cb?.name === "tick" || cb?.name === "frame") return 1;
+    return setTimeout(() => cb(Date.now()), 0);
+  };
+  globalThis.cancelAnimationFrame = id => clearTimeout(id);
+  Object.defineProperty(globalThis, "navigator", {
+    value: { clipboard: { writeText: async () => {} } },
+    configurable: true,
+  });
+
+  const backendSessionsChecked = [];
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).startsWith("https://www.googleapis.com/identitytoolkit/v3/relyingparty/getProjectConfig")) {
+      return new Response(JSON.stringify({ authorizedDomains: ["xalan-aesthetic.github.io"] }), { status: 200 });
+    }
+    if (String(url).startsWith("https://inffoler-ai-proxy.xalanvetrnen.workers.dev")) {
+      const res = await handleRequest(
+        new Request(url, init),
+        { GEMINI_API_KEY: "secret-multi", FIREBASE_PROJECT_ID: PROJECT_ID },
+        {
+          nowSec: now,
+          fetchImpl: async () =>
+            new Response(JSON.stringify({ keys: [publicJwk, publicJwkPhone] }), { status: 200 }),
+        }
+      );
+      if (String(url).endsWith("/auth/session")) {
+        backendSessionsChecked.push(await res.clone().json());
+      }
+      return res;
+    }
+    throw new Error(`Unexpected fetch URL: ${url}`);
+  };
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "inffoler-multi-auth-"));
+  try {
+    const mockFirebaseAuth = `
+      export const __state = {
+        currentUser: null,
+        listeners: [],
+        calls: { microsoft: 0, apple: 0, phoneSend: 0, phoneVerify: 0, linkMicrosoft: 0, linkApple: 0, linkPhone: 0 },
+        simulateCancelNextPopup: false,
+      };
+      export class GoogleAuthProvider { setCustomParameters() {} }
+      export class OAuthProvider {
+        constructor(id) { this.providerId = id; this.scopes = []; }
+        setCustomParameters() {}
+        addScope(s) { this.scopes.push(s); }
+      }
+      export class EmailAuthProvider { static credential(e, p) { return { e, p }; } }
+      export class RecaptchaVerifier {
+        constructor(_auth, containerId, opts) { this.containerId = containerId; this.opts = opts; }
+        clear() {}
+      }
+      export const browserLocalPersistence = {};
+      export function getAuth() { return __state; }
+      export async function setPersistence() {}
+      export function onAuthStateChanged(_a, cb) { __state.listeners.push(cb); cb(__state.currentUser); return () => {}; }
+      export async function getRedirectResult() { return null; }
+      async function emit(user) {
+        __state.currentUser = user;
+        await Promise.all(__state.listeners.map(fn => fn(user)));
+      }
+      export async function signInWithEmailAndPassword() {}
+      export async function createUserWithEmailAndPassword() {}
+      export async function updateProfile() {}
+      export async function signInWithPopup(_a, provider) {
+        if (__state.simulateCancelNextPopup) {
+          __state.simulateCancelNextPopup = false;
+          const err = new Error("Popup closed");
+          err.code = "auth/popup-closed-by-user";
+          throw err;
+        }
+        if (provider.providerId === "microsoft.com") {
+          __state.calls.microsoft += 1;
+          const user = {
+            uid: "uid_multi_e2e",
+            email: "user@outlook.com",
+            displayName: "Microsoft Explorer",
+            providerData: [{ providerId: "microsoft.com" }],
+            getIdToken: async () => ${JSON.stringify(msJwt)},
+            reload: async () => {},
+          };
+          await emit(user);
+          return { user };
+        }
+        if (provider.providerId === "apple.com") {
+          __state.calls.apple += 1;
+          const user = {
+            uid: "uid_apple_e2e",
+            email: "priv89@privaterelay.appleid.com",
+            displayName: "",
+            providerData: [{ providerId: "apple.com" }],
+            getIdToken: async () => ${JSON.stringify(msJwt)},
+            reload: async () => {},
+          };
+          await emit(user);
+          return { user };
+        }
+        throw new Error("Unexpected provider " + provider.providerId);
+      }
+      export async function signInWithRedirect() {}
+      export async function signInWithPhoneNumber(_a, e164) {
+        __state.calls.phoneSend += 1;
+        return {
+          async confirm(code) {
+            if (code !== "654321") {
+              const err = new Error("Invalid code");
+              err.code = "auth/invalid-verification-code";
+              throw err;
+            }
+            __state.calls.phoneVerify += 1;
+            const user = {
+              uid: "uid_phone_e2e",
+              phoneNumber: e164,
+              email: null,
+              displayName: "",
+              providerData: [{ providerId: "phone" }],
+              getIdToken: async () => ${JSON.stringify(phoneJwt)},
+              reload: async () => {},
+            };
+            await emit(user);
+            return { user };
+          },
+        };
+      }
+      export async function sendPasswordResetEmail() {}
+      export async function linkWithPopup(user, provider) {
+        if (provider.providerId === "microsoft.com") __state.calls.linkMicrosoft += 1;
+        if (provider.providerId === "apple.com") __state.calls.linkApple += 1;
+        if (!user.providerData.some(p => p.providerId === provider.providerId)) {
+          user.providerData.push({ providerId: provider.providerId });
+        }
+        return { user };
+      }
+      export async function linkWithRedirect() {}
+      export async function linkWithCredential() {}
+      export async function linkWithPhoneNumber(user, e164) {
+        return {
+          async confirm(code) {
+            if (code !== "999888") throw Object.assign(new Error("Bad OTP"), { code: "auth/invalid-verification-code" });
+            __state.calls.linkPhone += 1;
+            user.phoneNumber = e164;
+            if (!user.providerData.some(p => p.providerId === "phone")) {
+              user.providerData.push({ providerId: "phone" });
+            }
+            return { user };
+          },
+        };
+      }
+      export async function deleteUser() {}
+      export async function signOut() { await emit(null); }
+    `;
+
+    fs.writeFileSync(
+      path.join(tmpDir, "firebase-app.js"),
+      `const apps = [];
+       export function getApps() { return apps; }
+       export function getApp() { return apps[0]; }
+       export function initializeApp(cfg) { const app = { cfg }; apps.push(app); return app; }`
+    );
+    fs.writeFileSync(path.join(tmpDir, "firebase-auth.js"), mockFirebaseAuth);
+    fs.writeFileSync(
+      path.join(tmpDir, "firebase-firestore.js"),
+      `export function getFirestore() { return {}; }
+       export function doc(_db, ...p) { return p.join("/"); }
+       export function collection(_db, ...p) { return p.join("/"); }
+       export function query(c) { return c; }
+       export function orderBy() { return null; }
+       export function limit() { return null; }
+       export function serverTimestamp() { return new Date().toISOString(); }
+       export function increment(n) { return n; }
+       export async function getDoc() { return { exists: () => false, data: () => ({}) }; }
+       export async function setDoc() {}
+       export async function updateDoc() {}
+       export async function deleteDoc() {}
+       export async function getDocs() { return { docs: [] }; }
+       export function writeBatch() { return { set() {}, update() {}, delete() {}, async commit() {} }; }
+       export function onSnapshot(_q, onNext) { onNext({ docs: [] }); return () => {}; }`
+    );
+
+    const patchedAppJs = originalJs
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js", "./firebase-app.js")
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js", "./firebase-auth.js")
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js", "./firebase-firestore.js");
+    fs.writeFileSync(path.join(tmpDir, "app.js"), patchedAppJs);
+    fs.copyFileSync(path.resolve(__dirname, "../docs/reasoning-engine.js"), path.join(tmpDir, "reasoning-engine.js"));
+    fs.copyFileSync(path.resolve(__dirname, "../docs/auth-providers.js"), path.join(tmpDir, "auth-providers.js"));
+
+    const { __state: authState } = await import(pathToFileURL(path.join(tmpDir, "firebase-auth.js")).href);
+    await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
+    await new Promise(r => setTimeout(r, 25));
+
+    // 1. Handle Microsoft popup cancellation gracefully
+    authState.simulateCancelNextPopup = true;
+    await document.getElementById("btnMicrosoftSignIn").click();
+    assert.match(document.getElementById("authFeedbackBox").textContent, /closed before finishing/i);
+    assert.equal(document.getElementById("appShell").classList.contains("hidden"), true);
+
+    // 2. Continue with Microsoft succeeds & verifies backend session
+    await document.getElementById("btnMicrosoftSignIn").click();
+    await new Promise(r => setTimeout(r, 35));
+    assert.equal(authState.calls.microsoft, 1);
+    assert.equal(document.getElementById("sidebarUserName").textContent, "Microsoft Explorer");
+    assert.ok(document.getElementById("modalProviderBadges").innerHTML.includes("Microsoft Linked"));
+    assert.equal(backendSessionsChecked.at(-1)?.signInProvider, "microsoft.com");
+    assert.equal(document.getElementById("topbarProxyLabel").textContent, "SESSION VERIFIED");
+
+    // 3. Log out -> Continue with Apple (Private Relay email)
+    await document.getElementById("btnSidebarAuthAction").click();
+    await new Promise(r => setTimeout(r, 20));
+    await document.getElementById("btnAppleSignIn").click();
+    await new Promise(r => setTimeout(r, 35));
+    assert.equal(authState.calls.apple, 1);
+    assert.equal(document.getElementById("sidebarUserName").textContent, "Apple Explorer");
+    assert.match(document.getElementById("sidebarUserEmail").textContent, /Apple Private Relay/);
+    assert.ok(document.getElementById("modalProviderBadges").innerHTML.includes("Private Relay Email"));
+
+    // 4. Link Microsoft & Phone OTP inside Settings modal for unified account
+    await document.getElementById("btnLinkMicrosoft").click();
+    await new Promise(r => setTimeout(r, 15));
+    assert.equal(authState.calls.linkMicrosoft, 1);
+    assert.ok(document.getElementById("modalProviderBadges").innerHTML.includes("Microsoft Linked"));
+
+    await document.getElementById("btnShowLinkPhone").click();
+    document.getElementById("linkPhoneNumberInput").value = "9876543210";
+    await document.getElementById("btnSendLinkPhoneOtp").click();
+    assert.equal(document.getElementById("linkPhoneOtpGroup").classList.contains("hidden"), false);
+    document.getElementById("linkPhoneOtpInput").value = "999888";
+    await document.getElementById("linkPhoneForm").submit();
+    await new Promise(r => setTimeout(r, 15));
+    assert.equal(authState.calls.linkPhone, 1);
+    assert.ok(document.getElementById("modalProviderBadges").innerHTML.includes("Phone OTP Verified"));
+
+    // 5. Log out -> Continue with Phone Number (OTP) with India (+91) default & cooldown
+    await document.getElementById("btnSidebarAuthAction").click();
+    await new Promise(r => setTimeout(r, 20));
+    await document.getElementById("btnOpenPhoneAuth").click();
+    assert.equal(document.getElementById("phoneAuthForm").classList.contains("hidden"), false);
+
+    // Invalid Indian number blocked before hitting Firebase
+    document.getElementById("phoneNumberInput").value = "12345";
+    await document.getElementById("phoneAuthForm").submit();
+    assert.equal(authState.calls.phoneSend, 0);
+    assert.match(document.getElementById("authFeedbackBox").textContent, /Indian mobile number/i);
+
+    // Valid +91 number sends OTP, masks display, activates cooldown
+    document.getElementById("phoneCountrySelect").value = "+91";
+    document.getElementById("phoneNumberInput").value = "9876543210";
+    await document.getElementById("phoneAuthForm").submit();
+    assert.equal(authState.calls.phoneSend, 1);
+    assert.equal(document.getElementById("phoneOtpTargetText").textContent, "OTP sent to +91 ••••••3210");
+    assert.equal(document.getElementById("btnResendPhoneOtp").disabled, true);
+
+    // Wrong OTP attempt warns remaining attempts
+    document.getElementById("phoneOtpCodeInput").value = "111111";
+    await document.getElementById("btnVerifyPhoneOtp").click();
+    assert.match(document.getElementById("authFeedbackBox").textContent, /4 attempts remaining/i);
+
+    // Correct OTP verifies & opens workspace with backend /auth/session validation
+    document.getElementById("phoneOtpCodeInput").value = "654321";
+    await document.getElementById("btnVerifyPhoneOtp").click();
+    await new Promise(r => setTimeout(r, 35));
+    assert.equal(authState.calls.phoneVerify, 1);
+    assert.equal(document.getElementById("appShell").classList.contains("hidden"), false);
+    assert.equal(document.getElementById("view-chat").classList.contains("active"), true);
+    assert.match(document.getElementById("sidebarUserEmail").textContent, /\+91 ••••••3210/);
+    assert.equal(backendSessionsChecked.at(-1)?.signInProvider, "phone");
+    assert.equal(backendSessionsChecked.at(-1)?.hasPhoneNumber, true);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

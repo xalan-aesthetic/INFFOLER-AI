@@ -58,23 +58,51 @@
           <p id="authCardSub">Access your private INFFOLER AI workspace</p>
         </div>
 
-        <!-- Continue with Google -->
-        <button type="button" class="google-signin-btn" id="btnGoogleSignIn">
-          <svg class="google-g-svg" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-            <path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.2-2.27H12v4.3h6.45a5.52 5.52 0 0 1-2.39 3.62v3.01h3.87c2.26-2.08 3.56-5.15 3.56-8.66z"/>
-            <path fill="#34A853" d="M12 24c3.24 0 5.95-1.07 7.93-2.91l-3.87-3.01c-1.07.72-2.45 1.15-4.06 1.15-3.12 0-5.77-2.11-6.72-4.95H1.28v3.11A12 12 0 0 0 12 24z"/>
-            <path fill="#FBBC05" d="M5.28 14.28A7.2 7.2 0 0 1 4.9 12c0-.79.14-1.56.38-2.28V6.61H1.28A12 12 0 0 0 0 12c0 1.94.46 3.77 1.28 5.39l4-3.11z"/>
-            <path fill="#EA4335" d="M12 4.77c1.76 0 3.34.61 4.58 1.8l3.44-3.44C17.94 1.19 15.23 0 12 0A12 12 0 0 0 1.28 6.61l4 3.11c.95-2.84 3.6-4.95 6.72-4.95z"/>
-          </svg>
-          <span>Continue with Google</span>
-        </button>
+        <!-- Official Multi-Provider OAuth Buttons -->
+        <div class="social-auth-stack">
+          <button type="button" class="google-signin-btn provider-btn google" id="btnGoogleSignIn">
+            <svg class="google-g-svg" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+              <path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.2-2.27H12v4.3h6.45a5.52 5.52 0 0 1-2.39 3.62v3.01h3.87c2.26-2.08 3.56-5.15 3.56-8.66z"/>
+              <path fill="#34A853" d="M12 24c3.24 0 5.95-1.07 7.93-2.91l-3.87-3.01c-1.07.72-2.45 1.15-4.06 1.15-3.12 0-5.77-2.11-6.72-4.95H1.28v3.11A12 12 0 0 0 12 24z"/>
+              <path fill="#FBBC05" d="M5.28 14.28A7.2 7.2 0 0 1 4.9 12c0-.79.14-1.56.38-2.28V6.61H1.28A12 12 0 0 0 0 12c0 1.94.46 3.77 1.28 5.39l4-3.11z"/>
+              <path fill="#EA4335" d="M12 4.77c1.76 0 3.34.61 4.58 1.8l3.44-3.44C17.94 1.19 15.23 0 12 0A12 12 0 0 0 1.28 6.61l4 3.11c.95-2.84 3.6-4.95 6.72-4.95z"/>
+            </svg>
+            <span>Continue with Google</span>
+          </button>
 
-        <div class="auth-divider"><span>or use email &amp; password</span></div>
+          <button type="button" class="provider-btn microsoft" id="btnMicrosoftSignIn">
+            <svg viewBox="0 0 23 23" width="19" height="19" aria-hidden="true">
+              <path fill="#f35325" d="M1 1h10v10H1z"/>
+              <path fill="#81bc06" d="M12 1h10v10H12z"/>
+              <path fill="#05a6f0" d="M1 12h10v10H1z"/>
+              <path fill="#ffba08" d="M12 12h10v10H12z"/>
+            </svg>
+            <span>Continue with Microsoft</span>
+          </button>
 
-        <!-- Auth Mode Tabs (Sign In, Create Account / Sign Up, Forgot Password) -->
+          <button type="button" class="provider-btn apple" id="btnAppleSignIn">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
+              <path d="M16.37 1.43c0 1.14-.42 2.2-1.25 3-.99 1.01-2.16 1.56-3.28 1.47-.14-1.1.38-2.24 1.19-3.04.88-.88 2.25-1.5 3.34-1.43zm4.18 15.23c-.57 1.3-.85 1.88-1.58 3.03-1.03 1.59-2.48 3.57-4.27 3.59-1.6.02-2.01-1.04-4.18-1.03-2.17.01-2.62 1.05-4.22 1.03-1.79-.02-3.16-1.81-4.19-3.4-2.88-4.42-3.18-9.6-1.4-12.35 1.26-1.94 3.26-3.08 5.14-3.08 1.91 0 3.11 1.05 4.69 1.05 1.53 0 2.47-1.06 4.67-1.06 1.67 0 3.44.91 4.7 2.49-4.13 2.26-3.46 8.15.64 9.73z"/>
+            </svg>
+            <span>Continue with Apple</span>
+          </button>
+
+          <button type="button" class="provider-btn phone" id="btnOpenPhoneAuth">
+            <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="6" y="2" width="12" height="20" rx="2.5"/>
+              <line x1="10" y1="18" x2="14" y2="18"/>
+            </svg>
+            <span>Continue with Phone Number (OTP)</span>
+          </button>
+        </div>
+
+        <div class="auth-divider"><span>or choose email, phone OTP &amp; recovery</span></div>
+
+        <!-- Auth Mode Tabs (Sign In, Create Account / Sign Up, Phone OTP, Forgot Password) -->
         <div class="auth-tabs" role="tablist">
           <button type="button" class="auth-tab active" data-auth-tab="login" role="tab" aria-selected="true">Sign In</button>
           <button type="button" class="auth-tab" data-auth-tab="signup" role="tab" aria-selected="false">Sign Up</button>
+          <button type="button" class="auth-tab" data-auth-tab="phone" role="tab" aria-selected="false">Phone OTP</button>
           <button type="button" class="auth-tab" data-auth-tab="reset" role="tab" aria-selected="false">Forgot?</button>
         </div>
 
@@ -118,6 +146,71 @@
           <div class="auth-switch-row">
             <span>Already have an account?</span>
             <button type="button" class="text-link-btn" id="btnQuickSwitchLogin">Sign In</button>
+          </div>
+        </form>
+
+        <!-- Phone Number (SMS OTP) Authentication -->
+        <form id="phoneAuthForm" class="auth-form hidden">
+          <div id="phoneEntryGroup">
+            <label class="field-label" for="phoneNumberInput">Mobile Number (SMS Verification)</label>
+            <div class="phone-input-row">
+              <select id="phoneCountrySelect" class="modal-input phone-country-select" aria-label="Country dialing code">
+                <option value="+91" selected>&#x1F1EE;&#x1F1F3; +91 (India)</option>
+                <option value="+1">&#x1F1FA;&#x1F1F8; +1 (US / CA)</option>
+                <option value="+44">&#x1F1EC;&#x1F1E7; +44 (UK)</option>
+                <option value="+971">&#x1F1E6;&#x1F1EA; +971 (UAE)</option>
+                <option value="+65">&#x1F1F8;&#x1F1EC; +65 (Singapore)</option>
+                <option value="+61">&#x1F1E6;&#x1F1FA; +61 (Australia)</option>
+                <option value="+49">&#x1F1E9;&#x1F1EA; +49 (Germany)</option>
+                <option value="+33">&#x1F1EB;&#x1F1F7; +33 (France)</option>
+                <option value="+81">&#x1F1EF;&#x1F1F5; +81 (Japan)</option>
+                <option value="+82">&#x1F1F0;&#x1F1F7; +82 (South Korea)</option>
+                <option value="+977">&#x1F1F3;&#x1F1F5; +977 (Nepal)</option>
+                <option value="+880">&#x1F1E7;&#x1F1E9; +880 (Bangladesh)</option>
+                <option value="+94">&#x1F1F1;&#x1F1F0; +94 (Sri Lanka)</option>
+                <option value="+60">&#x1F1F2;&#x1F1FE; +60 (Malaysia)</option>
+                <option value="+62">&#x1F1EE;&#x1F1E9; +62 (Indonesia)</option>
+                <option value="+27">&#x1F1FF;&#x1F1E6; +27 (South Africa)</option>
+                <option value="+55">&#x1F1E7;&#x1F1F7; +55 (Brazil)</option>
+              </select>
+              <input
+                type="tel"
+                id="phoneNumberInput"
+                class="modal-input phone-number-input"
+                inputmode="tel"
+                autocomplete="tel-national"
+                placeholder="9876543210"
+              />
+            </div>
+            <p class="field-hint">Protected by real Google reCAPTCHA &amp; Firebase SMS verification. India (+91) selected by default.</p>
+            <div id="phoneRecaptchaContainer" class="phone-recaptcha-slot"></div>
+            <button type="submit" class="gradient-cta-btn" id="btnSendPhoneOtp">Send Verification OTP</button>
+          </div>
+
+          <div id="phoneOtpVerifyGroup" class="hidden">
+            <div class="otp-status-banner">
+              <span id="phoneOtpTargetText">OTP sent to +91 ••••••3210</span>
+              <span id="phoneOtpExpiryText" class="otp-timer-pill">Expires in 5:00</span>
+            </div>
+            <label class="field-label" for="phoneOtpCodeInput">Enter 6-Digit SMS OTP</label>
+            <input
+              type="text"
+              id="phoneOtpCodeInput"
+              class="modal-input otp-code-input"
+              inputmode="numeric"
+              autocomplete="one-time-code"
+              maxlength="6"
+              placeholder="••••••"
+            />
+            <button type="button" class="gradient-cta-btn" id="btnVerifyPhoneOtp">Verify &amp; Sign In</button>
+            <div class="auth-switch-row">
+              <button type="button" class="text-link-btn" id="btnResendPhoneOtp" disabled>Resend OTP (45s)</button>
+              <button type="button" class="text-link-btn muted" id="btnChangePhoneNumber">Change Number</button>
+            </div>
+          </div>
+
+          <div class="auth-switch-row">
+            <button type="button" class="text-link-btn muted" id="btnBackEmailLogin">&larr; Use Email / Password</button>
           </div>
         </form>
 
@@ -654,7 +747,7 @@
                 <span class="badge-chip teal">ARCHITECTURE</span>
                 <ul class="bullet-list">
                   <li>Google Gemini API via hardened Cloudflare Worker Secrets proxy</li>
-                  <li>Firebase Authentication (Google OAuth + Email/Password)</li>
+                  <li>Firebase Authentication (Google, Microsoft, Apple, Phone OTP &amp; Email)</li>
                   <li>Cloud Firestore personal per-user real-time chat sync</li>
                   <li>Native Kotlin Jetpack Compose Android app + GitHub Pages Web UI</li>
                 </ul>
@@ -725,11 +818,38 @@
         <hr class="modal-divider" />
         <div class="phase-card">
           <h4>ACCOUNT LINKING &amp; SECURITY</h4>
-          <p class="modal-desc">Link Google or Email/Password sign-in to the same account, or trigger a password reset.</p>
+          <p class="modal-desc">Connect Microsoft, Apple, Google, Phone OTP, or Email/Password to your single INFFOLER AI account so chat history stays unified.</p>
           <div class="modal-actions" style="margin-top:8px;">
-            <button type="button" class="icon-chip-btn" id="btnLinkGoogle">Link Google Account</button>
+            <button type="button" class="icon-chip-btn" id="btnLinkGoogle">Link Google</button>
+            <button type="button" class="icon-chip-btn" id="btnLinkMicrosoft">Link Microsoft</button>
+            <button type="button" class="icon-chip-btn" id="btnLinkApple">Link Apple</button>
+            <button type="button" class="icon-chip-btn" id="btnShowLinkPhone">Link Phone OTP</button>
             <button type="button" class="icon-chip-btn" id="btnSendMyReset">Password Reset Email</button>
           </div>
+          <form id="linkPhoneForm" class="auth-form hidden" style="margin-top:10px;">
+            <label class="field-label" for="linkPhoneNumberInput">Verify &amp; Link Mobile Number</label>
+            <div class="phone-input-row">
+              <select id="linkPhoneCountrySelect" class="modal-input phone-country-select" aria-label="Country code for linking">
+                <option value="+91" selected>&#x1F1EE;&#x1F1F3; +91 (India)</option>
+                <option value="+1">&#x1F1FA;&#x1F1F8; +1 (US / CA)</option>
+                <option value="+44">&#x1F1EC;&#x1F1E7; +44 (UK)</option>
+                <option value="+971">&#x1F1E6;&#x1F1EA; +971 (UAE)</option>
+                <option value="+65">&#x1F1F8;&#x1F1EC; +65 (Singapore)</option>
+                <option value="+61">&#x1F1E6;&#x1F1FA; +61 (Australia)</option>
+                <option value="+49">&#x1F1E9;&#x1F1EA; +49 (Germany)</option>
+              </select>
+              <input type="tel" id="linkPhoneNumberInput" class="modal-input phone-number-input" inputmode="tel" placeholder="9876543210" />
+            </div>
+            <div id="linkPhoneRecaptchaContainer" class="phone-recaptcha-slot"></div>
+            <button type="button" class="icon-chip-btn" id="btnSendLinkPhoneOtp">Send Link OTP</button>
+            <div id="linkPhoneOtpGroup" class="hidden">
+              <input type="text" id="linkPhoneOtpInput" class="modal-input otp-code-input" inputmode="numeric" maxlength="6" placeholder="Enter 6-digit OTP" />
+              <div class="modal-actions" style="margin-top:6px;">
+                <button type="submit" class="gradient-cta-btn small" id="btnConfirmLinkPhoneOtp">Verify &amp; Link Phone</button>
+                <button type="button" class="outline-pill-btn" id="btnCancelLinkPhone">Cancel</button>
+              </div>
+            </div>
+          </form>
           <form id="linkPasswordForm" class="auth-form hidden" style="margin-top:10px;">
             <label class="field-label" for="linkNewPassword">Set Password for Email Login (Optional)</label>
             <input type="password" id="linkNewPassword" class="modal-input" minlength="6" placeholder="Min 6 characters" />

@@ -16,7 +16,9 @@ import { initializeApp, getApps, getApp } from "https://www.gstatic.com/firebase
 import {
   getAuth,
   GoogleAuthProvider,
+  OAuthProvider,
   EmailAuthProvider,
+  RecaptchaVerifier,
   setPersistence,
   browserLocalPersistence,
   onAuthStateChanged,
@@ -25,10 +27,13 @@ import {
   getRedirectResult,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  signInWithPhoneNumber,
   sendPasswordResetEmail,
   updateProfile,
   linkWithPopup,
+  linkWithRedirect,
   linkWithCredential,
+  linkWithPhoneNumber,
   deleteUser,
   signOut,
 } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js";
@@ -58,6 +63,15 @@ import {
   normalizeReasoningMetadata,
   formatVerificationBadge,
 } from "./reasoning-engine.js";
+import {
+  normalizePhoneInput,
+  validateOtpCode,
+  maskPhoneNumber,
+  resolveDisplayIdentity,
+  getProviderBadgeList,
+  OtpRateLimiter,
+  mapMultiProviderAuthError,
+} from "./auth-providers.js";
 
 /* =========================================================================
  * PUBLIC CLOUDFLARE WORKER PROXY (GEMINI_API_KEY LIVES ONLY IN CLOUDFLARE SECRETS)
@@ -99,6 +113,17 @@ const db = getFirestore(firebaseApp, FIRESTORE_DATABASE_ID);
 
 const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: "select_account" });
+
+const microsoftProvider = new OAuthProvider("microsoft.com");
+microsoftProvider.setCustomParameters({ prompt: "select_account" });
+microsoftProvider.addScope("openid");
+microsoftProvider.addScope("profile");
+microsoftProvider.addScope("email");
+
+const appleProvider = new OAuthProvider("apple.com");
+appleProvider.addScope("email");
+appleProvider.addScope("name");
+
 const persistenceReady = setPersistence(auth, browserLocalPersistence).catch(() => {});
 
 let liveAuthDomainCheck = null;
@@ -657,43 +682,72 @@ function normalizeModel(modelId) {
   return "gemini-3.8-flash";
 }
 
-function mapFirebaseError(err) {
+function mapFirebaseError(err, contextProvider = "") {
   const code = err?.code || "";
   const host = typeof window !== "undefined" ? window.location?.hostname || "" : "";
-  switch (code) {
-    case "auth/popup-closed-by-user":
-      return "Google sign-in popup was closed before completing.";
-    case "auth/cancelled-popup-request":
-      return "Another sign-in popup was opened. Please try again.";
-    case "auth/unauthorized-domain": {
-      const domainsText = liveAuthDomainCheck?.authorizedDomains?.length
-        ? ` Live authorized domains on this project: ${liveAuthDomainCheck.authorizedDomains.join(", ")}.`
-        : "";
-      return `Domain '${host}' is not authorized on Firebase project '${firebaseConfig.projectId}' (project #${firebaseConfig.messagingSenderId}, authDomain '${firebaseConfig.authDomain}'). If you added '${host}' to a different Firebase project, update firebaseConfig in docs/app.js and FIREBASE_PROJECT_ID in web-proxy/cloudflare-worker.js to match that project.${domainsText}`;
+
+  if (code === "auth/unauthorized-domain") {
+    const domainsText = liveAuthDomainCheck?.authorizedDomains?.length
+      ? ` Live authorized domains on this project: ${liveAuthDomainCheck.authorizedDomains.join(", ")}.`
+      : "";
+    return `Domain '${host}' is not authorized on Firebase project '${firebaseConfig.projectId}' (project #${firebaseConfig.messagingSenderId}, authDomain '${firebaseConfig.authDomain}'). If you added '${host}' to a different Firebase project, update firebaseConfig in docs/app.js and FIREBASE_PROJECT_ID in web-proxy/cloudflare-worker.js to match that project.${domainsText}`;
+  }
+  return mapMultiProviderAuthError(err, contextProvider);
+}
+
+const phoneOtpLimiter = new OtpRateLimiter();
+const linkPhoneOtpLimiter = new OtpRateLimiter();
+let phoneRecaptchaVerifier = null;
+let linkPhoneRecaptchaVerifier = null;
+let phoneConfirmationResult = null;
+let linkPhoneConfirmationResult = null;
+let pendingOtpPhoneE164 = "";
+let pendingLinkPhoneE164 = "";
+let otpTimerInterval = null;
+
+function disposeRecaptchaVerifier(kind = "login") {
+  const ref = kind === "link" ? linkPhoneRecaptchaVerifier : phoneRecaptchaVerifier;
+  if (ref && typeof ref.clear === "function") {
+    try {
+      ref.clear();
+    } catch { /* ignore */ }
+  }
+  if (kind === "link") linkPhoneRecaptchaVerifier = null;
+  else phoneRecaptchaVerifier = null;
+}
+
+function getOrCreateRecaptchaVerifier(containerId, kind = "login") {
+  const existing = kind === "link" ? linkPhoneRecaptchaVerifier : phoneRecaptchaVerifier;
+  if (existing) return existing;
+  const verifier = new RecaptchaVerifier(auth, containerId, {
+    size: "invisible",
+    callback: () => {},
+    "expired-callback": () => {
+      disposeRecaptchaVerifier(kind);
+    },
+  });
+  if (kind === "link") linkPhoneRecaptchaVerifier = verifier;
+  else phoneRecaptchaVerifier = verifier;
+  return verifier;
+}
+
+async function verifyBackendSession(user) {
+  if (!user || typeof user.getIdToken !== "function" || typeof fetch !== "function") return null;
+  try {
+    const idToken = await user.getIdToken(false);
+    const res = await fetch(`${PUBLIC_PROXY_URL}/auth/session`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${idToken}` },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const badgeLabel = document.getElementById("topbarProxyLabel");
+    if (badgeLabel && data?.verified) {
+      badgeLabel.textContent = "SESSION VERIFIED";
     }
-    case "auth/operation-not-allowed":
-    case "auth/admin-restricted-operation":
-      return `This sign-in provider is currently disabled on Firebase project '${firebaseConfig.projectId}'. Enable it under Firebase Console → Authentication → Sign-in method (or point docs/app.js to your configured Firebase project).`;
-    case "auth/account-exists-with-different-credential":
-      return "An account already exists with this email using another sign-in method. Log in first and link accounts in Settings.";
-    case "auth/email-already-in-use":
-      return "That email is already registered. Try logging in or resetting your password.";
-    case "auth/invalid-credential":
-    case "auth/wrong-password":
-    case "auth/user-not-found":
-      return "Invalid email or password. Double-check your details or reset your password.";
-    case "auth/weak-password":
-      return "Password must be at least 6 characters long.";
-    case "auth/invalid-email":
-      return "Please enter a valid email address.";
-    case "auth/too-many-requests":
-      return "Too many login attempts. Please wait a few minutes before retrying.";
-    case "auth/requires-recent-login":
-      return "For security, please log out and sign back in right before deleting your account.";
-    case "permission-denied":
-      return "Cloud permission check denied. Make sure you are signed in to your own account.";
-    default:
-      return err?.message || "Authentication or cloud sync error occurred.";
+    return data;
+  } catch {
+    return null;
   }
 }
 
@@ -718,10 +772,10 @@ async function initAuthSession(callback) {
   return unsub;
 }
 
-async function signInWithGoogle() {
+async function signInWithOAuthProvider(provider) {
   await persistenceReady;
   try {
-    const result = await signInWithPopup(auth, googleProvider);
+    const result = await signInWithPopup(auth, provider);
     await ensureUserProfile(result.user).catch(err => console.warn("Profile sync:", err?.message));
     return result.user;
   } catch (err) {
@@ -729,8 +783,70 @@ async function signInWithGoogle() {
       err?.code === "auth/popup-blocked" ||
       err?.code === "auth/operation-not-supported-in-this-environment"
     ) {
-      await signInWithRedirect(auth, googleProvider);
+      await signInWithRedirect(auth, provider);
       return null;
+    }
+    throw err;
+  }
+}
+
+async function signInWithGoogle() {
+  return signInWithOAuthProvider(googleProvider);
+}
+
+async function signInWithMicrosoft() {
+  return signInWithOAuthProvider(microsoftProvider);
+}
+
+async function signInWithApple() {
+  return signInWithOAuthProvider(appleProvider);
+}
+
+async function requestPhoneOtpLogin(rawNumber, countryCode) {
+  await persistenceReady;
+  const normalized = normalizePhoneInput(rawNumber, countryCode);
+  if (!normalized.ok) {
+    throw new Error(normalized.error);
+  }
+  const quota = phoneOtpLimiter.canSendOtp();
+  if (!quota.allowed) {
+    throw new Error(quota.reason);
+  }
+  const verifier = getOrCreateRecaptchaVerifier("phoneRecaptchaContainer", "login");
+  try {
+    const confirmation = await signInWithPhoneNumber(auth, normalized.e164, verifier);
+    phoneConfirmationResult = confirmation;
+    pendingOtpPhoneE164 = normalized.e164;
+    phoneOtpLimiter.recordOtpSent();
+    return { e164: normalized.e164, masked: maskPhoneNumber(normalized.e164) };
+  } catch (err) {
+    disposeRecaptchaVerifier("login");
+    throw err;
+  }
+}
+
+async function confirmPhoneOtpLogin(rawOtp) {
+  if (!phoneConfirmationResult) {
+    throw new Error("Please request an OTP verification code first.");
+  }
+  const gate = phoneOtpLimiter.canAttemptVerify();
+  if (!gate.allowed) {
+    throw new Error(gate.reason);
+  }
+  const check = validateOtpCode(rawOtp);
+  if (!check.ok) {
+    throw new Error(check.error);
+  }
+  try {
+    const cred = await phoneConfirmationResult.confirm(check.code);
+    phoneOtpLimiter.resetChallenge();
+    phoneConfirmationResult = null;
+    await ensureUserProfile(cred.user).catch(err => console.warn("Profile sync:", err?.message));
+    return cred.user;
+  } catch (err) {
+    const remaining = phoneOtpLimiter.recordFailedVerifyAttempt();
+    if (err?.code === "auth/invalid-verification-code" && typeof err === "object" && err !== null) {
+      err.otpAttemptsRemaining = remaining;
     }
     throw err;
   }
@@ -766,11 +882,87 @@ async function sendPasswordReset(email) {
   await sendPasswordResetEmail(auth, email.trim());
 }
 
-async function linkGoogleToCurrentAccount() {
+async function linkOAuthProviderToCurrentAccount(provider) {
   if (!auth.currentUser) throw new Error("Sign in first.");
-  const res = await linkWithPopup(auth.currentUser, googleProvider);
-  await ensureUserProfile(res.user);
-  return res.user;
+  try {
+    const res = await linkWithPopup(auth.currentUser, provider);
+    await ensureUserProfile(res.user).catch(() => {});
+    return res.user;
+  } catch (err) {
+    if (
+      err?.code === "auth/popup-blocked" ||
+      err?.code === "auth/operation-not-supported-in-this-environment"
+    ) {
+      await linkWithRedirect(auth.currentUser, provider);
+      return null;
+    }
+    throw err;
+  }
+}
+
+async function linkGoogleToCurrentAccount() {
+  return linkOAuthProviderToCurrentAccount(googleProvider);
+}
+
+async function linkMicrosoftToCurrentAccount() {
+  return linkOAuthProviderToCurrentAccount(microsoftProvider);
+}
+
+async function linkAppleToCurrentAccount() {
+  return linkOAuthProviderToCurrentAccount(appleProvider);
+}
+
+async function requestLinkPhoneOtp(rawNumber, countryCode) {
+  if (!auth.currentUser) throw new Error("Sign in first.");
+  const normalized = normalizePhoneInput(rawNumber, countryCode);
+  if (!normalized.ok) {
+    throw new Error(normalized.error);
+  }
+  const quota = linkPhoneOtpLimiter.canSendOtp();
+  if (!quota.allowed) {
+    throw new Error(quota.reason);
+  }
+  const verifier = getOrCreateRecaptchaVerifier("linkPhoneRecaptchaContainer", "link");
+  try {
+    const confirmation = await linkWithPhoneNumber(auth.currentUser, normalized.e164, verifier);
+    linkPhoneConfirmationResult = confirmation;
+    pendingLinkPhoneE164 = normalized.e164;
+    linkPhoneOtpLimiter.recordOtpSent();
+    return { e164: normalized.e164, masked: maskPhoneNumber(normalized.e164) };
+  } catch (err) {
+    disposeRecaptchaVerifier("link");
+    throw err;
+  }
+}
+
+async function confirmLinkPhoneOtp(rawOtp) {
+  if (!auth.currentUser) throw new Error("Sign in first.");
+  if (!linkPhoneConfirmationResult) {
+    throw new Error("Send a link OTP code first.");
+  }
+  const gate = linkPhoneOtpLimiter.canAttemptVerify();
+  if (!gate.allowed) {
+    throw new Error(gate.reason);
+  }
+  const check = validateOtpCode(rawOtp);
+  if (!check.ok) {
+    throw new Error(check.error);
+  }
+  try {
+    const cred = await linkPhoneConfirmationResult.confirm(check.code);
+    linkPhoneOtpLimiter.resetChallenge();
+    linkPhoneConfirmationResult = null;
+    pendingLinkPhoneE164 = "";
+    disposeRecaptchaVerifier("link");
+    await cred.user.reload?.().catch(() => {});
+    return cred.user;
+  } catch (err) {
+    const remaining = linkPhoneOtpLimiter.recordFailedVerifyAttempt();
+    if (err?.code === "auth/invalid-verification-code" && typeof err === "object" && err !== null) {
+      err.otpAttemptsRemaining = remaining;
+    }
+    throw err;
+  }
 }
 
 async function linkPasswordToCurrentAccount(password) {
@@ -783,6 +975,7 @@ async function linkPasswordToCurrentAccount(password) {
 }
 
 async function logoutUser() {
+  clearPhoneOtpTimersAndState();
   await signOut(auth);
 }
 
@@ -791,7 +984,8 @@ async function ensureUserProfile(user, extraPrefs = {}) {
   const userRef = doc(db, "users", user.uid);
   const snap = await getDoc(userRef);
 
-  const safeName = (user.displayName || user.email?.split("@")[0] || "INFFOLER User").slice(0, 80);
+  const identity = resolveDisplayIdentity(user);
+  const safeName = identity.displayName;
   const safeEmail = user.email ? String(user.email).slice(0, 160) : null;
   const safePhoto =
     user.photoURL && /^https?:\/\//i.test(user.photoURL) ? String(user.photoURL).slice(0, 600) : null;
@@ -1129,8 +1323,73 @@ function setAuthFeedback(message, isSuccess = false) {
   box.classList.toggle("success", isSuccess);
 }
 
+function clearPhoneOtpTimersAndState() {
+  if (otpTimerInterval) {
+    clearInterval(otpTimerInterval);
+    otpTimerInterval = null;
+  }
+  phoneConfirmationResult = null;
+  linkPhoneConfirmationResult = null;
+  pendingOtpPhoneE164 = "";
+  pendingLinkPhoneE164 = "";
+  phoneOtpLimiter.resetChallenge();
+  disposeRecaptchaVerifier("login");
+  disposeRecaptchaVerifier("link");
+}
+
+function updatePhoneOtpCountdownUi() {
+  const resendBtn = document.getElementById("btnResendPhoneOtp");
+  const expiryEl = document.getElementById("phoneOtpExpiryText");
+  const cooldownLeft = phoneOtpLimiter.getCooldownRemainingSec();
+  const expiryLeft = phoneOtpLimiter.getExpiryRemainingSec();
+
+  if (resendBtn) {
+    if (cooldownLeft > 0) {
+      resendBtn.disabled = true;
+      resendBtn.textContent = `Resend OTP (${cooldownLeft}s)`;
+    } else {
+      resendBtn.disabled = false;
+      resendBtn.textContent = "Resend OTP";
+    }
+  }
+  if (expiryEl) {
+    if (expiryLeft > 0) {
+      const m = Math.floor(expiryLeft / 60);
+      const s = String(expiryLeft % 60).padStart(2, "0");
+      expiryEl.textContent = `Expires in ${m}:${s}`;
+    } else if (phoneConfirmationResult) {
+      expiryEl.textContent = "OTP expired — tap Resend";
+    }
+  }
+}
+
+function startPhoneOtpTimers() {
+  if (otpTimerInterval) clearInterval(otpTimerInterval);
+  updatePhoneOtpCountdownUi();
+  otpTimerInterval = setInterval(() => {
+    updatePhoneOtpCountdownUi();
+    if (phoneOtpLimiter.getCooldownRemainingSec() === 0 && phoneOtpLimiter.getExpiryRemainingSec() === 0) {
+      clearInterval(otpTimerInterval);
+      otpTimerInterval = null;
+    }
+  }, 1000);
+  if (typeof otpTimerInterval?.unref === "function") {
+    otpTimerInterval.unref();
+  }
+}
+
 function setAuthBusy(busy) {
-  ["btnGoogleSignIn", "btnEmailLoginSubmit", "btnEmailSignupSubmit", "btnResetPasswordSubmit"].forEach(id => {
+  [
+    "btnGoogleSignIn",
+    "btnMicrosoftSignIn",
+    "btnAppleSignIn",
+    "btnOpenPhoneAuth",
+    "btnEmailLoginSubmit",
+    "btnEmailSignupSubmit",
+    "btnSendPhoneOtp",
+    "btnVerifyPhoneOtp",
+    "btnResetPasswordSubmit",
+  ].forEach(id => {
     const btn = document.getElementById(id);
     if (btn) btn.disabled = Boolean(busy);
   });
@@ -1145,6 +1404,7 @@ function switchAuthTab(tabName) {
   });
   document.getElementById("emailLoginForm")?.classList.toggle("hidden", tabName !== "login");
   document.getElementById("emailSignupForm")?.classList.toggle("hidden", tabName !== "signup");
+  document.getElementById("phoneAuthForm")?.classList.toggle("hidden", tabName !== "phone");
   document.getElementById("resetPasswordForm")?.classList.toggle("hidden", tabName !== "reset");
 
   const heading = document.getElementById("authCardHeading");
@@ -1153,6 +1413,9 @@ function switchAuthTab(tabName) {
     if (tabName === "signup") {
       heading.textContent = "Create Account";
       sub.textContent = "Join INFFOLER AI to save & sync your personal chats";
+    } else if (tabName === "phone") {
+      heading.textContent = "Phone Verification";
+      sub.textContent = "Sign in securely using SMS OTP (+91 India & global)";
     } else if (tabName === "reset") {
       heading.textContent = "Reset Password";
       sub.textContent = "Receive a secure Firebase reset link via email";
@@ -1192,7 +1455,8 @@ function renderAvatarInto(containerEl, user) {
     containerEl.innerHTML = `<img src="${escapeHtml(user.photoURL)}" alt="${escapeHtml(user.displayName || "Profile")}" referrerpolicy="no-referrer" />`;
     return;
   }
-  const source = user?.displayName || user?.email || "AI";
+  const identity = resolveDisplayIdentity(user);
+  const source = identity.displayName || "AI";
   const initials =
     source
       .trim()
@@ -1208,13 +1472,14 @@ function updateAuthUI(user) {
   applyMandatoryAccessGate(isSignedIn);
   if (!isSignedIn) return;
 
-  const name = user.displayName || user.email?.split("@")[0] || "INFFOLER Explorer";
-  const email = user.email || "Verified Firebase User";
+  const identity = resolveDisplayIdentity(user);
+  const name = identity.displayName;
+  const contactLabel = identity.subtitle;
 
   renderAvatarInto(document.getElementById("sidebarUserAvatar"), user);
   renderAvatarInto(document.getElementById("topbarUserAvatar"), user);
   document.getElementById("sidebarUserName").textContent = name;
-  document.getElementById("sidebarUserEmail").textContent = email;
+  document.getElementById("sidebarUserEmail").textContent = contactLabel;
 
   document.getElementById("btnSidebarAuthAction").textContent = "Log Out";
   document.getElementById("topbarUserLabel").textContent = name.split(" ")[0];
@@ -1223,22 +1488,31 @@ function updateAuthUI(user) {
 
   renderAvatarInto(document.getElementById("modalUserAvatar"), user);
   document.getElementById("modalUserName").textContent = name;
-  document.getElementById("modalUserEmail").textContent = user.email || user.uid;
-  document.getElementById("profileDisplayNameInput").value = user.displayName || "";
+  document.getElementById("modalUserEmail").textContent = user.email || identity.maskedPhone || user.uid;
+  document.getElementById("profileDisplayNameInput").value = user.displayName || name;
   document.getElementById("profilePhotoUrlInput").value = user.photoURL || "";
 
-  const providers = (user.providerData || []).map(p => p.providerId);
+  const providers = identity.providers;
   const hasGoogle = providers.includes("google.com");
+  const hasMicrosoft = providers.includes("microsoft.com");
+  const hasApple = providers.includes("apple.com");
+  const hasPhone = providers.includes("phone") || Boolean(user.phoneNumber);
   const hasPassword = providers.includes("password");
 
-  const badges = [];
-  if (hasGoogle) badges.push('<span class="badge-chip cyan">Google Linked</span>');
-  if (hasPassword) badges.push('<span class="badge-chip purple">Email &amp; Password</span>');
+  const badges = getProviderBadgeList(user).map(
+    b => `<span class="badge-chip ${escapeHtml(b.tone)}">${escapeHtml(b.label)}</span>`
+  );
   document.getElementById("modalProviderBadges").innerHTML = badges.join("");
 
-  document.getElementById("btnLinkGoogle").classList.toggle("hidden", hasGoogle);
-  document.getElementById("btnSendMyReset").classList.toggle("hidden", !hasPassword);
-  document.getElementById("linkPasswordForm").classList.toggle("hidden", hasPassword || !user.email);
+  document.getElementById("btnLinkGoogle")?.classList.toggle("hidden", hasGoogle);
+  document.getElementById("btnLinkMicrosoft")?.classList.toggle("hidden", hasMicrosoft);
+  document.getElementById("btnLinkApple")?.classList.toggle("hidden", hasApple);
+  document.getElementById("btnShowLinkPhone")?.classList.toggle("hidden", hasPhone);
+  if (hasPhone) {
+    document.getElementById("linkPhoneForm")?.classList.add("hidden");
+  }
+  document.getElementById("btnSendMyReset")?.classList.toggle("hidden", !hasPassword);
+  document.getElementById("linkPasswordForm")?.classList.toggle("hidden", hasPassword || !user.email);
 }
 
 function detachCloudSubscriptions() {
@@ -1261,11 +1535,13 @@ async function onAuthChange(user) {
   }
 
   if (currentUser) {
+    clearPhoneOtpTimersAndState();
     updateAuthUI(currentUser);
     navigateTo("chat");
     renderChatMessages();
     renderSidebarChats();
     updateActiveChatHeader();
+    verifyBackendSession(currentUser).catch(() => {});
     try {
       await ensureUserProfile(currentUser, {
         theme: document.documentElement.getAttribute("data-theme") || "dark",
@@ -3148,13 +3424,116 @@ function bindEvents() {
     try {
       const user = await signInWithGoogle();
       if (user) {
-        showToast(`Welcome, ${user.displayName || "Explorer"}!`);
+        showToast(`Welcome, ${resolveDisplayIdentity(user).displayName}!`);
       }
     } catch (err) {
-      setAuthFeedback(mapFirebaseError(err));
+      setAuthFeedback(mapFirebaseError(err, "google.com"));
     } finally {
       setAuthBusy(false);
     }
+  });
+
+  document.getElementById("btnMicrosoftSignIn")?.addEventListener("click", async () => {
+    setAuthFeedback("");
+    setAuthBusy(true);
+    try {
+      const user = await signInWithMicrosoft();
+      if (user) {
+        showToast(`Welcome, ${resolveDisplayIdentity(user).displayName}!`);
+      }
+    } catch (err) {
+      setAuthFeedback(mapFirebaseError(err, "microsoft.com"));
+    } finally {
+      setAuthBusy(false);
+    }
+  });
+
+  document.getElementById("btnAppleSignIn")?.addEventListener("click", async () => {
+    setAuthFeedback("");
+    setAuthBusy(true);
+    try {
+      const user = await signInWithApple();
+      if (user) {
+        showToast(`Welcome, ${resolveDisplayIdentity(user).displayName}!`);
+      }
+    } catch (err) {
+      setAuthFeedback(mapFirebaseError(err, "apple.com"));
+    } finally {
+      setAuthBusy(false);
+    }
+  });
+
+  document.getElementById("btnOpenPhoneAuth")?.addEventListener("click", () => {
+    switchAuthTab("phone");
+    document.getElementById("phoneNumberInput")?.focus?.();
+  });
+
+  document.getElementById("btnBackEmailLogin")?.addEventListener("click", () => {
+    switchAuthTab("login");
+  });
+
+  const handleSendOtp = async () => {
+    setAuthFeedback("");
+    setAuthBusy(true);
+    const countryCode = document.getElementById("phoneCountrySelect")?.value || "+91";
+    const number = document.getElementById("phoneNumberInput")?.value || "";
+    try {
+      const info = await requestPhoneOtpLogin(number, countryCode);
+      document.getElementById("phoneOtpTargetText").textContent = `OTP sent to ${info.masked}`;
+      document.getElementById("phoneEntryGroup")?.classList.add("hidden");
+      document.getElementById("phoneOtpVerifyGroup")?.classList.remove("hidden");
+      startPhoneOtpTimers();
+      setAuthFeedback(`Verification code sent to ${info.masked}. Enter the 6-digit SMS code below.`, true);
+      document.getElementById("phoneOtpCodeInput")?.focus?.();
+    } catch (err) {
+      setAuthFeedback(mapFirebaseError(err, "phone"));
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  document.getElementById("phoneAuthForm")?.addEventListener("submit", async e => {
+    e.preventDefault();
+    if (!document.getElementById("phoneOtpVerifyGroup")?.classList.contains("hidden")) {
+      return;
+    }
+    await handleSendOtp();
+  });
+
+  document.getElementById("btnVerifyPhoneOtp")?.addEventListener("click", async () => {
+    setAuthFeedback("");
+    setAuthBusy(true);
+    const code = document.getElementById("phoneOtpCodeInput")?.value || "";
+    try {
+      const user = await confirmPhoneOtpLogin(code);
+      if (document.getElementById("phoneOtpCodeInput")) {
+        document.getElementById("phoneOtpCodeInput").value = "";
+      }
+      showToast(`Phone verified! Welcome, ${resolveDisplayIdentity(user).displayName}!`);
+    } catch (err) {
+      setAuthFeedback(mapFirebaseError(err, "phone"));
+    } finally {
+      setAuthBusy(false);
+    }
+  });
+
+  document.getElementById("btnResendPhoneOtp")?.addEventListener("click", async () => {
+    if (phoneOtpLimiter.getCooldownRemainingSec() > 0) {
+      updatePhoneOtpCountdownUi();
+      return;
+    }
+    await handleSendOtp();
+  });
+
+  document.getElementById("btnChangePhoneNumber")?.addEventListener("click", () => {
+    clearPhoneOtpTimersAndState();
+    setAuthFeedback("");
+    if (document.getElementById("phoneOtpCodeInput")) {
+      document.getElementById("phoneOtpCodeInput").value = "";
+    }
+    document.getElementById("phoneOtpVerifyGroup")?.classList.add("hidden");
+    document.getElementById("phoneEntryGroup")?.classList.remove("hidden");
+    document.getElementById("phoneNumberInput")?.focus?.();
   });
 
   document.getElementById("emailLoginForm").addEventListener("submit", async e => {
@@ -3243,7 +3622,73 @@ function bindEvents() {
       updateAuthUI(currentUser);
       showToast("Google account linked!");
     } catch (err) {
-      showToast(mapFirebaseError(err));
+      showToast(mapFirebaseError(err, "google.com"));
+    }
+  });
+
+  document.getElementById("btnLinkMicrosoft")?.addEventListener("click", async () => {
+    try {
+      await linkMicrosoftToCurrentAccount();
+      updateAuthUI(currentUser);
+      showToast("Microsoft account linked!");
+    } catch (err) {
+      showToast(mapFirebaseError(err, "microsoft.com"));
+    }
+  });
+
+  document.getElementById("btnLinkApple")?.addEventListener("click", async () => {
+    try {
+      await linkAppleToCurrentAccount();
+      updateAuthUI(currentUser);
+      showToast("Apple account linked!");
+    } catch (err) {
+      showToast(mapFirebaseError(err, "apple.com"));
+    }
+  });
+
+  document.getElementById("btnShowLinkPhone")?.addEventListener("click", () => {
+    const form = document.getElementById("linkPhoneForm");
+    if (!form) return;
+    const isHidden = form.classList.toggle("hidden");
+    if (!isHidden) {
+      document.getElementById("linkPhoneNumberInput")?.focus?.();
+    }
+  });
+
+  document.getElementById("btnCancelLinkPhone")?.addEventListener("click", () => {
+    linkPhoneConfirmationResult = null;
+    pendingLinkPhoneE164 = "";
+    disposeRecaptchaVerifier("link");
+    document.getElementById("linkPhoneOtpGroup")?.classList.add("hidden");
+    document.getElementById("linkPhoneForm")?.classList.add("hidden");
+  });
+
+  document.getElementById("btnSendLinkPhoneOtp")?.addEventListener("click", async () => {
+    const cc = document.getElementById("linkPhoneCountrySelect")?.value || "+91";
+    const num = document.getElementById("linkPhoneNumberInput")?.value || "";
+    try {
+      const info = await requestLinkPhoneOtp(num, cc);
+      document.getElementById("linkPhoneOtpGroup")?.classList.remove("hidden");
+      showToast(`Link OTP sent to ${info.masked}`);
+    } catch (err) {
+      showToast(mapFirebaseError(err, "phone"));
+    }
+  });
+
+  document.getElementById("linkPhoneForm")?.addEventListener("submit", async e => {
+    e.preventDefault();
+    const code = document.getElementById("linkPhoneOtpInput")?.value || "";
+    try {
+      await confirmLinkPhoneOtp(code);
+      if (document.getElementById("linkPhoneOtpInput")) {
+        document.getElementById("linkPhoneOtpInput").value = "";
+      }
+      document.getElementById("linkPhoneOtpGroup")?.classList.add("hidden");
+      document.getElementById("linkPhoneForm")?.classList.add("hidden");
+      updateAuthUI(currentUser);
+      showToast("Phone number verified & linked!");
+    } catch (err) {
+      showToast(mapFirebaseError(err, "phone"));
     }
   });
 

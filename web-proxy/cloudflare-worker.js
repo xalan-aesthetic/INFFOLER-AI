@@ -373,11 +373,34 @@ export async function verifyFirebaseIdToken(request, env = {}, deps = {}) {
       };
     }
 
+    const signInProvider =
+      typeof payload.firebase?.sign_in_provider === "string"
+        ? payload.firebase.sign_in_provider
+        : null;
+    if (signInProvider === "anonymous") {
+      return {
+        ok: false,
+        status: 401,
+        code: "ANONYMOUS_NOT_ALLOWED",
+        error: "Anonymous sessions are not permitted. Please sign in with a verified account.",
+      };
+    }
+
+    const email = typeof payload.email === "string" ? payload.email : null;
+    const phoneNumber = typeof payload.phone_number === "string" ? payload.phone_number : null;
+    const isApplePrivateRelay = Boolean(
+      email && email.toLowerCase().endsWith("@privaterelay.appleid.com")
+    );
+
     return {
       ok: true,
       uid: payload.sub,
-      email: typeof payload.email === "string" ? payload.email : null,
+      email,
       emailVerified: Boolean(payload.email_verified),
+      phoneNumber,
+      signInProvider,
+      isApplePrivateRelay,
+      authTime: typeof payload.auth_time === "number" ? payload.auth_time : payload.iat,
     };
   } catch (err) {
     return {
@@ -1582,6 +1605,8 @@ export async function handleRequest(request, env = {}, deps = {}) {
         creator: "Alankrit Pathak",
         freeForAll: true,
         authRequired: true,
+        authProviders: ["google.com", "microsoft.com", "apple.com", "phone", "password"],
+        sessionEndpoint: "/auth/session",
         firebaseProjectId: String(env.FIREBASE_PROJECT_ID || DEFAULT_FIREBASE_PROJECT_ID),
         secretConfigured: Boolean(env.GEMINI_API_KEY),
         multimodalEnabled: true,
@@ -1607,6 +1632,27 @@ export async function handleRequest(request, env = {}, deps = {}) {
     return jsonResponse(
       { error: authCheck.error, code: authCheck.code },
       authCheck.status || 401,
+      corsHeaders
+    );
+  }
+
+  if ((request.method === "GET" || request.method === "POST") && url.pathname === "/auth/session") {
+    const phoneMasked = authCheck.phoneNumber
+      ? `${authCheck.phoneNumber.slice(0, 3)}••••••${authCheck.phoneNumber.slice(-4)}`
+      : null;
+    return jsonResponse(
+      {
+        ok: true,
+        verified: true,
+        uid: authCheck.uid,
+        signInProvider: authCheck.signInProvider,
+        emailVerified: authCheck.emailVerified,
+        isApplePrivateRelay: authCheck.isApplePrivateRelay,
+        hasPhoneNumber: Boolean(authCheck.phoneNumber),
+        phoneNumberMasked: phoneMasked,
+        authTime: authCheck.authTime,
+      },
+      200,
       corsHeaders
     );
   }
