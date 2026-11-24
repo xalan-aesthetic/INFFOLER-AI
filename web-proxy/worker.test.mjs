@@ -8,7 +8,20 @@ import {
   handleRequest,
   clearJwkCache,
   classifyGeminiUpstreamError,
+  validateAndSanitizeRequest,
+  evaluateMathExpression,
+  classifyTaskCategory,
+  buildReasoningPlan,
+  verifyGeneratedAnswer,
+  MODEL_REGISTRY,
+  REASONING_MODES,
+  TASK_CATEGORIES,
 } from "./cloudflare-worker.js";
+import {
+  validatePromptInput,
+  classifyTaskPreview,
+  formatVerificationBadge,
+} from "../docs/reasoning-engine.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -252,8 +265,12 @@ test("CORS preflight allows Authorization and /health reports authRequired witho
   assert.equal(healthJson.authRequired, true);
   assert.equal(healthJson.freeForAll, true);
   assert.equal(healthJson.version, "2.3.0");
+  assert.equal(healthJson.reasoningEngineVersion, "1.0.0");
   assert.equal(healthJson.secretConfigured, true);
   assert.equal(healthJson.multimodalEnabled, true);
+  assert.deepEqual(healthJson.reasoningModes, ["quick", "balanced", "deep_think", "coding", "math"]);
+  assert.ok(healthJson.modelCapabilities?.["gemini-4-argon"]?.supportsThinkingConfig === true);
+  assert.ok(healthJson.modelCapabilities?.["gemini-3.5-flash-lite"]?.supportsThinkingConfig === false);
   assert.equal(healthJson.limits.requestsPerMinute, 20);
   assert.equal(healthJson.limits.requestsPerDay, 300);
 });
@@ -324,7 +341,7 @@ test("Frontend integrity: DOM IDs match, no unauthenticated guest storage, all 6
     );
   }
 
-  // Verify upgraded Home Brain & Audio/Music controls exist
+  // Verify upgraded Home Brain, Audio/Music controls, & Reasoning Engine 1.0 UI controls exist
   for (const id of [
     "homeBrainCanvas",
     "homeBrainTapTarget",
@@ -336,9 +353,17 @@ test("Frontend integrity: DOM IDs match, no unauthenticated guest storage, all 6
     "toggleMusicSwitch",
     "audioVolumeSlider",
     "audioVolumeValue",
+    "modelSelect",
+    "reasoningModeSelect",
+    "engineStatusBar",
+    "engineActiveModel",
+    "engineActiveMode",
+    "engineGenerationStatus",
   ]) {
     assert.ok(html.includes(`id="${id}"`), `Missing upgraded HTML element #${id}`);
   }
+  assert.ok(!js.includes("FALLBACK_CHAINS"), "Silent model switching chains must not exist");
+  assert.ok(js.includes("./reasoning-engine.js"), "app.js must import ./reasoning-engine.js");
 });
 
 import os from "node:os";
@@ -697,6 +722,10 @@ test("End-to-end login flow: UI screen, Google & Email Sign-In/Sign-Up, redirect
       .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js", "./firebase-auth.js")
       .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js", "./firebase-firestore.js");
     fs.writeFileSync(path.join(tmpDir, "app.js"), patchedAppJs);
+    fs.copyFileSync(
+      path.resolve(__dirname, "../docs/reasoning-engine.js"),
+      path.join(tmpDir, "reasoning-engine.js")
+    );
 
     const { getApps } = await import(pathToFileURL(path.join(tmpDir, "firebase-app.js")).href);
     const { __state: authState } = await import(pathToFileURL(path.join(tmpDir, "firebase-auth.js")).href);
@@ -975,6 +1004,10 @@ test("Audio SFX, ambient music, volume persistence, no autoplay, and AI thinking
       .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js", "./firebase-auth.js")
       .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js", "./firebase-firestore.js");
     fs.writeFileSync(path.join(tmpDir, "app.js"), patchedAppJs);
+    fs.copyFileSync(
+      path.resolve(__dirname, "../docs/reasoning-engine.js"),
+      path.join(tmpDir, "reasoning-engine.js")
+    );
 
     await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
     await new Promise(r => setTimeout(r, 20));
@@ -1278,6 +1311,10 @@ test("Frontend quota/5xx handling: safe backoff, bounded retries, Retry button, 
       .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js", "./firebase-auth.js")
       .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js", "./firebase-firestore.js");
     fs.writeFileSync(path.join(tmpDir, "app.js"), patchedAppJs);
+    fs.copyFileSync(
+      path.resolve(__dirname, "../docs/reasoning-engine.js"),
+      path.join(tmpDir, "reasoning-engine.js")
+    );
 
     await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
     await new Promise(r => setTimeout(r, 20));
@@ -1337,3 +1374,593 @@ test("Frontend quota/5xx handling: safe backoff, bounded retries, Retry button, 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+/* ==================== ADVANCED REASONING ENGINE 1.0: 10 REQUIRED TEST SCENARIOS ==================== */
+
+test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correction, Coding syntax audit, Model-aware Deep Think", async () => {
+  clearJwkCache();
+  const { jwt, publicJwk, now } = await generateTestKeyAndJwt(
+    { sub: "uid_reason_1", user_id: "uid_reason_1", email: "reason@example.com", email_verified: true },
+    { kid: "reason-kid-1" }
+  );
+  const env = { GEMINI_API_KEY: "secret-reasoning-key", FIREBASE_PROJECT_ID: PROJECT_ID };
+
+  // Scenario 1: Simple question in Quick Mode -> low effort, General knowledge, honest unverified badge
+  let capturedPayload = null;
+  const resSimple = await handleRequest(
+    new Request("https://worker.example/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({
+        model: "gemini-3.8-flash",
+        reasoningMode: "quick",
+        payload: { contents: [{ role: "user", parts: [{ text: "What is the capital of France?" }] }] },
+      }),
+    }),
+    env,
+    {
+      nowSec: now,
+      fetchImpl: async (url, init) => {
+        if (String(url) === GOOGLE_JWK_URL) {
+          return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 });
+        }
+        capturedPayload = JSON.parse(init.body);
+        return new Response(
+          JSON.stringify({ candidates: [{ content: { parts: [{ text: "The capital of France is Paris." }] } }] }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+  assert.equal(resSimple.status, 200);
+  const dataSimple = await resSimple.json();
+  assert.equal(dataSimple.inffolerReasoning.category, "General knowledge");
+  assert.equal(dataSimple.inffolerReasoning.mode, "quick");
+  assert.equal(dataSimple.inffolerReasoning.effort, "low");
+  assert.equal(dataSimple.inffolerReasoning.modelUsed, "gemini-3.8-flash");
+  assert.equal(dataSimple.inffolerReasoning.verification.status, "unverified", "Must never falsely claim verified when no independent check ran");
+  assert.equal(capturedPayload.generationConfig.maxOutputTokens, 1536);
+
+  // Scenario 2: Complex mathematical problem -> deterministic check catches wrong arithmetic and triggers max-1 correction pass
+  assert.equal(evaluateMathExpression("(18 * 12) + sqrt(144) - 2^3"), 220);
+  assert.equal(evaluateMathExpression("15% * 200"), 30);
+  let mathCalls = 0;
+  const resMath = await handleRequest(
+    new Request("https://worker.example/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({
+        model: "gemini-4-argon",
+        reasoningMode: "math",
+        payload: { contents: [{ role: "user", parts: [{ text: "Calculate 15% of 2400 + 18 * 5" }] }] },
+      }),
+    }),
+    env,
+    {
+      nowSec: now,
+      fetchImpl: async (url, init) => {
+        if (String(url) === GOOGLE_JWK_URL) {
+          return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 });
+        }
+        mathCalls += 1;
+        assert.ok(String(url).includes("/models/gemini-4-argon:"), "Must stay on gemini-4-argon");
+        const body = JSON.parse(init.body);
+        assert.equal(body.generationConfig.temperature, REASONING_MODES.math.temperature);
+        if (mathCalls === 1) {
+          // Wrong arithmetic inline equation -> verification layer catches 15% * 2400 = 360 and 360 + 90 = 450
+          return new Response(
+            JSON.stringify({
+              candidates: [{ content: { parts: [{ text: "Step 1: 18 * 5 = 90.\nStep 2: 360 + 90 = 499.\nFinal answer: 499." }] } }],
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            candidates: [{ content: { parts: [{ text: "Step 1: 18 * 5 = 90.\nStep 2: 360 + 90 = 450.\nFinal answer: 450." }] } }],
+          }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+  assert.equal(resMath.status, 200);
+  const dataMath = await resMath.json();
+  assert.equal(mathCalls, 2, "Must run exactly 1 bounded correction pass when inline arithmetic fails check");
+  assert.equal(dataMath.inffolerReasoning.category, "Mathematics");
+  assert.equal(dataMath.inffolerReasoning.verification.regenerated, true);
+  assert.equal(dataMath.inffolerReasoning.verification.status, "corrected");
+
+  // Scenario 3: Python debugging request in Coding Mode -> Programming category, low temp 0.2, Python syntax parenthesis audit
+  let codeBodySeen = null;
+  const resCode = await handleRequest(
+    new Request("https://worker.example/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({
+        model: "gemini-3.8-flash",
+        reasoningMode: "coding",
+        payload: {
+          contents: [
+            {
+              role: "user",
+              parts: [{ text: "Debug this Python function:\n```python\ndef add_items(a, b=[]):\n  b.append(a)\n  return b\n```" }],
+            },
+          ],
+        },
+      }),
+    }),
+    env,
+    {
+      nowSec: now,
+      fetchImpl: async (url, init) => {
+        if (String(url) === GOOGLE_JWK_URL) {
+          return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 });
+        }
+        codeBodySeen = JSON.parse(init.body);
+        return new Response(
+          JSON.stringify({
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    {
+                      text: "Use `None` as the default mutable argument:\n```python\ndef add_items(a, b=None):\n    if b is None:\n        b = []\n    b.append(a)\n    return b\n```",
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+  assert.equal(resCode.status, 200);
+  const dataCode = await resCode.json();
+  assert.equal(dataCode.inffolerReasoning.category, "Programming");
+  assert.equal(codeBodySeen.generationConfig.temperature, REASONING_MODES.coding.temperature);
+  assert.equal(dataCode.inffolerReasoning.verification.status, "verified_independent");
+
+  // Scenario 4: Multi-step reasoning & Model-aware behavior without silent switching
+  // A) gemini-3.5-flash-lite does NOT send thinkingConfig in Deep Think Mode
+  let litePayload = null;
+  const resLite = await handleRequest(
+    new Request("https://worker.example/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({
+        model: "gemini-3.5-flash-lite",
+        reasoningMode: "deep_think",
+        payload: {
+          contents: [
+            {
+              role: "user",
+              parts: [{ text: "If A implies B and B implies C, explain step by step why not-C implies not-A and compare edge cases?" }],
+            },
+          ],
+        },
+      }),
+    }),
+    env,
+    {
+      nowSec: now,
+      fetchImpl: async (url, init) => {
+        if (String(url) === GOOGLE_JWK_URL) {
+          return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 });
+        }
+        assert.ok(String(url).includes("/models/gemini-3.5-flash-lite:"), "Must stay on gemini-3.5-flash-lite");
+        litePayload = JSON.parse(init.body);
+        return new Response(
+          JSON.stringify({ candidates: [{ content: { parts: [{ text: "By contraposition, not-C implies not-A." }] } }] }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+  assert.equal(resLite.status, 200);
+  const dataLite = await resLite.json();
+  assert.equal(litePayload.generationConfig.thinkingConfig, undefined, "Lite model must not receive thinkingConfig");
+  assert.equal(dataLite.inffolerReasoning.modelUsed, "gemini-3.5-flash-lite");
+  assert.equal(dataLite.inffolerReasoning.effort, "high");
+
+  // B) If gemini-4-argon rejects thinkingConfig with 400, retry SAME model without thinkingConfig (never switch models)
+  let argonUrls = [];
+  let argonPayloads = [];
+  const resArgon = await handleRequest(
+    new Request("https://worker.example/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({
+        model: "gemini-4-argon",
+        reasoningMode: "deep_think",
+        payload: { contents: [{ role: "user", parts: [{ text: "Analyze logical deduction puzzle with 3 constraints." }] }] },
+      }),
+    }),
+    env,
+    {
+      nowSec: now,
+      fetchImpl: async (url, init) => {
+        if (String(url) === GOOGLE_JWK_URL) {
+          return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 });
+        }
+        argonUrls.push(String(url));
+        argonPayloads.push(JSON.parse(init.body));
+        if (argonUrls.length === 1) {
+          return new Response(
+            JSON.stringify({ error: { code: 400, message: "Unknown name \"thinkingConfig\" at generation_config" } }),
+            { status: 400 }
+          );
+        }
+        return new Response(
+          JSON.stringify({ candidates: [{ content: { parts: [{ text: "Step-by-step deduction complete." }] } }] }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+  assert.equal(resArgon.status, 200);
+  const dataArgon = await resArgon.json();
+  assert.equal(argonUrls.length, 2);
+  assert.ok(argonUrls.every(u => u.includes("/models/gemini-4-argon:")), "Must NEVER silently switch away from gemini-4-argon");
+  assert.ok(argonPayloads[0].generationConfig.thinkingConfig !== undefined);
+  assert.equal(argonPayloads[1].generationConfig.thinkingConfig, undefined);
+  assert.equal(dataArgon.inffolerReasoning.modelUsed, "gemini-4-argon");
+  assert.equal(dataArgon.inffolerReasoning.parametersApplied.thinkingConfigUsed, false);
+});
+
+test("Reasoning Engine Scenarios 5, 7, 8, 9: Unsupported model, Network timeout, Empty message, Very long message", async () => {
+  clearJwkCache();
+  const { jwt, publicJwk, now } = await generateTestKeyAndJwt(
+    { sub: "uid_reason_edge", user_id: "uid_reason_edge", email: "edge@example.com", email_verified: true },
+    { kid: "edge-kid-1" }
+  );
+  const env = { GEMINI_API_KEY: "secret-edge-key", FIREBASE_PROJECT_ID: PROJECT_ID };
+
+  // Scenario 5: Unsupported model -> 400 UNSUPPORTED_MODEL without calling Gemini or silently switching
+  let geminiHit = false;
+  const resBadModel = await handleRequest(
+    new Request("https://worker.example/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({
+        model: "gpt-99-invented",
+        reasoningMode: "balanced",
+        payload: { contents: [{ role: "user", parts: [{ text: "Hi" }] }] },
+      }),
+    }),
+    env,
+    {
+      nowSec: now,
+      fetchImpl: async url => {
+        if (String(url) === GOOGLE_JWK_URL) {
+          return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 });
+        }
+        geminiHit = true;
+        return new Response("{}", { status: 200 });
+      },
+    }
+  );
+  assert.equal(resBadModel.status, 400);
+  const badModelJson = await resBadModel.json();
+  assert.equal(badModelJson.code, "UNSUPPORTED_MODEL");
+  assert.equal(geminiHit, false);
+
+  // Scenario 7: Network timeout -> 504 UPSTREAM_TIMEOUT (retryable: true)
+  const resTimeout = await handleRequest(
+    new Request("https://worker.example/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({
+        model: "gemini-3.8-flash",
+        reasoningMode: "deep_think",
+        payload: { contents: [{ role: "user", parts: [{ text: "Analyze complex multi-step problem." }] }] },
+      }),
+    }),
+    env,
+    {
+      nowSec: now,
+      timeoutMs: 25,
+      fetchImpl: (url, init) => {
+        if (String(url) === GOOGLE_JWK_URL) {
+          return Promise.resolve(new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 }));
+        }
+        return new Promise((_resolve, reject) => {
+          init.signal.addEventListener("abort", () => {
+            reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError" }));
+          });
+        });
+      },
+    }
+  );
+  assert.equal(resTimeout.status, 504);
+  const timeoutJson = await resTimeout.json();
+  assert.equal(timeoutJson.code, "UPSTREAM_TIMEOUT");
+  assert.equal(timeoutJson.retryable, true);
+
+  // Scenario 8: Empty message -> Client validation + Worker validation both reject cleanly
+  assert.equal(validatePromptInput("   \n  ", 0).ok, false);
+  assert.equal(validatePromptInput("   ", 0).code, "EMPTY_PROMPT");
+  const resEmpty = await handleRequest(
+    new Request("https://worker.example/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({
+        model: "gemini-3.8-flash",
+        payload: { contents: [{ role: "user", parts: [{ text: "   " }] }] },
+      }),
+    }),
+    env,
+    {
+      nowSec: now,
+      fetchImpl: async url => {
+        if (String(url) === GOOGLE_JWK_URL) {
+          return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 });
+        }
+        throw new Error("Upstream must not be called for empty prompt");
+      },
+    }
+  );
+  assert.equal(resEmpty.status, 400);
+  const emptyJson = await resEmpty.json();
+  assert.equal(emptyJson.code, "EMPTY_PROMPT");
+
+  // Scenario 9: Very long message (>12,000 chars) -> Client validation + Worker validation both reject cleanly
+  const veryLongPrompt = "A".repeat(12500);
+  assert.equal(validatePromptInput(veryLongPrompt, 0).ok, false);
+  assert.equal(validatePromptInput(veryLongPrompt, 0).code, "PROMPT_TOO_LONG");
+  const resLong = await handleRequest(
+    new Request("https://worker.example/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({
+        model: "gemini-3.8-flash",
+        payload: { contents: [{ role: "user", parts: [{ text: veryLongPrompt }] }] },
+      }),
+    }),
+    env,
+    {
+      nowSec: now,
+      fetchImpl: async url => {
+        if (String(url) === GOOGLE_JWK_URL) {
+          return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 });
+        }
+        throw new Error("Upstream must not be called for oversized prompt");
+      },
+    }
+  );
+  assert.equal(resLong.status, 400);
+  const longJson = await resLong.json();
+  assert.equal(longJson.code, "PAYLOAD_TOO_LARGE");
+
+  // Verify frontend utility helpers remain consistent across all 7 categories and verification badges
+  assert.equal(TASK_CATEGORIES.length, 7);
+  assert.equal(
+    classifyTaskCategory("If all bloops are razzies and all razzies are lazzies, deduce whether any contradiction exists.", "balanced"),
+    "Logical reasoning"
+  );
+  assert.equal(classifyTaskPreview("Calculate 42 * 18", "math"), "Mathematics");
+  assert.equal(formatVerificationBadge({ status: "unverified" }).cssClass, "unverified");
+  assert.equal(formatVerificationBadge({ status: "verified_independent" }).cssClass, "verified");
+  assert.ok(MODEL_REGISTRY["gemini-3.8-flash"].maxOutputTokens === 6144);
+  const planCheck = buildReasoningPlan({
+    promptText: "First explain why async/await matters, then show a clean JavaScript retry loop?",
+    requestedMode: "coding",
+    modelId: "gemini-3.8-flash",
+  });
+  assert.equal(planCheck.category, "Programming");
+  assert.equal(planCheck.hasMultiPart, true);
+  assert.ok(planCheck.subtasks.length >= 3);
+});
+
+test("Reasoning Engine Scenario 10 & E2E: Reasoning mode switcher, status bar, empty/long guard, repeated spam lock, and user cancellation", async () => {
+  clearJwkCache();
+  const { jwt, publicJwk, now } = await generateTestKeyAndJwt(
+    { sub: "uid_reason_e2e", user_id: "uid_reason_e2e", email: "e2e-reason@example.com", email_verified: true },
+    { kid: "reason-e2e-1" }
+  );
+  const html = fs.readFileSync(path.resolve(__dirname, "../docs/index.html"), "utf8");
+  const originalJs = fs.readFileSync(path.resolve(__dirname, "../docs/app.js"), "utf8");
+
+  const { document } = createLightweightDomFromHtml(html);
+  const store = new Map();
+  globalThis.document = document;
+  globalThis.localStorage = {
+    getItem: k => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: k => store.delete(k),
+  };
+  globalThis.window = {
+    innerWidth: 412,
+    innerHeight: 915,
+    devicePixelRatio: 2,
+    location: { hostname: "xalan-aesthetic.github.io" },
+    matchMedia: () => ({ matches: false }),
+    addEventListener: () => {},
+    confirm: () => true,
+  };
+  globalThis.requestAnimationFrame = cb => {
+    if (cb?.name === "tick" || cb?.name === "frame") return 1;
+    return setTimeout(() => cb(Date.now()), 0);
+  };
+  globalThis.cancelAnimationFrame = id => clearTimeout(id);
+  Object.defineProperty(globalThis, "navigator", {
+    value: { clipboard: { writeText: async () => {} } },
+    configurable: true,
+  });
+
+  let workerRequestCount = 0;
+  let lastWorkerRequestBody = null;
+  let delayNextUpstream = false;
+
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).startsWith("https://www.googleapis.com/identitytoolkit/v3/relyingparty/getProjectConfig")) {
+      return new Response(JSON.stringify({ authorizedDomains: ["xalan-aesthetic.github.io"] }), { status: 200 });
+    }
+    if (String(url).startsWith("https://inffoler-ai-proxy.xalanvetrnen.workers.dev")) {
+      workerRequestCount += 1;
+      lastWorkerRequestBody = JSON.parse(init.body);
+      return handleRequest(
+        new Request(url, init),
+        { GEMINI_API_KEY: "secret-e2e-key", FIREBASE_PROJECT_ID: PROJECT_ID },
+        {
+          nowSec: now,
+          fetchImpl: (upstreamUrl, upstreamInit) => {
+            if (String(upstreamUrl) === GOOGLE_JWK_URL) {
+              return Promise.resolve(new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 }));
+            }
+            if (delayNextUpstream) {
+              return new Promise((_resolve, reject) => {
+                const abortTimer = setTimeout(() => {
+                  reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+                }, 120);
+                const rejectAbort = () => {
+                  clearTimeout(abortTimer);
+                  reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+                };
+                init?.signal?.addEventListener?.("abort", rejectAbort, { once: true });
+                upstreamInit?.signal?.addEventListener?.("abort", rejectAbort, { once: true });
+              });
+            }
+            return Promise.resolve(
+              new Response(
+                JSON.stringify({
+                  candidates: [{ content: { parts: [{ text: "42 * 10 = 420." }] } }],
+                }),
+                { status: 200 }
+              )
+            );
+          },
+        }
+      );
+    }
+    throw new Error(`Unexpected fetch URL: ${url}`);
+  };
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "inffoler-reasoning-e2e-"));
+  try {
+    fs.writeFileSync(
+      path.join(tmpDir, "firebase-app.js"),
+      `const apps = [];
+       export function getApps() { return apps; }
+       export function getApp() { return apps[0]; }
+       export function initializeApp(cfg) { const app = { cfg }; apps.push(app); return app; }`
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "firebase-auth.js"),
+      `export const __state = { currentUser: null, listeners: [] };
+       export class GoogleAuthProvider { setCustomParameters() {} }
+       export class EmailAuthProvider { static credential(e, p) { return { e, p }; } }
+       export const browserLocalPersistence = {};
+       export function getAuth() { return __state; }
+       export async function setPersistence() {}
+       export function onAuthStateChanged(_a, cb) { __state.listeners.push(cb); cb(__state.currentUser); return () => {}; }
+       export async function getRedirectResult() { return null; }
+       export async function signInWithEmailAndPassword(_a, email) {
+         const user = { uid: "uid_reason_e2e", email, displayName: "Reason Tester", providerData: [{ providerId: "password" }], getIdToken: async () => ${JSON.stringify(jwt)}, reload: async () => {} };
+         __state.currentUser = user;
+         await Promise.all(__state.listeners.map(fn => fn(user)));
+         return { user };
+       }
+       export async function createUserWithEmailAndPassword() {}
+       export async function updateProfile() {}
+       export async function signInWithPopup() {}
+       export async function signInWithRedirect() {}
+       export async function sendPasswordResetEmail() {}
+       export async function linkWithPopup() {}
+       export async function linkWithCredential() {}
+       export async function deleteUser() {}
+       export async function signOut() {}`
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "firebase-firestore.js"),
+      `export function getFirestore() { return {}; }
+       export function doc(_db, ...p) { return p.join("/"); }
+       export function collection(_db, ...p) { return p.join("/"); }
+       export function query(c) { return c; }
+       export function orderBy() { return null; }
+       export function limit() { return null; }
+       export function serverTimestamp() { return new Date().toISOString(); }
+       export function increment(n) { return n; }
+       export async function getDoc() { return { exists: () => false, data: () => ({}) }; }
+       export async function setDoc() {}
+       export async function updateDoc() {}
+       export async function deleteDoc() {}
+       export async function getDocs() { return { docs: [] }; }
+       export function writeBatch() { return { set() {}, update() {}, delete() {}, async commit() {} }; }
+       export function onSnapshot(_q, onNext) { onNext({ docs: [] }); return () => {}; }`
+    );
+
+    const patchedAppJs = originalJs
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js", "./firebase-app.js")
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js", "./firebase-auth.js")
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js", "./firebase-firestore.js");
+    fs.writeFileSync(path.join(tmpDir, "app.js"), patchedAppJs);
+    fs.copyFileSync(
+      path.resolve(__dirname, "../docs/reasoning-engine.js"),
+      path.join(tmpDir, "reasoning-engine.js")
+    );
+
+    await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
+    await new Promise(r => setTimeout(r, 20));
+
+    document.getElementById("loginEmail").value = "e2e-reason@example.com";
+    document.getElementById("loginPassword").value = "pass1234";
+    await document.getElementById("emailLoginForm").submit();
+    await new Promise(r => setTimeout(r, 30));
+
+    // Switch reasoning mode -> math & model -> gemini-4-argon
+    const modeEl = document.getElementById("reasoningModeSelect");
+    modeEl.value = "math";
+    await modeEl.dispatchEvent({ type: "change", target: modeEl });
+    assert.equal(store.get("inffoler_v2_reasoning_mode"), "math");
+    assert.match(document.getElementById("engineActiveMode").textContent, /Math Mode/);
+
+    const modelEl = document.getElementById("modelSelect");
+    modelEl.value = "gemini-4-argon";
+    await modelEl.dispatchEvent({ type: "change", target: modelEl });
+    assert.equal(document.getElementById("engineActiveModel").textContent, "Gemini 4 Argon");
+
+    // Empty message & very long message blocked before hitting Worker
+    workerRequestCount = 0;
+    document.getElementById("chatInput").value = "   ";
+    await document.getElementById("chatForm").submit();
+    assert.equal(workerRequestCount, 0, "Empty prompt must not call Worker");
+
+    document.getElementById("chatInput").value = "X".repeat(12200);
+    await document.getElementById("chatForm").submit();
+    assert.equal(workerRequestCount, 0, "Oversized prompt must not call Worker");
+    assert.match(document.getElementById("engineGenerationStatus").textContent, /12,000 characters/);
+
+    // Valid math request + repeated rapid click guard
+    document.getElementById("chatInput").value = "Calculate 42 * 10";
+    const s1 = document.getElementById("chatForm").submit();
+    document.getElementById("chatInput").value = "Repeated duplicate spam";
+    const s2 = document.getElementById("chatForm").submit();
+    await Promise.all([s1, s2]);
+    await new Promise(r => setTimeout(r, 80));
+
+    assert.equal(workerRequestCount, 1, "Repeated click while generating must send only 1 Worker request");
+    assert.equal(lastWorkerRequestBody.model, "gemini-4-argon");
+    assert.equal(lastWorkerRequestBody.reasoningMode, "math");
+    const chatHtml = document.getElementById("chatMessages").innerHTML;
+    assert.ok(chatHtml.includes("42 * 10 = 420."));
+    assert.ok(chatHtml.includes("Reasoning Summary"));
+    assert.ok(chatHtml.includes("Checked (Independent)"));
+
+    // Cancellation mid-generation via #chatSendBtn
+    delayNextUpstream = true;
+    document.getElementById("chatInput").value = "Long task to cancel";
+    await document.getElementById("chatForm").submit();
+    await new Promise(r => setTimeout(r, 15));
+    await document.getElementById("chatSendBtn").click();
+    await new Promise(r => setTimeout(r, 80));
+
+    assert.match(document.getElementById("engineGenerationStatus").textContent, /Cancelled by user/);
+    assert.ok(document.getElementById("chatMessages").innerHTML.includes("Generation stopped."));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+

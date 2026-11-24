@@ -49,6 +49,15 @@ import {
   serverTimestamp,
   increment,
 } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
+import {
+  REASONING_MODES,
+  normalizeReasoningMode,
+  getModelDisplayLabel,
+  validatePromptInput,
+  classifyTaskPreview,
+  normalizeReasoningMetadata,
+  formatVerificationBadge,
+} from "./reasoning-engine.js";
 
 /* =========================================================================
  * PUBLIC CLOUDFLARE WORKER PROXY (GEMINI_API_KEY LIVES ONLY IN CLOUDFLARE SECRETS)
@@ -136,6 +145,7 @@ const STORAGE_THEME = "inffoler_v2_theme";
 const STORAGE_SFX = "inffoler_v2_sfx";
 const STORAGE_MUSIC = "inffoler_v2_music";
 const STORAGE_VOLUME = "inffoler_v2_volume";
+const STORAGE_REASONING_MODE = "inffoler_v2_reasoning_mode";
 
 const INSTAGRAM_ACCOUNTS = [
   { username: "@xalan_vetrnen", url: "https://www.instagram.com/xalan_vetrnen?cplk=b2c4NXRjcTkxbWR3" },
@@ -200,11 +210,8 @@ const STARTER_PROMPTS = [
   { icon: "\uD83D\uDCF7", title: "Analyze an Image", action: "attach" },
 ];
 
-const FALLBACK_CHAINS = {
-  "gemini-3.8-flash": ["gemini-3.8-flash", "gemini-3.5-flash-lite"],
-  "gemini-3.5-flash-lite": ["gemini-3.5-flash-lite", "gemini-3.8-flash"],
-  "gemini-4-argon": ["gemini-4-argon", "gemini-3.8-flash", "gemini-3.5-flash-lite"],
-};
+// Respect the user's selected model strictly — never silently switch models.
+let selectedReasoningMode = normalizeReasoningMode(loadPrefSafe(STORAGE_REASONING_MODE, "balanced"));
 
 const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const MAX_PENDING_IMAGES = 3;
@@ -1011,6 +1018,40 @@ function getSelectedModel() {
   return document.getElementById("modelSelect")?.value || "gemini-3.8-flash";
 }
 
+function getSelectedReasoningMode() {
+  const selectVal = document.getElementById("reasoningModeSelect")?.value;
+  return normalizeReasoningMode(selectVal || selectedReasoningMode);
+}
+
+function setEnginePhaseStatus(message, tone = "idle") {
+  const el = document.getElementById("engineGenerationStatus");
+  if (!el) return;
+  el.textContent = message;
+  el.classList.toggle("active", tone === "active");
+  el.classList.toggle("error", tone === "error");
+}
+
+function syncEngineStatusBar(phaseMessage = null, tone = "idle") {
+  const modelEl = document.getElementById("engineActiveModel");
+  const modeEl = document.getElementById("engineActiveMode");
+  const modeSelect = document.getElementById("reasoningModeSelect");
+  const modeKey = getSelectedReasoningMode();
+  const modeMeta = REASONING_MODES[modeKey] || REASONING_MODES.balanced;
+
+  if (modeSelect && modeSelect.value !== modeKey) {
+    modeSelect.value = modeKey;
+  }
+  if (modelEl) {
+    modelEl.textContent = getModelDisplayLabel(getSelectedModel());
+  }
+  if (modeEl) {
+    modeEl.textContent = `${modeMeta.icon} ${modeMeta.label}`;
+  }
+  if (phaseMessage) {
+    setEnginePhaseStatus(phaseMessage, tone);
+  }
+}
+
 function setTheme(theme, persistCloud = true) {
   const next = theme === "light" ? "light" : "dark";
   document.documentElement.setAttribute("data-theme", next);
@@ -1235,6 +1276,7 @@ async function onAuthChange(user) {
       if (profile?.preferredModel) {
         document.getElementById("modelSelect").value = profile.preferredModel;
       }
+      syncEngineStatusBar("Reasoning Engine 1.0 · Ready", "idle");
     } catch (err) {
       console.warn("Profile init:", err?.message);
     }
@@ -1644,11 +1686,48 @@ function classifyClientAiError(status, errJson = null, retryAfterHeader = null, 
     };
   }
 
+  if (serverCode === "UNSUPPORTED_MODEL" || status === 404) {
+    return {
+      kind: "unsupported_model",
+      code: "UNSUPPORTED_MODEL",
+      quotaType: null,
+      retryable: false,
+      retryAfterSec: null,
+      badgeLabel: "UNSUPPORTED MODEL",
+      userMessage:
+        rawMessage ||
+        "The selected model is unavailable or unsupported. Please choose Gemini 3.8 Flash, Gemini 3.5 Flash-Lite, or Gemini 4 Argon.",
+    };
+  }
+
+  if (serverCode === "EMPTY_PROMPT" || serverCode === "PAYLOAD_TOO_LARGE" || serverCode === "CONVERSATION_TOO_LONG") {
+    return {
+      kind: "validation",
+      code: serverCode,
+      quotaType: null,
+      retryable: false,
+      retryAfterSec: null,
+      badgeLabel: serverCode === "EMPTY_PROMPT" ? "EMPTY MESSAGE" : "MESSAGE TOO LONG",
+      userMessage: rawMessage || "Please check your message length and try again.",
+    };
+  }
+
+  if (status === 504 || serverCode === "UPSTREAM_TIMEOUT") {
+    return {
+      kind: "server_temp",
+      code: "UPSTREAM_TIMEOUT",
+      quotaType: null,
+      retryable: true,
+      retryAfterSec,
+      badgeLabel: "REQUEST TIMED OUT (504)",
+      userMessage: rawMessage || "Gemini AI timed out while reasoning. Tap Retry or switch to Quick Mode.",
+    };
+  }
+
   if (
     status === 500 ||
     status === 502 ||
     status === 503 ||
-    status === 504 ||
     serverCode === "TEMPORARY_SERVER_ERROR" ||
     serverCode === "UNAVAILABLE" ||
     serverCode === "INTERNAL"
@@ -1706,7 +1785,14 @@ function sleepWithAbort(ms, signal) {
   });
 }
 
-async function callProxyOnce(modelId, contents, systemInstruction, responseMimeType, signal) {
+async function callProxyOnce(
+  modelId,
+  contents,
+  systemInstruction,
+  responseMimeType,
+  signal,
+  reasoningMode = "balanced"
+) {
   if (!auth.currentUser) {
     throw new Error("Authentication required. Please log in to access INFFOLER AI.");
   }
@@ -1737,18 +1823,28 @@ async function callProxyOnce(modelId, contents, systemInstruction, responseMimeT
         "Content-Type": "application/json",
         Authorization: `Bearer ${idToken}`,
       },
-      body: JSON.stringify({ model: modelId, payload }),
+      body: JSON.stringify({
+        model: modelId,
+        reasoningMode: normalizeReasoningMode(reasoningMode),
+        payload,
+      }),
       signal: timeoutController.signal,
     });
   };
 
   try {
     let response = await sendAuthorizedRequest(false);
+    if (signal?.aborted) {
+      throw Object.assign(new Error("Generation stopped."), { name: "AbortError", userStopped: true });
+    }
     if (response.status === 401 && auth.currentUser) {
       response = await sendAuthorizedRequest(true);
     }
 
     const bodyText = await response.text();
+    if (signal?.aborted) {
+      throw Object.assign(new Error("Generation stopped."), { name: "AbortError", userStopped: true });
+    }
     if (!response.ok) {
       let errJson = null;
       try {
@@ -1774,9 +1870,10 @@ async function callProxyOnce(modelId, contents, systemInstruction, responseMimeT
     const data = JSON.parse(bodyText);
     const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("")?.trim();
     if (!text) throw new Error(`Model ${modelId} returned an empty response.`);
-    return text;
+    return { text, rawResponse: data };
   } catch (err) {
-    if (err.name === "AbortError") {
+    if (err.userStopped) throw err;
+    if (err.name === "AbortError" || signal?.aborted) {
       if (signal?.aborted) {
         const stopErr = new Error("Generation stopped.");
         stopErr.userStopped = true;
@@ -1803,59 +1900,76 @@ async function callProxyOnce(modelId, contents, systemInstruction, responseMimeT
   }
 }
 
-async function executeGeminiWithFallback(primaryModel, contents, systemInstruction, responseMimeType, signal) {
-  const chain = FALLBACK_CHAINS[primaryModel] || [primaryModel, "gemini-3.5-flash-lite"];
+async function executeSelectedModelRequest(
+  selectedModel,
+  contents,
+  systemInstruction,
+  responseMimeType,
+  signal,
+  reasoningMode = "balanced",
+  onStatus = null
+) {
+  // Never silently switch to another model: strictly respect the user's selected model.
   const MAX_TEMPORARY_RETRIES = 2; // Strictly bounded: max 2 retries (never retries indefinitely)
   const BASE_BACKOFF_MS = 750;
   const MAX_BACKOFF_MS = 8000;
   let retriesUsed = 0;
-  let lastError = null;
 
-  for (let modelIdx = 0; modelIdx < chain.length; modelIdx++) {
-    const modelId = chain[modelIdx];
-    while (true) {
-      try {
-        const text = await callProxyOnce(modelId, contents, systemInstruction, responseMimeType, signal);
-        return { modelId, text };
-      } catch (err) {
-        if (err.userStopped) throw err;
-        lastError = err;
-
-        // Daily quota exhaustion or non-retryable client error (400/401/403): fail immediately without retrying
-        if (err.quotaType === "daily" || err.code === "DAILY_QUOTA_EXCEEDED" || !err.retryable) {
-          if (err.status === 404 && modelIdx + 1 < chain.length) {
-            break; // Try next available model once if model name unavailable
-          }
-          throw err;
-        }
-
-        // If server told us to wait > 10s, don't hang the UI—surface clear wait message + Retry button
-        if (err.retryAfterSec && err.retryAfterSec > 10) {
-          throw err;
-        }
-
-        if (retriesUsed >= MAX_TEMPORARY_RETRIES) {
-          throw err;
-        }
-
-        const expDelay = Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * Math.pow(2, retriesUsed));
-        const jitter = Math.floor(Math.random() * 200);
-        const waitMs = Math.min(
-          MAX_BACKOFF_MS,
-          Math.max(expDelay + jitter, (err.retryAfterSec || 0) * 1000)
-        );
-        retriesUsed += 1;
-
-        await sleepWithAbort(waitMs, signal);
-
-        // On temporary 429/5xx, switch to next fallback model if one exists
-        if (modelIdx + 1 < chain.length) {
-          break;
-        }
+  while (true) {
+    try {
+      const { text, rawResponse } = await callProxyOnce(
+        selectedModel,
+        contents,
+        systemInstruction,
+        responseMimeType,
+        signal,
+        reasoningMode
+      );
+      return {
+        modelId: rawResponse?.inffolerReasoning?.modelUsed || selectedModel,
+        text,
+        rawResponse,
+      };
+    } catch (err) {
+      if (err.userStopped || signal?.aborted) {
+        if (!err.userStopped) err.userStopped = true;
+        throw err;
       }
+
+      // Unsupported model, empty/oversized payload, daily quota exhaustion, or auth errors fail immediately
+      if (
+        err.quotaType === "daily" ||
+        err.code === "DAILY_QUOTA_EXCEEDED" ||
+        err.code === "UNSUPPORTED_MODEL" ||
+        err.code === "EMPTY_PROMPT" ||
+        err.code === "PAYLOAD_TOO_LARGE" ||
+        !err.retryable
+      ) {
+        throw err;
+      }
+
+      if (err.retryAfterSec && err.retryAfterSec > 10) {
+        throw err;
+      }
+
+      if (retriesUsed >= MAX_TEMPORARY_RETRIES) {
+        throw err;
+      }
+
+      const expDelay = Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * Math.pow(2, retriesUsed));
+      const jitter = Math.floor(Math.random() * 200);
+      const waitMs = Math.min(
+        MAX_BACKOFF_MS,
+        Math.max(expDelay + jitter, (err.retryAfterSec || 0) * 1000)
+      );
+      retriesUsed += 1;
+
+      if (typeof onStatus === "function") {
+        onStatus(`Temporary busy (${err.status || "retry"}) · retrying ${retriesUsed}/${MAX_TEMPORARY_RETRIES}…`);
+      }
+      await sleepWithAbort(waitMs, signal);
     }
   }
-  throw lastError || new Error("Unable to reach INFFOLER AI right now.");
 }
 
 /* ==================== CHAT RENDERING & TYPING ANIMATION ==================== */
@@ -1997,15 +2111,48 @@ function renderChatMessages() {
         : renderSafeMarkdown(msg.text);
       const showRegen = idx === lastModelIdx && !isGenerating && !msg.isError;
       const showRetry = Boolean(msg.isError || msg.wasStopped);
+      const rMeta = msg.reasoning || null;
+      const displayModel = getModelDisplayLabel(rMeta?.modelUsed || msg.modelId);
+      const modeChipHtml = rMeta?.modeLabel
+        ? `<span class="turn-mode-chip">${escapeHtml(rMeta.modeLabel)}</span>`
+        : "";
+      const verBadge = rMeta?.verification ? formatVerificationBadge(rMeta.verification) : null;
+      const verPillHtml = verBadge
+        ? `<span class="verification-pill ${escapeHtml(verBadge.cssClass)}" title="${escapeHtml(rMeta.verification.summary || "")}">${escapeHtml(verBadge.text)}</span>`
+        : "";
+      const explainHtml =
+        rMeta && !msg.isError && !msg.wasStopped
+          ? `
+            <details class="reasoning-explain-box">
+              <summary>Reasoning Summary &middot; ${escapeHtml(rMeta.category)} (${escapeHtml(String(rMeta.effort || "medium").toUpperCase())} effort)</summary>
+              <div class="reasoning-explain-body">
+                <div><strong>Model Used:</strong> ${escapeHtml(rMeta.modelUsed || msg.modelId || "")} &middot; <strong>Mode:</strong> ${escapeHtml(rMeta.modeLabel || "")}</div>
+                <div><strong>Verification:</strong> ${escapeHtml(rMeta.verification?.summary || "No independent verification performed.")}</div>
+                ${
+                  Array.isArray(rMeta.subtasks) && rMeta.subtasks.length > 0
+                    ? `<div><strong>Approach Steps:</strong><ol class="reasoning-subtask-list">${rMeta.subtasks
+                        .map(s => `<li>${escapeHtml(s)}</li>`)
+                        .join("")}</ol></div>`
+                    : ""
+                }
+              </div>
+            </details>
+          `
+          : "";
 
       return `
         <div class="msg-turn model msg-enter">
           <div class="msg-avatar model-badge">AI</div>
           <div class="msg-body model-card ${msg.isError ? "error" : ""} ${msg.justCompleted ? "response-glow" : ""}">
             <div class="model-turn-header">
-              <span>INFFOLER AI${msg.modelId ? ` &middot; ${escapeHtml(msg.modelId)}` : ""}</span>
+              <div class="model-meta-cluster">
+                <span>INFFOLER AI${msg.modelId ? ` &middot; ${escapeHtml(displayModel)}` : ""}</span>
+                ${modeChipHtml}
+              </div>
+              ${verPillHtml}
             </div>
             <div class="md-content">${renderedMd}</div>
+            ${explainHtml}
             <div class="msg-actions-bar">
               ${
                 showRetry
@@ -2089,7 +2236,7 @@ async function handleMessageFeedback(idx, rating) {
   } catch { /* ignore */ }
 }
 
-async function animateTypingReveal(fullText, modelId) {
+async function animateTypingReveal(fullText, modelId, reasoningMeta = null) {
   stopTypingRequested = false;
   const placeholderIdx = activeMessages.findIndex(m => m.isTypingPlaceholder);
   const msgId = makeSafeId("msg");
@@ -2098,6 +2245,7 @@ async function animateTypingReveal(fullText, modelId) {
     role: "model",
     text: "",
     modelId,
+    reasoning: reasoningMeta,
     feedback: "none",
   };
   if (placeholderIdx >= 0) {
@@ -2139,8 +2287,15 @@ async function sendChatMessage(rawPrompt, overrideImages = null) {
   if (isGenerating || chatRequestLock) return;
 
   const imagesToSend = overrideImages ?? [...pendingImages];
+  const check = validatePromptInput(rawPrompt, imagesToSend.length);
+  if (!check.ok) {
+    showToast(check.message);
+    setEnginePhaseStatus(check.message, "error");
+    return;
+  }
+
   const promptText =
-    (rawPrompt || "").trim() ||
+    check.trimmed ||
     (imagesToSend.length > 0 ? "Please analyze and explain this image in detail." : "");
   if (!promptText && imagesToSend.length === 0) return;
 
@@ -2262,12 +2417,16 @@ async function dispatchAiCompletion(priorTurns, promptText, imagesToSend) {
 
   const contents = [...priorTurns, { role: "user", parts: userParts }];
   const selectedModel = getSelectedModel();
+  const reasoningMode = getSelectedReasoningMode();
+  const previewCategory = classifyTaskPreview(promptText, reasoningMode);
+  const startedAt = Date.now();
   const systemPrompt =
     "You are INFFOLER AI 2.0, an intelligent, futuristic AI assistant created by Alankrit Pathak. " +
     "Respond clearly using clean Markdown headings, bullet lists, tables, and fenced code blocks with language tags when helpful.";
 
   activeMessages.push({ role: "model", isTypingPlaceholder: true, text: "" });
   setGeneratingUi(true);
+  syncEngineStatusBar(`Reasoning (${previewCategory} · ${REASONING_MODES[reasoningMode]?.shortLabel || "Balanced"})…`, "active");
   renderChatMessages();
 
   activeAbortController = new AbortController();
@@ -2277,17 +2436,30 @@ async function dispatchAiCompletion(priorTurns, promptText, imagesToSend) {
   abortRequestedBeforeDispatch = false;
 
   try {
-    const { modelId, text } = await executeGeminiWithFallback(
+    const { modelId, text, rawResponse } = await executeSelectedModelRequest(
       selectedModel,
       contents,
       systemPrompt,
       null,
-      activeAbortController.signal
+      activeAbortController.signal,
+      reasoningMode,
+      statusMsg => syncEngineStatusBar(statusMsg, "active")
     );
 
-    const revealedMsg = await animateTypingReveal(text, modelId);
+    const reasoningMeta = normalizeReasoningMetadata(rawResponse, {
+      selectedModel,
+      selectedMode: reasoningMode,
+      previewCategory,
+      elapsedMs: Date.now() - startedAt,
+    });
+
+    const revealedMsg = await animateTypingReveal(text, modelId, reasoningMeta);
     revealedMsg.justCompleted = true;
     playReceivedSfx();
+    syncEngineStatusBar(
+      `${reasoningMeta.category} · ${reasoningMeta.verification?.label || "Complete"}`,
+      reasoningMeta.verification?.status === "caution" ? "error" : "idle"
+    );
 
     if (currentUser && activeChatId) {
       await addCloudMessage(currentUser.uid, activeChatId, revealedMsg.id, {
@@ -2300,6 +2472,10 @@ async function dispatchAiCompletion(priorTurns, promptText, imagesToSend) {
     activeMessages = activeMessages.filter(m => !m.isTypingPlaceholder);
     const stopped = Boolean(err.userStopped);
     const errText = stopped ? "Generation stopped." : redactSensitiveText(err.message);
+    syncEngineStatusBar(
+      stopped ? "Cancelled by user" : err.badgeLabel || "Request failed",
+      stopped ? "idle" : "error"
+    );
     activeMessages.push({
       id: makeSafeId("err"),
       role: "model",
@@ -2345,11 +2521,13 @@ async function runWhatIfSimulation(rawQuestion) {
     "initialScenario, immediateConsequences, shortTermPossibilities, longTermPossibilities, alternativeOutcomes, factsVsSpeculation.";
 
   try {
-    const { text } = await executeGeminiWithFallback(
-      "gemini-3.8-flash",
+    const { text } = await executeSelectedModelRequest(
+      getSelectedModel(),
       [{ role: "user", parts: [{ text: question }] }],
       systemPrompt,
-      "application/json"
+      "application/json",
+      null,
+      "deep_think"
     );
     const parsed = JSON.parse(text);
     const simId = makeSafeId("sim");
@@ -2762,9 +2940,18 @@ function bindEvents() {
   document.getElementById("btnThemeToggleModal").addEventListener("click", toggleTheme);
 
   document.getElementById("modelSelect").addEventListener("change", e => {
+    syncEngineStatusBar("Model updated · Ready", "idle");
     if (currentUser) {
       updateUserProfileAndPrefs(currentUser.uid, { preferredModel: e.target.value }).catch(() => {});
     }
+  });
+
+  document.getElementById("reasoningModeSelect")?.addEventListener("change", e => {
+    selectedReasoningMode = normalizeReasoningMode(e.target.value);
+    savePrefSafe(STORAGE_REASONING_MODE, selectedReasoningMode);
+    const meta = REASONING_MODES[selectedReasoningMode];
+    syncEngineStatusBar(`${meta.label} active · Ready`, "idle");
+    showToast(`Switched to ${meta.label}`);
   });
 
   const chatInput = document.getElementById("chatInput");
@@ -2792,7 +2979,12 @@ function bindEvents() {
       return;
     }
     const text = chatInput.value;
-    if (!text.trim() && pendingImages.length === 0) return;
+    const check = validatePromptInput(text, pendingImages.length);
+    if (!check.ok) {
+      showToast(check.message);
+      setEnginePhaseStatus(check.message, "error");
+      return;
+    }
     chatInput.value = "";
     chatInput.style.height = "auto";
     sendChatMessage(text);
@@ -3137,6 +3329,7 @@ function boot() {
 
   setTheme(loadPref(STORAGE_THEME, "dark"), false);
   syncAudioUi();
+  syncEngineStatusBar("Reasoning Engine 1.0 · Ready", "idle");
   renderInstagramLists();
   renderGlobalFooters();
   renderExplore();

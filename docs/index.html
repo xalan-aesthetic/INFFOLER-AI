@@ -289,11 +289,21 @@
             <span id="musicIconTop">&#x1F3B5;</span>
           </button>
 
-          <select id="modelSelect" class="model-select" aria-label="Select Gemini model">
-            <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
-            <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
-            <option value="gemini-4-argon">Gemini 4 Argon</option>
-          </select>
+          <div class="engine-selectors-group">
+            <select id="modelSelect" class="model-select" aria-label="Select Gemini model">
+              <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
+              <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
+              <option value="gemini-4-argon">Gemini 4 Argon</option>
+            </select>
+
+            <select id="reasoningModeSelect" class="mode-select" aria-label="Select reasoning mode">
+              <option value="quick">&#x26A1; Quick</option>
+              <option value="balanced" selected>&#x2696;&#xFE0F; Balanced</option>
+              <option value="deep_think">&#x1F9E0; Deep Think</option>
+              <option value="coding">&#x1F4BB; Coding</option>
+              <option value="math">&#x1F9EE; Math</option>
+            </select>
+          </div>
 
           <button type="button" class="icon-btn" id="btnThemeToggleTop" aria-label="Toggle theme" title="Switch Theme">
             <span id="themeIconTop">&#x2600;&#xFE0F;</span>
@@ -326,6 +336,14 @@
                 Clear
               </button>
             </div>
+          </div>
+
+          <div class="engine-status-bar" id="engineStatusBar" aria-live="polite">
+            <div class="engine-status-pills">
+              <span class="engine-meta-pill" id="engineActiveModel">Gemini 3.8 Flash</span>
+              <span class="engine-meta-pill mode" id="engineActiveMode">&#x2696;&#xFE0F; Balanced Mode</span>
+            </div>
+            <span class="engine-phase-text" id="engineGenerationStatus">Reasoning Engine 1.0 &middot; Ready</span>
           </div>
 
           <div class="chat-feed-wrap" id="chatScrollArea">
