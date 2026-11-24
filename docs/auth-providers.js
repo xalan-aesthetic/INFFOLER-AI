@@ -329,10 +329,20 @@ export function mapMultiProviderAuthError(err, contextProvider = "") {
       return "Verification OTP has expired. Tap Resend OTP to receive a new code.";
     case "auth/captcha-check-failed":
       return "Security verification (reCAPTCHA) failed or expired. Please try requesting the OTP again.";
+    case "auth/invalid-app-credential":
+    case "auth/missing-client-identifier":
+    case "auth/app-not-authorized":
+      return "Phone authentication could not verify this domain/reCAPTCHA session. Please refresh the page and ensure this domain is authorized in Firebase Console.";
     case "auth/quota-exceeded":
-      return "SMS OTP quota has been temporarily reached. Please try again later.";
+      return "SMS OTP quota has been temporarily reached. Please try again later or test with a Firebase test phone number.";
     case "auth/too-many-requests":
       return "Too many verification attempts. Please wait a few minutes before retrying.";
+    case "auth/network-request-failed":
+      return "Network error while contacting Firebase Authentication. Check your internet connection and try again.";
+    case "auth/user-disabled":
+      return "This account has been disabled in Firebase Authentication.";
+    case "auth/internal-error":
+      return "Temporary authentication service error. Please verify your number format and try again.";
     case "auth/requires-recent-login":
       return "For your security, please log out and sign back in right before making this change.";
     case "auth/web-storage-unsupported":
@@ -342,6 +352,9 @@ export function mapMultiProviderAuthError(err, contextProvider = "") {
     default:
       if (/operation-not-allowed/i.test(msg)) {
         return `${providerName} sign-in is not yet enabled in Firebase Console → Authentication → Sign-in method.`;
+      }
+      if (/network/i.test(msg)) {
+        return "Network error occurred while verifying your session. Please check your connection and try again.";
       }
       return msg || "Authentication or cloud sync error occurred.";
   }

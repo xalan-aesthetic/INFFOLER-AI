@@ -2230,7 +2230,7 @@ test("Phone OTP validation, rate limiter abuse protection, Apple Private Relay i
   assert.ok(badges.some(b => b.id === "apple-relay"));
   assert.ok(badges.some(b => b.id === "phone"));
 
-  // Safe non-merging guidance on account conflict
+  // Safe non-merging guidance & phone error mappings
   const conflictMsg = mapMultiProviderAuthError(
     { code: "auth/account-exists-with-different-credential", customData: { email: "user@example.com" } },
     "microsoft.com"
@@ -2239,6 +2239,22 @@ test("Phone OTP validation, rate limiter abuse protection, Apple Private Relay i
   assert.match(
     mapMultiProviderAuthError({ code: "auth/operation-not-allowed" }, "apple.com"),
     /Apple sign-in is not yet enabled/i
+  );
+  assert.match(
+    mapMultiProviderAuthError({ code: "auth/network-request-failed" }, "phone"),
+    /Network error while contacting Firebase Authentication/i
+  );
+  assert.match(
+    mapMultiProviderAuthError({ code: "auth/quota-exceeded" }, "phone"),
+    /SMS OTP quota/i
+  );
+  assert.match(
+    mapMultiProviderAuthError({ code: "auth/code-expired" }, "phone"),
+    /OTP has expired/i
+  );
+  assert.match(
+    mapMultiProviderAuthError({ code: "auth/invalid-app-credential" }, "phone"),
+    /domain\/reCAPTCHA session/i
   );
 });
 
@@ -2324,7 +2340,7 @@ test("E2E Multi-Provider Auth: Microsoft, Apple Private Relay, Phone OTP (+91), 
       export const __state = {
         currentUser: null,
         listeners: [],
-        calls: { microsoft: 0, apple: 0, phoneSend: 0, phoneVerify: 0, linkMicrosoft: 0, linkApple: 0, linkPhone: 0 },
+        calls: { microsoft: 0, apple: 0, phoneSend: 0, phoneVerify: 0, linkMicrosoft: 0, linkApple: 0, linkPhone: 0, recaptchaCreated: 0, recaptchaCleared: 0 },
         simulateCancelNextPopup: false,
       };
       export class GoogleAuthProvider { setCustomParameters() {} }
@@ -2335,8 +2351,12 @@ test("E2E Multi-Provider Auth: Microsoft, Apple Private Relay, Phone OTP (+91), 
       }
       export class EmailAuthProvider { static credential(e, p) { return { e, p }; } }
       export class RecaptchaVerifier {
-        constructor(_auth, containerId, opts) { this.containerId = containerId; this.opts = opts; }
-        clear() {}
+        constructor(_auth, containerId, opts) {
+          this.containerId = containerId;
+          this.opts = opts;
+          __state.calls.recaptchaCreated += 1;
+        }
+        clear() { __state.calls.recaptchaCleared += 1; }
       }
       export const browserLocalPersistence = {};
       export function getAuth() { return __state; }
@@ -2448,7 +2468,8 @@ test("E2E Multi-Provider Auth: Microsoft, Apple Private Relay, Phone OTP (+91), 
     fs.writeFileSync(path.join(tmpDir, "firebase-auth.js"), mockFirebaseAuth);
     fs.writeFileSync(
       path.join(tmpDir, "firebase-firestore.js"),
-      `export function getFirestore() { return {}; }
+      `export const __docs = new Map();
+       export function getFirestore() { return {}; }
        export function doc(_db, ...p) { return p.join("/"); }
        export function collection(_db, ...p) { return p.join("/"); }
        export function query(c) { return c; }
@@ -2456,10 +2477,10 @@ test("E2E Multi-Provider Auth: Microsoft, Apple Private Relay, Phone OTP (+91), 
        export function limit() { return null; }
        export function serverTimestamp() { return new Date().toISOString(); }
        export function increment(n) { return n; }
-       export async function getDoc() { return { exists: () => false, data: () => ({}) }; }
-       export async function setDoc() {}
-       export async function updateDoc() {}
-       export async function deleteDoc() {}
+       export async function getDoc(ref) { return { exists: () => __docs.has(ref), data: () => __docs.get(ref) }; }
+       export async function setDoc(ref, data) { __docs.set(ref, data); }
+       export async function updateDoc(ref, patch) { __docs.set(ref, { ...(__docs.get(ref) || {}), ...patch }); }
+       export async function deleteDoc(ref) { __docs.delete(ref); }
        export async function getDocs() { return { docs: [] }; }
        export function writeBatch() { return { set() {}, update() {}, delete() {}, async commit() {} }; }
        export function onSnapshot(_q, onNext) { onNext({ docs: [] }); return () => {}; }`
@@ -2474,6 +2495,7 @@ test("E2E Multi-Provider Auth: Microsoft, Apple Private Relay, Phone OTP (+91), 
     fs.copyFileSync(path.resolve(__dirname, "../docs/auth-providers.js"), path.join(tmpDir, "auth-providers.js"));
 
     const { __state: authState } = await import(pathToFileURL(path.join(tmpDir, "firebase-auth.js")).href);
+    const { __docs: firestoreDocs } = await import(pathToFileURL(path.join(tmpDir, "firebase-firestore.js")).href);
     await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
     await new Promise(r => setTimeout(r, 25));
 
@@ -2523,18 +2545,22 @@ test("E2E Multi-Provider Auth: Microsoft, Apple Private Relay, Phone OTP (+91), 
     await new Promise(r => setTimeout(r, 20));
     await document.getElementById("btnOpenPhoneAuth").click();
     assert.equal(document.getElementById("phoneAuthForm").classList.contains("hidden"), false);
+    assert.equal(document.getElementById("authCardHeading").textContent, "Phone Verification");
 
-    // Invalid Indian number blocked before hitting Firebase
+    // Invalid Indian number blocked before hitting Firebase or reCAPTCHA
     document.getElementById("phoneNumberInput").value = "12345";
     await document.getElementById("phoneAuthForm").submit();
     assert.equal(authState.calls.phoneSend, 0);
     assert.match(document.getElementById("authFeedbackBox").textContent, /Indian mobile number/i);
 
-    // Valid +91 number sends OTP, masks display, activates cooldown
+    // Valid +91 number sends OTP, opens separate Verify OTP screen, masks display, activates cooldown
     document.getElementById("phoneCountrySelect").value = "+91";
     document.getElementById("phoneNumberInput").value = "9876543210";
     await document.getElementById("phoneAuthForm").submit();
     assert.equal(authState.calls.phoneSend, 1);
+    assert.equal(document.getElementById("phoneEntryGroup").classList.contains("hidden"), true);
+    assert.equal(document.getElementById("phoneOtpVerifyGroup").classList.contains("hidden"), false);
+    assert.equal(document.getElementById("authCardHeading").textContent, "Verify OTP");
     assert.equal(document.getElementById("phoneOtpTargetText").textContent, "OTP sent to +91 ••••••3210");
     assert.equal(document.getElementById("btnResendPhoneOtp").disabled, true);
 
@@ -2543,16 +2569,24 @@ test("E2E Multi-Provider Auth: Microsoft, Apple Private Relay, Phone OTP (+91), 
     await document.getElementById("btnVerifyPhoneOtp").click();
     assert.match(document.getElementById("authFeedbackBox").textContent, /4 attempts remaining/i);
 
-    // Correct OTP verifies & opens workspace with backend /auth/session validation
+    // Correct OTP via form submit (Android keyboard Go/Enter) verifies, cleans up reCAPTCHA, saves Firestore profile, & opens workspace
     document.getElementById("phoneOtpCodeInput").value = "654321";
-    await document.getElementById("btnVerifyPhoneOtp").click();
-    await new Promise(r => setTimeout(r, 35));
+    await document.getElementById("phoneAuthForm").submit();
+    await new Promise(r => setTimeout(r, 40));
     assert.equal(authState.calls.phoneVerify, 1);
+    assert.ok(authState.calls.recaptchaCleared >= 1, "reCAPTCHA must be disposed cleanly after verification");
     assert.equal(document.getElementById("appShell").classList.contains("hidden"), false);
     assert.equal(document.getElementById("view-chat").classList.contains("active"), true);
     assert.match(document.getElementById("sidebarUserEmail").textContent, /\+91 ••••••3210/);
     assert.equal(backendSessionsChecked.at(-1)?.signInProvider, "phone");
     assert.equal(backendSessionsChecked.at(-1)?.hasPhoneNumber, true);
+
+    // Verify Firestore user profile saved securely using rules-compliant fields
+    const savedPhoneProfile = firestoreDocs.get("users/uid_phone_e2e");
+    assert.ok(savedPhoneProfile, "Phone user profile must be saved in Cloud Firestore");
+    assert.equal(savedPhoneProfile.userId, "uid_phone_e2e");
+    assert.equal(savedPhoneProfile.displayName, "Mobile 3210");
+    assert.equal(savedPhoneProfile.email, undefined);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

@@ -151,7 +151,8 @@
 
         <!-- Phone Number (SMS OTP) Authentication -->
         <form id="phoneAuthForm" class="auth-form hidden">
-          <div id="phoneEntryGroup">
+          <div id="phoneEntryGroup" class="auth-step-panel">
+            <div class="otp-step-badge">STEP 1 &middot; MOBILE NUMBER</div>
             <label class="field-label" for="phoneNumberInput">Mobile Number (SMS Verification)</label>
             <div class="phone-input-row">
               <select id="phoneCountrySelect" class="modal-input phone-country-select" aria-label="Country dialing code">
@@ -187,7 +188,8 @@
             <button type="submit" class="gradient-cta-btn" id="btnSendPhoneOtp">Send Verification OTP</button>
           </div>
 
-          <div id="phoneOtpVerifyGroup" class="hidden">
+          <div id="phoneOtpVerifyGroup" class="auth-step-panel hidden">
+            <div class="otp-step-badge verify">STEP 2 &middot; SMS OTP VERIFICATION</div>
             <div class="otp-status-banner">
               <span id="phoneOtpTargetText">OTP sent to +91 ••••••3210</span>
               <span id="phoneOtpExpiryText" class="otp-timer-pill">Expires in 5:00</span>
@@ -207,6 +209,11 @@
               <button type="button" class="text-link-btn" id="btnResendPhoneOtp" disabled>Resend OTP (45s)</button>
               <button type="button" class="text-link-btn muted" id="btnChangePhoneNumber">Change Number</button>
             </div>
+          </div>
+
+          <div id="phoneAuthLoadingNote" class="otp-loading-note hidden" role="status" aria-live="polite">
+            <span class="otp-spinner" aria-hidden="true"></span>
+            <span id="phoneAuthLoadingText">Connecting to Firebase Phone Auth&hellip;</span>
           </div>
 
           <div class="auth-switch-row">

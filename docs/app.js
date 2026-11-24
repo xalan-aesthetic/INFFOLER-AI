@@ -704,13 +704,20 @@ let linkPhoneConfirmationResult = null;
 let pendingOtpPhoneE164 = "";
 let pendingLinkPhoneE164 = "";
 let otpTimerInterval = null;
+let phoneOtpSendInFlight = false;
+let phoneOtpVerifyInFlight = false;
 
 function disposeRecaptchaVerifier(kind = "login") {
   const ref = kind === "link" ? linkPhoneRecaptchaVerifier : phoneRecaptchaVerifier;
+  const containerId = kind === "link" ? "linkPhoneRecaptchaContainer" : "phoneRecaptchaContainer";
   if (ref && typeof ref.clear === "function") {
     try {
       ref.clear();
     } catch { /* ignore */ }
+  }
+  const container = typeof document !== "undefined" ? document.getElementById(containerId) : null;
+  if (container) {
+    container.innerHTML = "";
   }
   if (kind === "link") linkPhoneRecaptchaVerifier = null;
   else phoneRecaptchaVerifier = null;
@@ -803,6 +810,9 @@ async function signInWithApple() {
 }
 
 async function requestPhoneOtpLogin(rawNumber, countryCode) {
+  if (phoneOtpSendInFlight) {
+    throw new Error("OTP request already in progress. Please wait.");
+  }
   await persistenceReady;
   const normalized = normalizePhoneInput(rawNumber, countryCode);
   if (!normalized.ok) {
@@ -812,6 +822,9 @@ async function requestPhoneOtpLogin(rawNumber, countryCode) {
   if (!quota.allowed) {
     throw new Error(quota.reason);
   }
+  phoneOtpSendInFlight = true;
+  // Dispose any stale reCAPTCHA token/widget before creating a fresh RecaptchaVerifier
+  disposeRecaptchaVerifier("login");
   const verifier = getOrCreateRecaptchaVerifier("phoneRecaptchaContainer", "login");
   try {
     const confirmation = await signInWithPhoneNumber(auth, normalized.e164, verifier);
@@ -822,10 +835,15 @@ async function requestPhoneOtpLogin(rawNumber, countryCode) {
   } catch (err) {
     disposeRecaptchaVerifier("login");
     throw err;
+  } finally {
+    phoneOtpSendInFlight = false;
   }
 }
 
 async function confirmPhoneOtpLogin(rawOtp) {
+  if (phoneOtpVerifyInFlight) {
+    throw new Error("OTP verification already in progress. Please wait.");
+  }
   if (!phoneConfirmationResult) {
     throw new Error("Please request an OTP verification code first.");
   }
@@ -837,10 +855,12 @@ async function confirmPhoneOtpLogin(rawOtp) {
   if (!check.ok) {
     throw new Error(check.error);
   }
+  phoneOtpVerifyInFlight = true;
   try {
     const cred = await phoneConfirmationResult.confirm(check.code);
     phoneOtpLimiter.resetChallenge();
     phoneConfirmationResult = null;
+    disposeRecaptchaVerifier("login");
     await ensureUserProfile(cred.user).catch(err => console.warn("Profile sync:", err?.message));
     return cred.user;
   } catch (err) {
@@ -849,6 +869,8 @@ async function confirmPhoneOtpLogin(rawOtp) {
       err.otpAttemptsRemaining = remaining;
     }
     throw err;
+  } finally {
+    phoneOtpVerifyInFlight = false;
   }
 }
 
@@ -1378,6 +1400,61 @@ function startPhoneOtpTimers() {
   }
 }
 
+function setPhoneLoadingState(mode = null, message = "") {
+  const note = document.getElementById("phoneAuthLoadingNote");
+  const textEl = document.getElementById("phoneAuthLoadingText");
+  const sendBtn = document.getElementById("btnSendPhoneOtp");
+  const verifyBtn = document.getElementById("btnVerifyPhoneOtp");
+  const resendBtn = document.getElementById("btnResendPhoneOtp");
+
+  if (note && textEl) {
+    if (mode && message) {
+      textEl.textContent = message;
+      note.classList.remove("hidden");
+    } else {
+      note.classList.add("hidden");
+    }
+  }
+  if (sendBtn) {
+    sendBtn.textContent = mode === "send" ? "Sending Verification OTP…" : "Send Verification OTP";
+  }
+  if (verifyBtn) {
+    verifyBtn.textContent = mode === "verify" ? "Verifying OTP…" : "Verify & Sign In";
+  }
+  if (resendBtn && mode === "resend") {
+    resendBtn.disabled = true;
+    resendBtn.textContent = "Sending…";
+  } else if (!mode) {
+    updatePhoneOtpCountdownUi();
+  }
+}
+
+function setPhoneAuthStep(step = "entry", maskedPhone = "") {
+  const entryGroup = document.getElementById("phoneEntryGroup");
+  const verifyGroup = document.getElementById("phoneOtpVerifyGroup");
+  const heading = document.getElementById("authCardHeading");
+  const sub = document.getElementById("authCardSub");
+
+  if (step === "verify") {
+    if (maskedPhone && document.getElementById("phoneOtpTargetText")) {
+      document.getElementById("phoneOtpTargetText").textContent = `OTP sent to ${maskedPhone}`;
+    }
+    entryGroup?.classList.add("hidden");
+    verifyGroup?.classList.remove("hidden");
+    if (heading) heading.textContent = "Verify OTP";
+    if (sub) {
+      sub.textContent = maskedPhone
+        ? `Enter the 6-digit SMS code sent to ${maskedPhone}`
+        : "Enter the 6-digit SMS verification code";
+    }
+  } else {
+    verifyGroup?.classList.add("hidden");
+    entryGroup?.classList.remove("hidden");
+    if (heading) heading.textContent = "Phone Verification";
+    if (sub) sub.textContent = "Sign in securely using SMS OTP (+91 India & global)";
+  }
+}
+
 function setAuthBusy(busy) {
   [
     "btnGoogleSignIn",
@@ -1397,6 +1474,10 @@ function setAuthBusy(busy) {
 
 function switchAuthTab(tabName) {
   setAuthFeedback("");
+  setPhoneLoadingState(null);
+  if (tabName !== "phone") {
+    disposeRecaptchaVerifier("login");
+  }
   document.querySelectorAll(".auth-tab[data-auth-tab]").forEach(btn => {
     const isActive = btn.getAttribute("data-auth-tab") === tabName;
     btn.classList.toggle("active", isActive);
@@ -1414,8 +1495,11 @@ function switchAuthTab(tabName) {
       heading.textContent = "Create Account";
       sub.textContent = "Join INFFOLER AI to save & sync your personal chats";
     } else if (tabName === "phone") {
-      heading.textContent = "Phone Verification";
-      sub.textContent = "Sign in securely using SMS OTP (+91 India & global)";
+      const hasActiveChallenge = Boolean(phoneConfirmationResult) && phoneOtpLimiter.getExpiryRemainingSec() > 0;
+      setPhoneAuthStep(
+        hasActiveChallenge ? "verify" : "entry",
+        pendingOtpPhoneE164 ? maskPhoneNumber(pendingOtpPhoneE164) : ""
+      );
     } else if (tabName === "reset") {
       heading.textContent = "Reset Password";
       sub.textContent = "Receive a secure Firebase reset link via email";
@@ -3465,23 +3549,32 @@ function bindEvents() {
 
   document.getElementById("btnOpenPhoneAuth")?.addEventListener("click", () => {
     switchAuthTab("phone");
-    document.getElementById("phoneNumberInput")?.focus?.();
+    if (!phoneConfirmationResult) {
+      document.getElementById("phoneNumberInput")?.focus?.();
+    } else {
+      document.getElementById("phoneOtpCodeInput")?.focus?.();
+    }
   });
 
   document.getElementById("btnBackEmailLogin")?.addEventListener("click", () => {
     switchAuthTab("login");
   });
 
-  const handleSendOtp = async () => {
+  const handleSendOtp = async (isResend = false) => {
+    if (phoneOtpSendInFlight) return;
     setAuthFeedback("");
     setAuthBusy(true);
+    setPhoneLoadingState(
+      isResend ? "resend" : "send",
+      isResend
+        ? "Verifying reCAPTCHA & sending a new SMS OTP…"
+        : "Verifying reCAPTCHA & sending SMS OTP…"
+    );
     const countryCode = document.getElementById("phoneCountrySelect")?.value || "+91";
     const number = document.getElementById("phoneNumberInput")?.value || "";
     try {
       const info = await requestPhoneOtpLogin(number, countryCode);
-      document.getElementById("phoneOtpTargetText").textContent = `OTP sent to ${info.masked}`;
-      document.getElementById("phoneEntryGroup")?.classList.add("hidden");
-      document.getElementById("phoneOtpVerifyGroup")?.classList.remove("hidden");
+      setPhoneAuthStep("verify", info.masked);
       startPhoneOtpTimers();
       setAuthFeedback(`Verification code sent to ${info.masked}. Enter the 6-digit SMS code below.`, true);
       document.getElementById("phoneOtpCodeInput")?.focus?.();
@@ -3489,51 +3582,63 @@ function bindEvents() {
       setAuthFeedback(mapFirebaseError(err, "phone"));
     } finally {
       setAuthBusy(false);
+      setPhoneLoadingState(null);
     }
   };
 
-  document.getElementById("phoneAuthForm")?.addEventListener("submit", async e => {
-    e.preventDefault();
-    if (!document.getElementById("phoneOtpVerifyGroup")?.classList.contains("hidden")) {
-      return;
-    }
-    await handleSendOtp();
-  });
-
-  document.getElementById("btnVerifyPhoneOtp")?.addEventListener("click", async () => {
+  const handleVerifyOtp = async () => {
+    if (phoneOtpVerifyInFlight) return;
     setAuthFeedback("");
     setAuthBusy(true);
+    setPhoneLoadingState("verify", "Verifying 6-digit OTP with Firebase Authentication…");
     const code = document.getElementById("phoneOtpCodeInput")?.value || "";
     try {
       const user = await confirmPhoneOtpLogin(code);
       if (document.getElementById("phoneOtpCodeInput")) {
         document.getElementById("phoneOtpCodeInput").value = "";
       }
+      setPhoneAuthStep("entry");
       showToast(`Phone verified! Welcome, ${resolveDisplayIdentity(user).displayName}!`);
     } catch (err) {
       setAuthFeedback(mapFirebaseError(err, "phone"));
     } finally {
       setAuthBusy(false);
+      setPhoneLoadingState(null);
     }
+  };
+
+  document.getElementById("phoneAuthForm")?.addEventListener("submit", async e => {
+    e.preventDefault();
+    if (!document.getElementById("phoneOtpVerifyGroup")?.classList.contains("hidden")) {
+      await handleVerifyOtp();
+      return;
+    }
+    await handleSendOtp(false);
   });
+
+  document.getElementById("btnVerifyPhoneOtp")?.addEventListener("click", handleVerifyOtp);
 
   document.getElementById("btnResendPhoneOtp")?.addEventListener("click", async () => {
     if (phoneOtpLimiter.getCooldownRemainingSec() > 0) {
       updatePhoneOtpCountdownUi();
       return;
     }
-    await handleSendOtp();
+    await handleSendOtp(true);
   });
 
   document.getElementById("btnChangePhoneNumber")?.addEventListener("click", () => {
     clearPhoneOtpTimersAndState();
+    setPhoneLoadingState(null);
     setAuthFeedback("");
     if (document.getElementById("phoneOtpCodeInput")) {
       document.getElementById("phoneOtpCodeInput").value = "";
     }
-    document.getElementById("phoneOtpVerifyGroup")?.classList.add("hidden");
-    document.getElementById("phoneEntryGroup")?.classList.remove("hidden");
+    setPhoneAuthStep("entry");
     document.getElementById("phoneNumberInput")?.focus?.();
+  });
+
+  window.addEventListener?.("beforeunload", () => {
+    clearPhoneOtpTimersAndState();
   });
 
   document.getElementById("emailLoginForm").addEventListener("submit", async e => {

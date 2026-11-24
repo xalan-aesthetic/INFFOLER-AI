@@ -2292,6 +2292,52 @@ body {
   overflow-x: auto;
 }
 
+.auth-step-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.otp-step-badge {
+  align-self: flex-start;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.2), rgba(0, 229, 255, 0.16));
+  border: 1px solid rgba(168, 85, 247, 0.36);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--cyan);
+}
+
+.otp-step-badge.verify {
+  border-color: rgba(0, 245, 212, 0.42);
+  color: var(--teal);
+}
+
+.otp-loading-note {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(0, 229, 255, 0.1), rgba(168, 85, 247, 0.12));
+  border: 1px solid rgba(0, 229, 255, 0.3);
+  font-size: 0.76rem;
+  color: var(--cyan);
+}
+
+.otp-spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(0, 229, 255, 0.25);
+  border-top-color: var(--cyan);
+  flex-shrink: 0;
+  animation: spinRing 0.8s linear infinite;
+}
+
 .otp-status-banner {
   display: flex;
   align-items: center;
