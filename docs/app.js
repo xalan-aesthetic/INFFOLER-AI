@@ -62,7 +62,7 @@ import {
   classifyTaskPreview,
   normalizeReasoningMetadata,
   formatVerificationBadge,
-} from "./reasoning-engine.js";
+} from "./reasoning-engine.js?v=20261124a";
 import {
   normalizePhoneInput,
   validateOtpCode,
@@ -71,7 +71,7 @@ import {
   getProviderBadgeList,
   OtpRateLimiter,
   mapMultiProviderAuthError,
-} from "./auth-providers.js";
+} from "./auth-providers.js?v=20261124a";
 
 /* =========================================================================
  * PUBLIC CLOUDFLARE WORKER PROXY (GEMINI_API_KEY LIVES ONLY IN CLOUDFLARE SECRETS)
@@ -109,6 +109,11 @@ validateFirebaseConfigConsistency(firebaseConfig);
 // Single-instance initialization guard: never create duplicate Firebase App or Auth instances
 const firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
 const auth = getAuth(firebaseApp);
+if (auth?.app?.options?.projectId && auth.app.options.projectId !== firebaseConfig.projectId) {
+  throw new Error(
+    `Firebase Auth instance mismatch: expected ${firebaseConfig.projectId}, got ${auth.app.options.projectId}.`
+  );
+}
 const db = getFirestore(firebaseApp, FIRESTORE_DATABASE_ID);
 
 const googleProvider = new GoogleAuthProvider();
@@ -690,7 +695,8 @@ function mapFirebaseError(err, contextProvider = "") {
     const domainsText = liveAuthDomainCheck?.authorizedDomains?.length
       ? ` Live authorized domains on this project: ${liveAuthDomainCheck.authorizedDomains.join(", ")}.`
       : "";
-    return `Domain '${host}' is not authorized on Firebase project '${firebaseConfig.projectId}' (project #${firebaseConfig.messagingSenderId}, authDomain '${firebaseConfig.authDomain}'). If you added '${host}' to a different Firebase project, update firebaseConfig in docs/app.js and FIREBASE_PROJECT_ID in web-proxy/cloudflare-worker.js to match that project.${domainsText}`;
+    const detail = err?.message ? ` [${code}: ${err.message}]` : ` [${code}]`;
+    return `Domain '${host}' is not authorized on Firebase project '${firebaseConfig.projectId}' (project #${firebaseConfig.messagingSenderId}, authDomain '${firebaseConfig.authDomain}'). If you added '${host}' to a different Firebase project, update firebaseConfig in docs/app.js and FIREBASE_PROJECT_ID in web-proxy/cloudflare-worker.js to match that project.${domainsText}${detail}`;
   }
   return mapMultiProviderAuthError(err, contextProvider, {
     projectId: firebaseConfig.projectId,

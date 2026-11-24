@@ -2236,10 +2236,20 @@ test("Phone OTP validation, rate limiter abuse protection, Apple Private Relay i
     "microsoft.com"
   );
   assert.match(conflictMsg, /Sign in with your original method first/i);
-  assert.match(
-    mapMultiProviderAuthError({ code: "auth/operation-not-allowed" }, "apple.com"),
-    /Apple sign-in is not yet enabled/i
+  const authProvidersSrc = fs.readFileSync(path.resolve(__dirname, "../docs/auth-providers.js"), "utf8");
+  assert.equal(
+    /not yet enabled in Firebase Console/i.test(authProvidersSrc),
+    false,
+    "docs/auth-providers.js must not contain hardcoded 'not yet enabled in Firebase Console' warnings"
   );
+
+  const appleOpNotAllowed = mapMultiProviderAuthError({ code: "auth/operation-not-allowed" }, "apple.com", {
+    projectId: PROJECT_ID,
+  });
+  assert.match(appleOpNotAllowed, /Apple sign-in was rejected by Firebase/i);
+  assert.match(appleOpNotAllowed, /\[auth\/operation-not-allowed\]/);
+  assert.doesNotMatch(appleOpNotAllowed, /not yet enabled in Firebase Console/i);
+
   const regionBlockedMsg = mapMultiProviderAuthError(
     {
       code: "auth/operation-not-allowed",
@@ -2250,6 +2260,8 @@ test("Phone OTP validation, rate limiter abuse protection, Apple Private Relay i
   );
   assert.match(regionBlockedMsg, /SMS Region Policy/i);
   assert.match(regionBlockedMsg, /gen-lang-client-0028400465/);
+  assert.match(regionBlockedMsg, /auth\/operation-not-allowed/);
+  assert.match(regionBlockedMsg, /SMS unable to be sent until this region enabled by the app developer/);
   assert.doesNotMatch(regionBlockedMsg, /not yet enabled in Firebase Console/i);
 
   const genericPhoneOpNotAllowed = mapMultiProviderAuthError(
@@ -2259,21 +2271,22 @@ test("Phone OTP validation, rate limiter abuse protection, Apple Private Relay i
   );
   assert.doesNotMatch(genericPhoneOpNotAllowed, /not yet enabled in Firebase Console/i);
   assert.match(genericPhoneOpNotAllowed, /SMS region policy/i);
+  assert.match(genericPhoneOpNotAllowed, /\[auth\/operation-not-allowed\]/);
   assert.match(
     mapMultiProviderAuthError({ code: "auth/network-request-failed" }, "phone"),
-    /Network error while contacting Firebase Authentication/i
+    /Network error while contacting Firebase Authentication.*\[auth\/network-request-failed\]/i
   );
   assert.match(
     mapMultiProviderAuthError({ code: "auth/quota-exceeded" }, "phone"),
-    /SMS OTP quota/i
+    /SMS OTP quota.*\[auth\/quota-exceeded\]/i
   );
   assert.match(
     mapMultiProviderAuthError({ code: "auth/code-expired" }, "phone"),
-    /OTP has expired/i
+    /OTP has expired.*\[auth\/code-expired\]/i
   );
   assert.match(
     mapMultiProviderAuthError({ code: "auth/invalid-app-credential" }, "phone"),
-    /domain\/reCAPTCHA session/i
+    /domain\/reCAPTCHA session.*\[auth\/invalid-app-credential\]/i
   );
 });
 
@@ -2380,7 +2393,10 @@ test("E2E Multi-Provider Auth: Microsoft, Apple Private Relay, Phone OTP (+91), 
         clear() { __state.calls.recaptchaCleared += 1; }
       }
       export const browserLocalPersistence = {};
-      export function getAuth() { return __state; }
+      export function getAuth(app) {
+        if (app) __state.app = app;
+        return __state;
+      }
       export async function setPersistence() {}
       export function onAuthStateChanged(_a, cb) { __state.listeners.push(cb); cb(__state.currentUser); return () => {}; }
       export async function getRedirectResult() { return null; }
@@ -2492,7 +2508,7 @@ test("E2E Multi-Provider Auth: Microsoft, Apple Private Relay, Phone OTP (+91), 
       `const apps = [];
        export function getApps() { return apps; }
        export function getApp() { return apps[0]; }
-       export function initializeApp(cfg) { const app = { cfg }; apps.push(app); return app; }`
+       export function initializeApp(cfg) { const app = { cfg, options: cfg }; apps.push(app); return app; }`
     );
     fs.writeFileSync(path.join(tmpDir, "firebase-auth.js"), mockFirebaseAuth);
     fs.writeFileSync(
@@ -2625,6 +2641,18 @@ test("E2E Multi-Provider Auth: Microsoft, Apple Private Relay, Phone OTP (+91), 
     assert.equal(savedPhoneProfile.userId, "uid_phone_e2e");
     assert.equal(savedPhoneProfile.displayName, "Mobile 3210");
     assert.equal(savedPhoneProfile.email, undefined);
+
+    // 6. Simulate page refresh with browserLocalPersistence -> session stays authenticated without relogin
+    assert.equal(authState.app?.options?.projectId, PROJECT_ID, "Auth instance must belong to active Firebase project");
+    const refreshedDom = createLightweightDomFromHtml(html);
+    globalThis.document = refreshedDom.document;
+    await import(`${pathToFileURL(path.join(tmpDir, "app.js")).href}?refresh=1`);
+    await new Promise(r => setTimeout(r, 40));
+    assert.equal(refreshedDom.document.getElementById("authGateScreen").classList.contains("hidden"), true);
+    assert.equal(refreshedDom.document.getElementById("appShell").classList.contains("hidden"), false);
+    assert.equal(refreshedDom.document.getElementById("sidebarUserName").textContent, "Mobile 3210");
+    assert.match(refreshedDom.document.getElementById("sidebarUserEmail").textContent, /\+91 ••••••3210/);
+    assert.equal(backendSessionsChecked.at(-1)?.signInProvider, "phone");
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

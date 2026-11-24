@@ -273,8 +273,15 @@ export class OtpRateLimiter {
   }
 }
 
+function sanitizeFirebaseRawMessage(rawMessage) {
+  return String(rawMessage || "")
+    .replace(/AIza[0-9A-Za-z_-]{20,}/g, "[REDACTED_KEY]")
+    .replace(/([?&]key=)[^&\s]+/gi, "$1[REDACTED_KEY]")
+    .trim();
+}
+
 function extractFirebaseErrorDetail(rawMessage) {
-  let detail = String(rawMessage || "").trim();
+  let detail = sanitizeFirebaseRawMessage(rawMessage);
   if (!detail) return "";
   detail = detail
     .replace(/^Firebase:\s*/i, "")
@@ -291,9 +298,23 @@ function isGenericProviderDisabledMessage(detail) {
   );
 }
 
+function withRealFirebaseError(friendlyText, code, rawMessage) {
+  const cleanMsg = sanitizeFirebaseRawMessage(rawMessage);
+  if (code && cleanMsg) {
+    return `${friendlyText} [${code}: ${cleanMsg}]`;
+  }
+  if (code) {
+    return `${friendlyText} [${code}]`;
+  }
+  if (cleanMsg && !friendlyText.includes(cleanMsg)) {
+    return `${friendlyText} (${cleanMsg})`;
+  }
+  return friendlyText;
+}
+
 export function mapMultiProviderAuthError(err, contextProvider = "", configContext = {}) {
-  const code = err?.code || "";
-  const msg = String(err?.message || err?.customData?.message || "");
+  const code = String(err?.code || "").trim();
+  const msg = sanitizeFirebaseRawMessage(err?.message || err?.customData?.message || "");
   const projectSuffix = configContext?.projectId ? ` on project "${configContext.projectId}"` : "";
   const providerName =
     contextProvider === "microsoft.com"
@@ -302,95 +323,202 @@ export function mapMultiProviderAuthError(err, contextProvider = "", configConte
         ? "Apple"
         : contextProvider === "phone"
           ? "Phone OTP"
-          : "This";
+          : "Authentication";
 
   const formatOperationNotAllowed = () => {
     const detail = extractFirebaseErrorDetail(msg);
     if (/region|sms unable to be sent|country/i.test(detail)) {
-      return `SMS OTP for this country/region is currently restricted by Firebase SMS Region Policy${projectSuffix}. Enable this region (e.g., India +91) in Firebase Console → Authentication → Settings → SMS region policy. (${detail})`;
+      return withRealFirebaseError(
+        `SMS OTP for this country/region is restricted by Firebase SMS Region Policy${projectSuffix}. Enable this region (e.g., India +91) in Firebase Console → Authentication → Settings → SMS region policy.`,
+        code || "auth/operation-not-allowed",
+        detail
+      );
     }
     if (/billing|blaze|upgrade|tier/i.test(detail)) {
-      return `Firebase Phone Auth requires active SMS billing/Blaze configuration${projectSuffix}. (${detail})`;
+      return withRealFirebaseError(
+        `Firebase Phone Auth requires active SMS billing / Blaze configuration${projectSuffix}.`,
+        code || "auth/operation-not-allowed",
+        detail
+      );
     }
     if (detail && !isGenericProviderDisabledMessage(detail)) {
-      return `${providerName} authentication was rejected by Firebase${projectSuffix}: ${detail}`;
+      return withRealFirebaseError(
+        `${providerName} sign-in was rejected by Firebase${projectSuffix}.`,
+        code || "auth/operation-not-allowed",
+        detail
+      );
     }
     if (contextProvider === "phone") {
-      return `Firebase returned auth/operation-not-allowed for Phone OTP${projectSuffix}. If Phone Authentication is already enabled in Firebase Console, check Authentication → Settings → SMS region policy (allow the destination country code), confirm your Web App config matches this Firebase project, and verify test numbers use E.164 format.`;
+      return withRealFirebaseError(
+        `Firebase rejected Phone OTP${projectSuffix}. Check Firebase Console → Authentication → Settings → SMS region policy (allow India +91 / destination country), Authorized domains, and E.164 test phone format.`,
+        code || "auth/operation-not-allowed",
+        msg
+      );
     }
-    return `${providerName} sign-in is not yet enabled in Firebase Console → Authentication → Sign-in method${projectSuffix}.`;
+    return withRealFirebaseError(
+      `${providerName} sign-in was rejected by Firebase${projectSuffix}. Verify provider setup in Firebase Console → Authentication → Sign-in method.`,
+      code || "auth/operation-not-allowed",
+      msg
+    );
   };
 
   switch (code) {
     case "auth/popup-closed-by-user":
     case "auth/cancelled-popup-request":
     case "auth/user-cancelled":
-      return "Sign-in window was closed before finishing. No changes were made.";
+      return withRealFirebaseError(
+        "Sign-in window was closed before finishing. No changes were made.",
+        code,
+        msg
+      );
     case "auth/operation-not-allowed":
       return formatOperationNotAllowed();
     case "auth/unauthorized-domain":
-      return "This domain must be added in Firebase Console → Authentication → Settings → Authorized domains.";
+      return withRealFirebaseError(
+        "This domain must be added in Firebase Console → Authentication → Settings → Authorized domains.",
+        code,
+        msg
+      );
     case "auth/account-exists-with-different-credential": {
       const existingEmail = err?.customData?.email ? ` (${err.customData.email})` : "";
-      return `An account with that email${existingEmail} already exists using a different sign-in method. Sign in with your original method first, then link ${providerName} inside Profile & Settings to protect your account.`;
+      return withRealFirebaseError(
+        `An account with that email${existingEmail} already exists using a different sign-in method. Sign in with your original method first, then link ${providerName} inside Profile & Settings to protect your account.`,
+        code,
+        msg
+      );
     }
     case "auth/credential-already-in-use":
-      return `This ${providerName} identity is already linked to a different INFFOLER AI account.`;
+      return withRealFirebaseError(
+        `This ${providerName} identity is already linked to a different INFFOLER AI account.`,
+        code,
+        msg
+      );
     case "auth/provider-already-linked":
-      return `${providerName} is already linked to your account.`;
+      return withRealFirebaseError(`${providerName} is already linked to your account.`, code, msg);
     case "auth/email-already-in-use":
-      return "That email is already registered. Try signing in or resetting your password.";
+      return withRealFirebaseError(
+        "That email is already registered. Try signing in or resetting your password.",
+        code,
+        msg
+      );
     case "auth/invalid-credential":
     case "auth/wrong-password":
     case "auth/user-not-found":
-      return "Invalid email or password. Double-check your details or reset your password.";
+      return withRealFirebaseError(
+        "Invalid email or password. Double-check your details or reset your password.",
+        code,
+        msg
+      );
     case "auth/weak-password":
-      return "Password must be at least 6 characters long.";
+      return withRealFirebaseError("Password must be at least 6 characters long.", code, msg);
     case "auth/invalid-email":
-      return "Please enter a valid email address.";
+      return withRealFirebaseError("Please enter a valid email address.", code, msg);
     case "auth/invalid-phone-number":
     case "auth/missing-phone-number":
-      return "Please enter a valid mobile number with country code (e.g., +91 9876543210).";
+      return withRealFirebaseError(
+        "Please enter a valid mobile number with country code (e.g., +91 9876543210).",
+        code,
+        msg
+      );
     case "auth/invalid-verification-code":
     case "auth/missing-verification-code":
       if (typeof err?.otpAttemptsRemaining === "number") {
         if (err.otpAttemptsRemaining <= 0) {
-          return "Too many incorrect OTP attempts. Please request a fresh verification code.";
+          return withRealFirebaseError(
+            "Too many incorrect OTP attempts. Please request a fresh verification code.",
+            code,
+            msg
+          );
         }
-        return `Incorrect 6-digit OTP code. ${err.otpAttemptsRemaining} attempt${err.otpAttemptsRemaining === 1 ? "" : "s"} remaining before needing a new code.`;
+        return withRealFirebaseError(
+          `Incorrect 6-digit OTP code. ${err.otpAttemptsRemaining} attempt${err.otpAttemptsRemaining === 1 ? "" : "s"} remaining before needing a new code.`,
+          code,
+          msg
+        );
       }
-      return "Incorrect 6-digit OTP code. Please double-check the SMS and try again.";
+      return withRealFirebaseError(
+        "Incorrect 6-digit OTP code. Please double-check the SMS and try again.",
+        code,
+        msg
+      );
     case "auth/code-expired":
     case "auth/session-expired":
-      return "Verification OTP has expired. Tap Resend OTP to receive a new code.";
+      return withRealFirebaseError(
+        "Verification OTP has expired. Tap Resend OTP to receive a new code.",
+        code,
+        msg
+      );
     case "auth/captcha-check-failed":
-      return "Security verification (reCAPTCHA) failed or expired. Please try requesting the OTP again.";
+      return withRealFirebaseError(
+        "Security verification (reCAPTCHA) failed or expired. Please try requesting the OTP again.",
+        code,
+        msg
+      );
     case "auth/invalid-app-credential":
     case "auth/missing-client-identifier":
     case "auth/app-not-authorized":
-      return "Phone authentication could not verify this domain/reCAPTCHA session. Please refresh the page and ensure this domain is authorized in Firebase Console.";
+      return withRealFirebaseError(
+        "Phone authentication could not verify this domain/reCAPTCHA session. Refresh the page and verify Authorized domains in Firebase Console.",
+        code,
+        msg
+      );
     case "auth/quota-exceeded":
-      return "SMS OTP quota has been temporarily reached. Please try again later or test with a Firebase test phone number.";
+      return withRealFirebaseError(
+        "SMS OTP quota has been temporarily reached. Please try again later or test with a Firebase test phone number.",
+        code,
+        msg
+      );
     case "auth/too-many-requests":
-      return "Too many verification attempts. Please wait a few minutes before retrying.";
+      return withRealFirebaseError(
+        "Too many verification attempts. Please wait a few minutes before retrying.",
+        code,
+        msg
+      );
     case "auth/network-request-failed":
-      return "Network error while contacting Firebase Authentication. Check your internet connection and try again.";
+      return withRealFirebaseError(
+        "Network error while contacting Firebase Authentication. Check your internet connection and try again.",
+        code,
+        msg
+      );
     case "auth/user-disabled":
-      return "This account has been disabled in Firebase Authentication.";
+      return withRealFirebaseError("This account has been disabled in Firebase Authentication.", code, msg);
     case "auth/internal-error":
-      return "Temporary authentication service error. Please verify your number format and try again.";
+      return withRealFirebaseError(
+        "Temporary authentication service error. Verify your number format and try again.",
+        code,
+        msg
+      );
     case "auth/requires-recent-login":
-      return "For your security, please log out and sign back in right before making this change.";
+      return withRealFirebaseError(
+        "For your security, please log out and sign back in right before making this change.",
+        code,
+        msg
+      );
     case "auth/web-storage-unsupported":
-      return "Browser storage is blocked. Enable cookies/storage or avoid private/incognito restrictions and try again.";
+      return withRealFirebaseError(
+        "Browser storage is blocked. Enable cookies/storage or avoid private/incognito restrictions and try again.",
+        code,
+        msg
+      );
     case "permission-denied":
-      return "Cloud permission check denied. Make sure you are signed in to your own account.";
+      return withRealFirebaseError(
+        "Cloud permission check denied. Make sure you are signed in to your own account.",
+        code,
+        msg
+      );
     default:
       if (/operation-not-allowed/i.test(msg)) {
         return formatOperationNotAllowed();
       }
       if (/network/i.test(msg)) {
-        return "Network error occurred while verifying your session. Please check your connection and try again.";
+        return withRealFirebaseError(
+          "Network error occurred while verifying your session. Check your connection and try again.",
+          code,
+          msg
+        );
+      }
+      if (code) {
+        return withRealFirebaseError("Firebase authentication error.", code, msg);
       }
       return msg || "Authentication or cloud sync error occurred.";
   }
