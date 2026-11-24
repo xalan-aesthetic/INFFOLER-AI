@@ -2240,6 +2240,25 @@ test("Phone OTP validation, rate limiter abuse protection, Apple Private Relay i
     mapMultiProviderAuthError({ code: "auth/operation-not-allowed" }, "apple.com"),
     /Apple sign-in is not yet enabled/i
   );
+  const regionBlockedMsg = mapMultiProviderAuthError(
+    {
+      code: "auth/operation-not-allowed",
+      message: "Firebase: SMS unable to be sent until this region enabled by the app developer. (auth/operation-not-allowed).",
+    },
+    "phone",
+    { projectId: PROJECT_ID }
+  );
+  assert.match(regionBlockedMsg, /SMS Region Policy/i);
+  assert.match(regionBlockedMsg, /gen-lang-client-0028400465/);
+  assert.doesNotMatch(regionBlockedMsg, /not yet enabled in Firebase Console/i);
+
+  const genericPhoneOpNotAllowed = mapMultiProviderAuthError(
+    { code: "auth/operation-not-allowed" },
+    "phone",
+    { projectId: PROJECT_ID }
+  );
+  assert.doesNotMatch(genericPhoneOpNotAllowed, /not yet enabled in Firebase Console/i);
+  assert.match(genericPhoneOpNotAllowed, /SMS region policy/i);
   assert.match(
     mapMultiProviderAuthError({ code: "auth/network-request-failed" }, "phone"),
     /Network error while contacting Firebase Authentication/i
@@ -2340,8 +2359,9 @@ test("E2E Multi-Provider Auth: Microsoft, Apple Private Relay, Phone OTP (+91), 
       export const __state = {
         currentUser: null,
         listeners: [],
-        calls: { microsoft: 0, apple: 0, phoneSend: 0, phoneVerify: 0, linkMicrosoft: 0, linkApple: 0, linkPhone: 0, recaptchaCreated: 0, recaptchaCleared: 0 },
+        calls: { microsoft: 0, apple: 0, phoneSend: 0, phoneVerify: 0, linkMicrosoft: 0, linkApple: 0, linkPhone: 0, recaptchaCreated: 0, recaptchaRendered: 0, recaptchaCleared: 0 },
         simulateCancelNextPopup: false,
+        simulateSmsRegionBlockedNextSend: false,
       };
       export class GoogleAuthProvider { setCustomParameters() {} }
       export class OAuthProvider {
@@ -2356,6 +2376,7 @@ test("E2E Multi-Provider Auth: Microsoft, Apple Private Relay, Phone OTP (+91), 
           this.opts = opts;
           __state.calls.recaptchaCreated += 1;
         }
+        async render() { __state.calls.recaptchaRendered += 1; return 1; }
         clear() { __state.calls.recaptchaCleared += 1; }
       }
       export const browserLocalPersistence = {};
@@ -2407,6 +2428,14 @@ test("E2E Multi-Provider Auth: Microsoft, Apple Private Relay, Phone OTP (+91), 
       }
       export async function signInWithRedirect() {}
       export async function signInWithPhoneNumber(_a, e164) {
+        if (__state.simulateSmsRegionBlockedNextSend) {
+          __state.simulateSmsRegionBlockedNextSend = false;
+          const err = new Error(
+            "Firebase: SMS unable to be sent until this region enabled by the app developer. (auth/operation-not-allowed)."
+          );
+          err.code = "auth/operation-not-allowed";
+          throw err;
+        }
         __state.calls.phoneSend += 1;
         return {
           async confirm(code) {
@@ -2553,11 +2582,20 @@ test("E2E Multi-Provider Auth: Microsoft, Apple Private Relay, Phone OTP (+91), 
     assert.equal(authState.calls.phoneSend, 0);
     assert.match(document.getElementById("authFeedbackBox").textContent, /Indian mobile number/i);
 
-    // Valid +91 number sends OTP, opens separate Verify OTP screen, masks display, activates cooldown
+    // SMS region policy rejection (auth/operation-not-allowed) must NEVER emit false 'Phone OTP sign-in is not yet enabled' warning
+    authState.simulateSmsRegionBlockedNextSend = true;
+    document.getElementById("phoneCountrySelect").value = "+91";
+    document.getElementById("phoneNumberInput").value = "9876543210";
+    await document.getElementById("phoneAuthForm").submit();
+    assert.match(document.getElementById("authFeedbackBox").textContent, /SMS Region Policy/i);
+    assert.doesNotMatch(document.getElementById("authFeedbackBox").textContent, /not yet enabled in Firebase Console/i);
+
+    // Valid +91 Firebase test number renders RecaptchaVerifier, sends OTP, opens Verify OTP screen, masks display, activates cooldown
     document.getElementById("phoneCountrySelect").value = "+91";
     document.getElementById("phoneNumberInput").value = "9876543210";
     await document.getElementById("phoneAuthForm").submit();
     assert.equal(authState.calls.phoneSend, 1);
+    assert.ok(authState.calls.recaptchaRendered >= 2, "RecaptchaVerifier.render() must run before signInWithPhoneNumber");
     assert.equal(document.getElementById("phoneEntryGroup").classList.contains("hidden"), true);
     assert.equal(document.getElementById("phoneOtpVerifyGroup").classList.contains("hidden"), false);
     assert.equal(document.getElementById("authCardHeading").textContent, "Verify OTP");

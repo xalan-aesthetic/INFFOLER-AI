@@ -273,9 +273,28 @@ export class OtpRateLimiter {
   }
 }
 
-export function mapMultiProviderAuthError(err, contextProvider = "") {
+function extractFirebaseErrorDetail(rawMessage) {
+  let detail = String(rawMessage || "").trim();
+  if (!detail) return "";
+  detail = detail
+    .replace(/^Firebase:\s*/i, "")
+    .replace(/\s*\(auth\/[a-z0-9-]+\)\.?$/i, "")
+    .replace(/^OPERATION_NOT_ALLOWED\s*:\s*/i, "")
+    .trim();
+  return detail;
+}
+
+function isGenericProviderDisabledMessage(detail) {
+  if (!detail) return true;
+  return /given sign-in provider is disabled|identity provider configuration is disabled|operation-not-allowed/i.test(
+    detail
+  );
+}
+
+export function mapMultiProviderAuthError(err, contextProvider = "", configContext = {}) {
   const code = err?.code || "";
-  const msg = String(err?.message || "");
+  const msg = String(err?.message || err?.customData?.message || "");
+  const projectSuffix = configContext?.projectId ? ` on project "${configContext.projectId}"` : "";
   const providerName =
     contextProvider === "microsoft.com"
       ? "Microsoft"
@@ -285,13 +304,30 @@ export function mapMultiProviderAuthError(err, contextProvider = "") {
           ? "Phone OTP"
           : "This";
 
+  const formatOperationNotAllowed = () => {
+    const detail = extractFirebaseErrorDetail(msg);
+    if (/region|sms unable to be sent|country/i.test(detail)) {
+      return `SMS OTP for this country/region is currently restricted by Firebase SMS Region Policy${projectSuffix}. Enable this region (e.g., India +91) in Firebase Console → Authentication → Settings → SMS region policy. (${detail})`;
+    }
+    if (/billing|blaze|upgrade|tier/i.test(detail)) {
+      return `Firebase Phone Auth requires active SMS billing/Blaze configuration${projectSuffix}. (${detail})`;
+    }
+    if (detail && !isGenericProviderDisabledMessage(detail)) {
+      return `${providerName} authentication was rejected by Firebase${projectSuffix}: ${detail}`;
+    }
+    if (contextProvider === "phone") {
+      return `Firebase returned auth/operation-not-allowed for Phone OTP${projectSuffix}. If Phone Authentication is already enabled in Firebase Console, check Authentication → Settings → SMS region policy (allow the destination country code), confirm your Web App config matches this Firebase project, and verify test numbers use E.164 format.`;
+    }
+    return `${providerName} sign-in is not yet enabled in Firebase Console → Authentication → Sign-in method${projectSuffix}.`;
+  };
+
   switch (code) {
     case "auth/popup-closed-by-user":
     case "auth/cancelled-popup-request":
     case "auth/user-cancelled":
       return "Sign-in window was closed before finishing. No changes were made.";
     case "auth/operation-not-allowed":
-      return `${providerName} sign-in is not yet enabled in Firebase Console → Authentication → Sign-in method for this project.`;
+      return formatOperationNotAllowed();
     case "auth/unauthorized-domain":
       return "This domain must be added in Firebase Console → Authentication → Settings → Authorized domains.";
     case "auth/account-exists-with-different-credential": {
@@ -351,7 +387,7 @@ export function mapMultiProviderAuthError(err, contextProvider = "") {
       return "Cloud permission check denied. Make sure you are signed in to your own account.";
     default:
       if (/operation-not-allowed/i.test(msg)) {
-        return `${providerName} sign-in is not yet enabled in Firebase Console → Authentication → Sign-in method.`;
+        return formatOperationNotAllowed();
       }
       if (/network/i.test(msg)) {
         return "Network error occurred while verifying your session. Please check your connection and try again.";

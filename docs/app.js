@@ -692,7 +692,10 @@ function mapFirebaseError(err, contextProvider = "") {
       : "";
     return `Domain '${host}' is not authorized on Firebase project '${firebaseConfig.projectId}' (project #${firebaseConfig.messagingSenderId}, authDomain '${firebaseConfig.authDomain}'). If you added '${host}' to a different Firebase project, update firebaseConfig in docs/app.js and FIREBASE_PROJECT_ID in web-proxy/cloudflare-worker.js to match that project.${domainsText}`;
   }
-  return mapMultiProviderAuthError(err, contextProvider);
+  return mapMultiProviderAuthError(err, contextProvider, {
+    projectId: firebaseConfig.projectId,
+    projectNumber: firebaseConfig.messagingSenderId,
+  });
 }
 
 const phoneOtpLimiter = new OtpRateLimiter();
@@ -726,7 +729,20 @@ function disposeRecaptchaVerifier(kind = "login") {
 function getOrCreateRecaptchaVerifier(containerId, kind = "login") {
   const existing = kind === "link" ? linkPhoneRecaptchaVerifier : phoneRecaptchaVerifier;
   if (existing) return existing;
-  const verifier = new RecaptchaVerifier(auth, containerId, {
+
+  let mountTarget = containerId;
+  if (typeof document !== "undefined") {
+    const container = document.getElementById(containerId);
+    if (container && typeof container.appendChild === "function" && typeof document.createElement === "function") {
+      container.innerHTML = "";
+      const mountNode = document.createElement("div");
+      mountNode.className = "recaptcha-widget-mount";
+      container.appendChild(mountNode);
+      mountTarget = mountNode;
+    }
+  }
+
+  const verifier = new RecaptchaVerifier(auth, mountTarget, {
     size: "invisible",
     callback: () => {},
     "expired-callback": () => {
@@ -827,6 +843,9 @@ async function requestPhoneOtpLogin(rawNumber, countryCode) {
   disposeRecaptchaVerifier("login");
   const verifier = getOrCreateRecaptchaVerifier("phoneRecaptchaContainer", "login");
   try {
+    if (typeof verifier.render === "function") {
+      await verifier.render();
+    }
     const confirmation = await signInWithPhoneNumber(auth, normalized.e164, verifier);
     phoneConfirmationResult = confirmation;
     pendingOtpPhoneE164 = normalized.e164;
@@ -944,8 +963,12 @@ async function requestLinkPhoneOtp(rawNumber, countryCode) {
   if (!quota.allowed) {
     throw new Error(quota.reason);
   }
+  disposeRecaptchaVerifier("link");
   const verifier = getOrCreateRecaptchaVerifier("linkPhoneRecaptchaContainer", "link");
   try {
+    if (typeof verifier.render === "function") {
+      await verifier.render();
+    }
     const confirmation = await linkWithPhoneNumber(auth.currentUser, normalized.e164, verifier);
     linkPhoneConfirmationResult = confirmation;
     pendingLinkPhoneE164 = normalized.e164;
