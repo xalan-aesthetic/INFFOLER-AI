@@ -393,6 +393,13 @@ test("Frontend integrity: DOM IDs match, no unauthenticated guest storage, all 6
     assert.ok(html.includes(`id="${id}"`), `Missing upgraded HTML element #${id}`);
   }
   assert.ok(html.includes('<option value="+91" selected>'), "India (+91) must be the default country code");
+  assert.ok(
+    css.includes("appearance: none;") &&
+      css.includes("height: 46px;") &&
+      css.includes(".provider-btn-icon") &&
+      css.includes(".provider-btn-label"),
+    "All four social login buttons must share uniform 46px dimensions and reset browser styling"
+  );
   assert.ok(!js.includes("FALLBACK_CHAINS"), "Silent model switching chains must not exist");
   assert.ok(js.includes("./reasoning-engine.js"), "app.js must import ./reasoning-engine.js");
   assert.ok(js.includes("./auth-providers.js"), "app.js must import ./auth-providers.js");

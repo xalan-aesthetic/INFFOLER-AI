@@ -2102,67 +2102,122 @@ body {
 .social-auth-stack {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  align-items: stretch;
+  width: 100%;
+  gap: 10px;
 }
 
 .google-signin-btn,
 .provider-btn {
+  -webkit-appearance: none;
+  appearance: none;
+  box-sizing: border-box;
+  margin: 0;
+  outline: none;
+  text-decoration: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  position: relative;
+  overflow: hidden;
   width: 100%;
+  min-width: 0;
+  height: 46px;
   min-height: 46px;
-  padding: 10px 16px;
+  max-height: 46px;
+  padding: 0 16px;
   border-radius: 13px;
   border: 1px solid rgba(148, 163, 184, 0.35);
   background: #ffffff;
   color: #1f2937;
   font-family: var(--font-body);
-  font-size: 0.88rem;
+  font-size: clamp(0.79rem, 2.9vw, 0.88rem);
   font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.005em;
+  white-space: nowrap;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 10px;
   cursor: pointer;
-  transition: transform 0.15s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  transition: transform 0.16s ease, box-shadow 0.2s ease, border-color 0.2s ease, background-color 0.2s ease;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
 }
 
+.provider-btn-icon,
+.google-g-svg {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  display: block;
+}
+
+.provider-btn-label {
+  display: inline-block;
+  line-height: 1.15;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .provider-btn.microsoft {
-  background: #171d2c;
+  background: linear-gradient(135deg, #171f33, #111827);
   color: #f8fafc;
-  border-color: rgba(148, 163, 184, 0.28);
+  border-color: rgba(96, 165, 250, 0.34);
 }
 
 [data-theme="light"] .provider-btn.microsoft {
   background: #f8fafc;
   color: #0f172a;
+  border-color: rgba(100, 116, 139, 0.32);
 }
 
 .provider-btn.apple {
-  background: #050507;
+  background: linear-gradient(135deg, #0b0d14, #050507);
   color: #ffffff;
-  border-color: rgba(255, 255, 255, 0.22);
+  border-color: rgba(255, 255, 255, 0.24);
 }
 
 [data-theme="light"] .provider-btn.apple {
   background: #0f172a;
   color: #ffffff;
+  border-color: rgba(15, 23, 42, 0.9);
 }
 
 .provider-btn.phone {
-  background: linear-gradient(135deg, rgba(0, 229, 255, 0.14), rgba(168, 85, 247, 0.14));
+  background: linear-gradient(135deg, rgba(0, 229, 255, 0.16), rgba(168, 85, 247, 0.18));
   color: var(--text-main);
-  border-color: rgba(0, 229, 255, 0.36);
+  border-color: rgba(0, 229, 255, 0.42);
+}
+
+[data-theme="light"] .provider-btn.phone {
+  background: linear-gradient(135deg, rgba(0, 229, 255, 0.14), rgba(168, 85, 247, 0.14));
+  color: #0f172a;
+  border-color: rgba(8, 145, 178, 0.38);
 }
 
 .google-signin-btn:hover,
 .provider-btn:hover {
   transform: translateY(-1px);
   box-shadow: 0 8px 20px rgba(0, 229, 255, 0.22);
+  border-color: rgba(0, 229, 255, 0.55);
+}
+
+.google-signin-btn:active,
+.provider-btn:active {
+  transform: translateY(0);
+}
+
+.google-signin-btn:focus-visible,
+.provider-btn:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
 }
 
 .provider-btn:disabled {
   opacity: 0.6;
   cursor: wait;
+  transform: none;
 }
 
 .auth-divider {
