@@ -5,8 +5,9 @@
  * Security & Architecture:
  * - Verifies Firebase Authentication ID Tokens (RS256 via Google Secure Token JWKs).
  * - Unauthenticated requests are rejected with HTTP 401; caller UID comes ONLY from verified JWT `sub`.
- * - GEMINI_API_KEY lives strictly in Cloudflare Worker Secrets (never logged or exposed).
- * - Respects user-selected model strictly (never silently switches models).
+ * - Secrets (OPENAI_API_KEY, GEMINI_API_KEY) live strictly in backend env / Worker Secrets (never logged or exposed).
+ * - OpenAI (Responses API) is the default provider (`gpt-4.1-mini`), with Google Gemini also supported.
+ * - Respects user-selected provider & model strictly (never silently switches models).
  * - 7-Step Reasoning Pipeline:
  *   1) Understand request  2) Classify task category (7 domains)  3) Resolve reasoning effort
  *   4) Decompose subtasks  5) Generate via selected model  6) Independent verification & bounded check
@@ -16,6 +17,18 @@
 const DEFAULT_FIREBASE_PROJECT_ID = "gen-lang-client-0028400465";
 const GOOGLE_JWK_URL =
   "https://www.googleapis.com/robot/v1/metadata/jwk/securetoken@system.gserviceaccount.com";
+const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
+
+export const DEFAULT_PROVIDER = "openai";
+export const DEFAULT_MODEL = "gpt-4.1-mini";
+
+export function resolveServerSecret(env, keyName) {
+  const fromWorkerEnv = env && typeof env[keyName] === "string" ? env[keyName].trim() : "";
+  if (fromWorkerEnv) return fromWorkerEnv;
+  const procEnv = typeof process !== "undefined" && process?.env ? process.env : null;
+  const fromProcessEnv = procEnv && typeof procEnv[keyName] === "string" ? procEnv[keyName].trim() : "";
+  return fromProcessEnv;
+}
 
 const ALLOWED_ORIGINS = new Set([
   "https://xalan-aesthetic.github.io",
@@ -30,28 +43,82 @@ const ALLOWED_ORIGINS = new Set([
 
 /* ==================== MODULE 1: MODEL CAPABILITY REGISTRY ==================== */
 export const MODEL_REGISTRY = Object.freeze({
+  "gpt-4.1-mini": {
+    id: "gpt-4.1-mini",
+    provider: "openai",
+    label: "GPT-4.1 Mini",
+    maxOutputTokens: 8192,
+    supportsMultimodal: true,
+    supportsThinkingConfig: false,
+    supportsTemperature: true,
+    supportsStreaming: true,
+    thinkingBudgetByEffort: null,
+  },
+  "gpt-4.1": {
+    id: "gpt-4.1",
+    provider: "openai",
+    label: "GPT-4.1 Flagship",
+    maxOutputTokens: 8192,
+    supportsMultimodal: true,
+    supportsThinkingConfig: false,
+    supportsTemperature: true,
+    supportsStreaming: true,
+    thinkingBudgetByEffort: null,
+  },
+  "gpt-4o-mini": {
+    id: "gpt-4o-mini",
+    provider: "openai",
+    label: "GPT-4o Mini",
+    maxOutputTokens: 6144,
+    supportsMultimodal: true,
+    supportsThinkingConfig: false,
+    supportsTemperature: true,
+    supportsStreaming: true,
+    thinkingBudgetByEffort: null,
+  },
+  "o4-mini": {
+    id: "o4-mini",
+    provider: "openai",
+    label: "OpenAI o4-mini",
+    maxOutputTokens: 8192,
+    supportsMultimodal: true,
+    supportsThinkingConfig: false,
+    supportsTemperature: false,
+    supportsReasoningEffort: true,
+    supportsStreaming: true,
+    thinkingBudgetByEffort: null,
+  },
   "gemini-3.8-flash": {
     id: "gemini-3.8-flash",
+    provider: "gemini",
     label: "Gemini 3.8 Flash",
     maxOutputTokens: 6144,
     supportsMultimodal: true,
     supportsThinkingConfig: true,
+    supportsTemperature: true,
+    supportsStreaming: false,
     thinkingBudgetByEffort: { low: 0, medium: 1024, high: 4096 },
   },
   "gemini-3.5-flash-lite": {
     id: "gemini-3.5-flash-lite",
+    provider: "gemini",
     label: "Gemini 3.5 Flash-Lite",
     maxOutputTokens: 4096,
     supportsMultimodal: true,
     supportsThinkingConfig: false,
+    supportsTemperature: true,
+    supportsStreaming: false,
     thinkingBudgetByEffort: null,
   },
   "gemini-4-argon": {
     id: "gemini-4-argon",
+    provider: "gemini",
     label: "Gemini 4 Argon",
     maxOutputTokens: 8192,
     supportsMultimodal: true,
     supportsThinkingConfig: true,
+    supportsTemperature: true,
+    supportsStreaming: false,
     thinkingBudgetByEffort: { low: 512, medium: 2048, high: 6144 },
   },
 });
@@ -489,6 +556,7 @@ async function checkRateLimit(request, env, verifiedUid) {
 
 function sanitizeErrorText(text) {
   return String(text || "")
+    .replace(/sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{12,}/g, "[REDACTED_KEY]")
     .replace(/AIza[0-9A-Za-z\-_]{12,}/g, "[REDACTED_KEY]")
     .replace(/([?&]key=)[^&\s"']+/gi, "$1[REDACTED]")
     .replace(/Bearer\s+[A-Za-z0-9\-_.]+/gi, "Bearer [REDACTED]");
@@ -507,9 +575,87 @@ function parseRetryDelaySeconds(details, retryAfterHeader, rawMessage) {
       }
     }
   }
-  const msgMatch = String(rawMessage || "").match(/retry\s+(?:in|after)\s+(\d+(?:\.\d+)?)s/i);
-  if (msgMatch) return Math.max(1, Math.ceil(Number(msgMatch[1])));
+  const msgMatch = String(rawMessage || "").match(/(?:retry|try\s+again)\s+(?:in|after)\s+(\d+(?:\.\d+)?)\s*(s|sec|seconds|ms)\b/i);
+  if (msgMatch) {
+    const num = Number(msgMatch[1]);
+    const unit = msgMatch[2].toLowerCase();
+    return unit === "ms" ? Math.max(1, Math.ceil(num / 1000)) : Math.max(1, Math.ceil(num));
+  }
   return null;
+}
+
+export function classifyOpenAiUpstreamError(upstreamStatus, upstreamText, retryAfterHeader = null) {
+  let errJson = null;
+  try {
+    errJson = JSON.parse(upstreamText);
+  } catch { /* non-JSON upstream error */ }
+
+  const errObj = errJson?.error || {};
+  const rawMessage = sanitizeErrorText(errObj.message || "");
+  const errCode = String(errObj.code || "").toLowerCase();
+  const errType = String(errObj.type || "").toLowerCase();
+  const retryAfterSec = parseRetryDelaySeconds(null, retryAfterHeader, rawMessage);
+
+  if (upstreamStatus === 401 || errCode === "invalid_api_key" || /incorrect api key|invalid api key/i.test(rawMessage)) {
+    return {
+      code: "INVALID_API_KEY",
+      quotaType: null,
+      retryable: false,
+      retryAfterSec: null,
+      message: "OpenAI API authentication failed on the backend. Verify that OPENAI_API_KEY is valid and active.",
+    };
+  }
+
+  if (upstreamStatus === 429 || errCode === "rate_limit_exceeded" || errCode === "insufficient_quota" || errType === "insufficient_quota") {
+    const isQuotaExhausted =
+      errCode === "insufficient_quota" ||
+      errType === "insufficient_quota" ||
+      /exceeded your current quota|insufficient_quota|billing details|hard limit/i.test(rawMessage);
+
+    if (isQuotaExhausted) {
+      return {
+        code: "DAILY_QUOTA_EXCEEDED",
+        quotaType: "daily",
+        retryable: false,
+        retryAfterSec,
+        message: "OpenAI API quota or billing limit has been reached. Check your OpenAI usage & billing limits.",
+      };
+    }
+
+    return {
+      code: "RATE_LIMIT_EXCEEDED",
+      quotaType: "rate_limit",
+      retryable: true,
+      retryAfterSec,
+      message: retryAfterSec
+        ? `OpenAI API rate limit reached. Please wait about ${retryAfterSec}s and tap Retry.`
+        : "OpenAI API rate limit reached due to high demand. Please wait a few seconds and tap Retry.",
+    };
+  }
+
+  if (
+    upstreamStatus === 500 ||
+    upstreamStatus === 502 ||
+    upstreamStatus === 503 ||
+    upstreamStatus === 504 ||
+    errType === "server_error"
+  ) {
+    return {
+      code: "TEMPORARY_SERVER_ERROR",
+      quotaType: null,
+      retryable: true,
+      retryAfterSec,
+      message: "OpenAI servers are temporarily busy or unavailable. Please try again in a moment.",
+    };
+  }
+
+  return {
+    code: "UPSTREAM_ERROR",
+    quotaType: null,
+    retryable: false,
+    retryAfterSec: null,
+    message: (rawMessage || `OpenAI API returned HTTP ${upstreamStatus}.`).slice(0, 260),
+  };
 }
 
 export function classifyGeminiUpstreamError(upstreamStatus, upstreamText, retryAfterHeader = null) {
@@ -880,10 +1026,10 @@ export function buildReasoningPlan({
   historyTurnsCount = 0,
   hasImages = false,
   requestedMode = "balanced",
-  modelId = "gemini-3.8-flash",
+  modelId = DEFAULT_MODEL,
 }) {
   const modeConfig = REASONING_MODES[requestedMode] || REASONING_MODES.balanced;
-  const modelCaps = MODEL_REGISTRY[modelId] || MODEL_REGISTRY["gemini-3.8-flash"];
+  const modelCaps = MODEL_REGISTRY[modelId] || MODEL_REGISTRY[DEFAULT_MODEL];
   const category = classifyTaskCategory(promptText, modeConfig.id);
 
   const wordCount = String(promptText || "").trim().split(/\s+/).filter(Boolean).length;
@@ -1176,7 +1322,10 @@ export function validateAndSanitizeRequest(rawBody) {
     return { error: "Invalid JSON request body.", code: "INVALID_PAYLOAD" };
   }
 
-  const requestedModel = typeof rawBody.model === "string" ? rawBody.model.trim() : "gemini-3.8-flash";
+  const requestedModel =
+    typeof rawBody.model === "string" && rawBody.model.trim()
+      ? rawBody.model.trim()
+      : DEFAULT_MODEL;
   if (!ALLOWED_MODELS.has(requestedModel)) {
     return {
       error: `Unsupported model '${requestedModel}'. Allowed models: ${Array.from(ALLOWED_MODELS).join(", ")}.`,
@@ -1186,6 +1335,8 @@ export function validateAndSanitizeRequest(rawBody) {
     };
   }
 
+  const requestedProvider = MODEL_REGISTRY[requestedModel].provider;
+  const streamRequested = Boolean(rawBody.stream);
   const rawMode = typeof rawBody.reasoningMode === "string" ? rawBody.reasoningMode.trim().toLowerCase() : "balanced";
   const requestedMode = Object.prototype.hasOwnProperty.call(REASONING_MODES, rawMode) ? rawMode : "balanced";
 
@@ -1302,13 +1453,481 @@ export function validateAndSanitizeRequest(rawBody) {
 
   return {
     model: requestedModel,
+    provider: requestedProvider,
+    stream: streamRequested,
     reasoningMode: requestedMode,
     hasImages: imageCount > 0,
     payload: sanitizedPayload,
   };
 }
 
-/* ==================== MODULE 5: UPSTREAM CALL & PIPELINE ORCHESTRATOR ==================== */
+/* ==================== MODULE 5: UPSTREAM CALLS (OPENAI RESPONSES + GEMINI) & PIPELINE ==================== */
+export function buildOpenAiResponsesPayload({
+  modelId,
+  contents,
+  systemInstruction = "",
+  plan,
+  isJsonStructuredMode = false,
+  stream = false,
+  tools = null,
+}) {
+  const modelCaps = MODEL_REGISTRY[modelId] || MODEL_REGISTRY[DEFAULT_MODEL];
+  const input = [];
+
+  for (const turn of contents || []) {
+    if (turn.role === "model") {
+      const assistantText = (turn.parts || []).map(p => p.text || "").join("\n").trim();
+      if (assistantText) {
+        input.push({
+          role: "assistant",
+          content: [{ type: "output_text", text: assistantText }],
+        });
+      }
+      continue;
+    }
+
+    const userContent = [];
+    for (const part of turn.parts || []) {
+      if (typeof part.text === "string" && part.text.trim()) {
+        userContent.push({ type: "input_text", text: part.text.trim() });
+      } else if (part.inlineData?.data && part.inlineData?.mimeType) {
+        userContent.push({
+          type: "input_image",
+          image_url: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`,
+        });
+      }
+    }
+    if (userContent.length > 0) {
+      input.push({ role: "user", content: userContent });
+    }
+  }
+
+  const body = {
+    model: modelId,
+    input,
+    max_output_tokens: isJsonStructuredMode ? 4096 : plan.generationConfig.maxOutputTokens,
+    stream: Boolean(stream),
+    store: false,
+  };
+
+  if (typeof systemInstruction === "string" && systemInstruction.trim()) {
+    body.instructions = systemInstruction.trim().slice(0, MAX_SYSTEM_CHARS);
+  }
+
+  if (modelCaps.supportsTemperature !== false && typeof plan?.generationConfig?.temperature === "number") {
+    body.temperature = plan.generationConfig.temperature;
+    if (typeof plan?.generationConfig?.topP === "number") {
+      body.top_p = plan.generationConfig.topP;
+    }
+  }
+
+  if (modelCaps.supportsReasoningEffort) {
+    body.reasoning = {
+      effort: plan?.effort === "low" ? "low" : plan?.effort === "high" ? "high" : "medium",
+    };
+  }
+
+  if (Array.isArray(tools) && tools.length > 0) {
+    body.tools = tools;
+  } else if (isJsonStructuredMode) {
+    body.text = { format: { type: "json_object" } };
+  }
+
+  return body;
+}
+
+export function extractOpenAiResponseText(openAiJson) {
+  if (!openAiJson || typeof openAiJson !== "object") {
+    return { text: "", finishReason: "STOP", citations: [] };
+  }
+  const chunks = [];
+  const citations = [];
+  const seenUrls = new Set();
+
+  if (typeof openAiJson.output_text === "string" && openAiJson.output_text.trim()) {
+    chunks.push(openAiJson.output_text.trim());
+  }
+
+  if (Array.isArray(openAiJson.output)) {
+    for (const item of openAiJson.output) {
+      if (item?.type === "message" && Array.isArray(item.content)) {
+        for (const part of item.content) {
+          if (part?.type === "output_text" && typeof part.text === "string" && !openAiJson.output_text) {
+            chunks.push(part.text);
+          } else if (part?.type === "refusal" && typeof part.refusal === "string") {
+            chunks.push(part.refusal);
+          }
+          if (Array.isArray(part?.annotations)) {
+            for (const ann of part.annotations) {
+              const url = sanitizeVerifiedUrl(ann?.url);
+              if (url && !seenUrls.has(url)) {
+                seenUrls.add(url);
+                citations.push({
+                  title: String(ann?.title || new URL(url).hostname).slice(0, 140),
+                  url,
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const finishReason =
+    openAiJson.status === "incomplete" && openAiJson.incomplete_details?.reason === "max_output_tokens"
+      ? "MAX_TOKENS"
+      : "STOP";
+
+  return {
+    text: chunks.join("").trim(),
+    finishReason,
+    citations,
+  };
+}
+
+async function callOpenAiResponsesWithTimeout({
+  fetchImpl,
+  apiKey,
+  payload,
+  timeoutMs,
+}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetchImpl(OPENAI_RESPONSES_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    const text = await res.text();
+    return {
+      ok: res.ok,
+      status: res.status,
+      headers: res.headers,
+      text,
+    };
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      const timeoutErr = new Error("Upstream OpenAI API timed out while generating response.");
+      timeoutErr.isTimeout = true;
+      throw timeoutErr;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function streamOpenAiResponsesToSse({
+  fetchImpl,
+  apiKey,
+  upstreamPayload,
+  plan,
+  modelId,
+  timeoutMs,
+  corsHeaders,
+}) {
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(timeoutMs, 42000));
+
+  let upstreamRes;
+  try {
+    upstreamRes = await fetchImpl(OPENAI_RESPONSES_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({ ...upstreamPayload, stream: true }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    if (err?.name === "AbortError") {
+      const timeoutErr = new Error("Upstream OpenAI API timed out while connecting.");
+      timeoutErr.isTimeout = true;
+      throw timeoutErr;
+    }
+    throw err;
+  }
+
+  if (!upstreamRes.ok) {
+    clearTimeout(timer);
+    const errText = await upstreamRes.text();
+    return {
+      ok: false,
+      upstreamRes: {
+        ok: false,
+        status: upstreamRes.status,
+        headers: upstreamRes.headers,
+        text: errText,
+      },
+    };
+  }
+
+  // Fallback if mock or upstream responded with non-stream JSON despite stream:true
+  const upstreamCt = String(upstreamRes.headers?.get?.("Content-Type") || "").toLowerCase();
+  if (!upstreamRes.body || (upstreamCt.includes("application/json") && !upstreamCt.includes("text/event-stream"))) {
+    clearTimeout(timer);
+    const jsonText = await upstreamRes.text();
+    let parsedJson;
+    try {
+      parsedJson = JSON.parse(jsonText);
+    } catch {
+      return {
+        ok: false,
+        customError: {
+          status: 502,
+          code: "INVALID_UPSTREAM_JSON",
+          retryable: true,
+          message: "Received malformed response from OpenAI service. Please tap Retry.",
+        },
+      };
+    }
+    const extracted = extractOpenAiResponseText(parsedJson);
+    const verification = verifyGeneratedAnswer(extracted.text, plan, extracted.finishReason);
+    const ssePayload = buildReasoningEnvelope("openai", modelId, plan, verification, false, startedAt);
+    const encoder = new TextEncoder();
+    const oneShotStream = new ReadableStream({
+      start(ctrl) {
+        ctrl.enqueue(encoder.encode(formatSseEvent("meta", {
+          providerUsed: "openai",
+          modelUsed: modelId,
+          category: plan.category,
+          mode: plan.mode,
+          modeLabel: plan.modeLabel,
+          effort: plan.effort,
+          subtasks: plan.subtasks,
+        })));
+        if (extracted.text) {
+          ctrl.enqueue(encoder.encode(formatSseEvent("delta", { delta: extracted.text })));
+        }
+        ctrl.enqueue(encoder.encode(formatSseEvent("done", {
+          text: extracted.text,
+          modelUsed: modelId,
+          providerUsed: "openai",
+          inffolerReasoning: ssePayload,
+        })));
+        ctrl.close();
+      },
+    });
+    return {
+      ok: true,
+      response: new Response(oneShotStream, {
+        status: 200,
+        headers: {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-store",
+          ...corsHeaders,
+        },
+      }),
+    };
+  }
+
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder("utf-8");
+  const reader = upstreamRes.body.getReader();
+
+  const sseStream = new ReadableStream({
+    async start(streamCtrl) {
+      let buffer = "";
+      let accumulatedText = "";
+      let finishReason = "STOP";
+      let doneEmitted = false;
+      let streamUsage = null;
+
+      const emit = (eventName, data) => {
+        streamCtrl.enqueue(encoder.encode(formatSseEvent(eventName, data)));
+      };
+
+      const finalizeSuccess = () => {
+        if (doneEmitted) return;
+        doneEmitted = true;
+        const verification = verifyGeneratedAnswer(accumulatedText, plan, finishReason);
+        const reasoningMeta = buildReasoningEnvelope("openai", modelId, plan, verification, false, startedAt);
+        emit("done", {
+          text: accumulatedText.trim(),
+          modelUsed: modelId,
+          providerUsed: "openai",
+          usage: streamUsage || undefined,
+          inffolerReasoning: reasoningMeta,
+        });
+      };
+
+      emit("meta", {
+        providerUsed: "openai",
+        modelUsed: modelId,
+        category: plan.category,
+        mode: plan.mode,
+        modeLabel: plan.modeLabel,
+        effort: plan.effort,
+        subtasks: plan.subtasks,
+      });
+
+      const processSseFrame = frameText => {
+        const lines = frameText.split(/\r?\n/);
+        let eventType = "";
+        const dataLines = [];
+        for (const line of lines) {
+          if (line.startsWith("event:")) {
+            eventType = line.slice(6).trim();
+          } else if (line.startsWith("data:")) {
+            dataLines.push(line.slice(5).trimStart());
+          }
+        }
+        if (dataLines.length === 0) return;
+        const rawData = dataLines.join("\n").trim();
+        if (!rawData || rawData === "[DONE]") {
+          finalizeSuccess();
+          return;
+        }
+        let evt;
+        try {
+          evt = JSON.parse(rawData);
+        } catch {
+          return;
+        }
+        const kind = evt?.type || eventType;
+        if (kind === "response.output_text.delta" && typeof evt.delta === "string") {
+          accumulatedText += evt.delta;
+          emit("delta", { delta: evt.delta });
+        } else if (kind === "response.output_text.done" && typeof evt.text === "string" && !accumulatedText) {
+          accumulatedText = evt.text;
+          if (evt.text) emit("delta", { delta: evt.text });
+        } else if (kind === "response.incomplete") {
+          if (evt?.response?.incomplete_details?.reason === "max_output_tokens") {
+            finishReason = "MAX_TOKENS";
+          }
+          if (!accumulatedText && evt?.response) {
+            accumulatedText = extractOpenAiResponseText(evt.response).text;
+          }
+          finalizeSuccess();
+        } else if (kind === "response.completed") {
+          streamUsage = evt?.response?.usage || null;
+          if (!accumulatedText && evt?.response) {
+            const extracted = extractOpenAiResponseText(evt.response);
+            if (extracted.text) {
+              accumulatedText = extracted.text;
+              emit("delta", { delta: extracted.text });
+            }
+          }
+          finalizeSuccess();
+        } else if (kind === "response.failed" || kind === "error") {
+          const errMsgObj = evt?.response?.error || evt?.error || {};
+          const classified = classifyOpenAiUpstreamError(
+            errMsgObj?.status || 502,
+            JSON.stringify({ error: errMsgObj }),
+            null
+          );
+          doneEmitted = true;
+          emit("error", {
+            error: classified.message,
+            code: classified.code,
+            quotaType: classified.quotaType,
+            retryable: classified.retryable,
+            retryAfterSec: classified.retryAfterSec,
+          });
+        }
+      };
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const frames = buffer.split(/\r?\n\r?\n/);
+          buffer = frames.pop() || "";
+          for (const frame of frames) {
+            if (frame.trim()) processSseFrame(frame);
+          }
+        }
+        buffer += decoder.decode();
+        if (buffer.trim()) processSseFrame(buffer);
+        if (!doneEmitted) {
+          finalizeSuccess();
+        }
+      } catch (err) {
+        if (!doneEmitted) {
+          emit("error", {
+            error: err?.name === "AbortError"
+              ? "OpenAI stream timed out before finishing."
+              : "OpenAI response stream interrupted.",
+            code: err?.name === "AbortError" ? "UPSTREAM_TIMEOUT" : "STREAM_ERROR",
+            retryable: true,
+          });
+        }
+      } finally {
+        clearTimeout(timer);
+        try {
+          reader.releaseLock?.();
+        } catch { /* ignore */ }
+        try {
+          streamCtrl.close();
+        } catch { /* ignore */ }
+      }
+    },
+    cancel() {
+      clearTimeout(timer);
+      controller.abort();
+      reader.cancel().catch(() => {});
+    },
+  });
+
+  return {
+    ok: true,
+    response: new Response(sseStream, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-store",
+        ...corsHeaders,
+      },
+    }),
+  };
+}
+
+function formatSseEvent(eventName, payload) {
+  return `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
+}
+
+function buildReasoningEnvelope(providerUsed, modelId, plan, verification, regenerated, startMs, thinkingConfigUsed = false) {
+  const modelCaps = MODEL_REGISTRY[modelId] || MODEL_REGISTRY[DEFAULT_MODEL];
+  return {
+    engineVersion: "1.0",
+    providerUsed,
+    category: plan.category,
+    mode: plan.mode,
+    modeLabel: plan.modeLabel,
+    effort: plan.effort,
+    subtasks: plan.subtasks,
+    modelRequested: modelId,
+    modelUsed: modelId,
+    parametersApplied: {
+      temperature: modelCaps.supportsTemperature === false ? null : plan.generationConfig.temperature,
+      topP: modelCaps.supportsTemperature === false ? null : plan.generationConfig.topP,
+      maxOutputTokens: plan.generationConfig.maxOutputTokens,
+      thinkingConfigUsed,
+    },
+    verification: {
+      status: verification.status,
+      label: verification.label,
+      checksRun: verification.checksRun,
+      issues: verification.issues,
+      regenerated,
+      summary: verification.summary,
+    },
+    timingMs: Date.now() - startMs,
+  };
+}
+
 async function callGeminiModelWithTimeout({
   fetchImpl,
   apiKey,
@@ -1378,6 +1997,7 @@ export async function runReasoningPipeline({
   timeoutMs = DEFAULT_UPSTREAM_TIMEOUT_MS,
 }) {
   const startMs = Date.now();
+  const provider = validated.provider || MODEL_REGISTRY[validated.model]?.provider || DEFAULT_PROVIDER;
   const isJsonStructuredMode = validated.payload.generationConfig?.responseMimeType === "application/json";
   const lastUserPrompt = extractLastUserText(validated.payload.contents);
 
@@ -1389,7 +2009,160 @@ export async function runReasoningPipeline({
     modelId: validated.model,
   });
 
-  // Preserve strict JSON behavior for WHAT IF Simulator without injecting Markdown directives
+  const baseSys = validated.payload.systemInstruction?.parts?.[0]?.text || "";
+  const effectiveSystemInstruction = isJsonStructuredMode
+    ? baseSys
+    : buildEngineSystemInstruction(baseSys, plan);
+
+  if (provider === "openai") {
+    const openAiPayload = buildOpenAiResponsesPayload({
+      modelId: validated.model,
+      contents: validated.payload.contents,
+      systemInstruction: effectiveSystemInstruction,
+      plan,
+      isJsonStructuredMode,
+      stream: false,
+    });
+
+    const res = await callOpenAiResponsesWithTimeout({
+      fetchImpl,
+      apiKey,
+      payload: openAiPayload,
+      timeoutMs,
+    });
+
+    if (!res.ok) {
+      return { ok: false, provider: "openai", upstreamRes: res };
+    }
+
+    let openAiData;
+    try {
+      openAiData = JSON.parse(res.text);
+    } catch {
+      return {
+        ok: false,
+        provider: "openai",
+        customError: {
+          status: 502,
+          code: "INVALID_UPSTREAM_JSON",
+          retryable: true,
+          message: "Received malformed response from OpenAI service. Please tap Retry.",
+        },
+      };
+    }
+
+    const primary = extractOpenAiResponseText(openAiData);
+    if (isJsonStructuredMode) {
+      return {
+        ok: true,
+        provider: "openai",
+        data: {
+          id: openAiData.id || undefined,
+          providerUsed: "openai",
+          modelUsed: validated.model,
+          output_text: primary.text,
+          candidates: [{ content: { parts: [{ text: primary.text }] }, finishReason: primary.finishReason }],
+          usage: openAiData.usage || undefined,
+          inffolerReasoning: buildReasoningEnvelope(
+            "openai",
+            validated.model,
+            plan,
+            {
+              status: "unverified",
+              label: "Structured JSON Mode",
+              checksRun: ["JSON parse check"],
+              issues: [],
+              summary: "Structured JSON output parsed cleanly.",
+            },
+            false,
+            startMs,
+            false
+          ),
+        },
+      };
+    }
+
+    let finalText = primary.text;
+    let finalUsage = openAiData.usage || undefined;
+    let finalId = openAiData.id || undefined;
+    let verification = verifyGeneratedAnswer(primary.text, plan, primary.finishReason);
+    let regenerated = false;
+
+    if (verification.shouldRegenerate && Date.now() - startMs < timeoutMs * 0.65) {
+      const correctionPrompt = [
+        "Review and fix the draft response below for the user's request.",
+        `Detected verification issues: ${verification.issues.join(" ")}`,
+        "Produce a corrected, complete, concise final response directly answering the user without exposing raw scratchpads.",
+        "",
+        `Draft response:\n${primary.text.slice(0, 6000)}`,
+      ].join("\n");
+
+      const retryPayload = buildOpenAiResponsesPayload({
+        modelId: validated.model,
+        contents: [
+          ...validated.payload.contents,
+          { role: "model", parts: [{ text: primary.text }] },
+          { role: "user", parts: [{ text: correctionPrompt }] },
+        ],
+        systemInstruction: effectiveSystemInstruction,
+        plan,
+        isJsonStructuredMode: false,
+        stream: false,
+      });
+
+      try {
+        const retryRes = await callOpenAiResponsesWithTimeout({
+          fetchImpl,
+          apiKey,
+          payload: retryPayload,
+          timeoutMs: Math.max(8000, timeoutMs - (Date.now() - startMs)),
+        });
+        if (retryRes.ok) {
+          const retryJson = JSON.parse(retryRes.text);
+          const corrected = extractOpenAiResponseText(retryJson);
+          if (corrected.text) {
+            const recheck = verifyGeneratedAnswer(corrected.text, plan, corrected.finishReason);
+            finalText = corrected.text;
+            finalUsage = retryJson.usage || finalUsage;
+            finalId = retryJson.id || finalId;
+            regenerated = true;
+            verification = {
+              ...recheck,
+              status: recheck.issues.length === 0
+                ? (recheck.status === "verified_independent" ? "corrected" : recheck.status)
+                : "caution",
+              label:
+                recheck.issues.length === 0
+                  ? (recheck.status === "verified_independent" ? "Corrected & Checked" : "Refined")
+                  : "Needs Review",
+              summary:
+                recheck.issues.length === 0
+                  ? `Initial check flagged an issue (${verification.issues[0]}), which was corrected in a verification pass.`
+                  : recheck.summary,
+            };
+          }
+        }
+      } catch {
+        // Keep primary answer if refinement pass fails or times out
+      }
+    }
+
+    return {
+      ok: true,
+      provider: "openai",
+      data: {
+        id: finalId,
+        providerUsed: "openai",
+        modelUsed: validated.model,
+        output_text: finalText,
+        candidates: [{ content: { parts: [{ text: finalText }] }, finishReason: primary.finishReason }],
+        usage: finalUsage,
+        inffolerReasoning: buildReasoningEnvelope("openai", validated.model, plan, verification, regenerated, startMs, false),
+      },
+    };
+  }
+
+  // Gemini pipeline (preserved intact)
   const upstreamPayload = {
     contents: validated.payload.contents,
     generationConfig: {
@@ -1400,15 +2173,8 @@ export async function runReasoningPipeline({
     },
   };
 
-  if (isJsonStructuredMode) {
-    if (validated.payload.systemInstruction) {
-      upstreamPayload.systemInstruction = validated.payload.systemInstruction;
-    }
-  } else {
-    const baseSys = validated.payload.systemInstruction?.parts?.[0]?.text || "";
-    upstreamPayload.systemInstruction = {
-      parts: [{ text: buildEngineSystemInstruction(baseSys, plan) }],
-    };
+  if (effectiveSystemInstruction) {
+    upstreamPayload.systemInstruction = { parts: [{ text: effectiveSystemInstruction }] };
   }
 
   let thinkingConfigUsed = Boolean(upstreamPayload.generationConfig.thinkingConfig);
@@ -1434,7 +2200,7 @@ export async function runReasoningPipeline({
   }
 
   if (!res.ok) {
-    return { ok: false, upstreamRes: res };
+    return { ok: false, provider: "gemini", upstreamRes: res };
   }
 
   let geminiData;
@@ -1443,6 +2209,7 @@ export async function runReasoningPipeline({
   } catch {
     return {
       ok: false,
+      provider: "gemini",
       customError: {
         status: 502,
         code: "INVALID_UPSTREAM_JSON",
@@ -1455,10 +2222,13 @@ export async function runReasoningPipeline({
   if (isJsonStructuredMode) {
     return {
       ok: true,
+      provider: "gemini",
       data: {
         ...geminiData,
+        providerUsed: "gemini",
         inffolerReasoning: {
           engineVersion: "1.0",
+          providerUsed: "gemini",
           category: plan.category,
           mode: plan.mode,
           modeLabel: plan.modeLabel,
@@ -1549,10 +2319,13 @@ export async function runReasoningPipeline({
 
   return {
     ok: true,
+    provider: "gemini",
     data: {
       ...finalGeminiData,
+      providerUsed: "gemini",
       inffolerReasoning: {
         engineVersion: "1.0",
+        providerUsed: "gemini",
         category: plan.category,
         mode: plan.mode,
         modeLabel: plan.modeLabel,
@@ -1773,7 +2546,7 @@ export function validateEarthQueryRequest(rawBodyInput) {
   const requestedModel =
     typeof rawBody.model === "string" && rawBody.model.trim()
       ? rawBody.model.trim()
-      : "gemini-3.8-flash";
+      : DEFAULT_MODEL;
   if (!ALLOWED_MODELS.has(requestedModel)) {
     return {
       error: `Unsupported model '${requestedModel}'. Allowed models: ${Array.from(ALLOWED_MODELS).join(", ")}.`,
@@ -1782,6 +2555,7 @@ export function validateEarthQueryRequest(rawBodyInput) {
       allowedModels: Array.from(ALLOWED_MODELS),
     };
   }
+  const requestedProvider = MODEL_REGISTRY[requestedModel].provider;
 
   const rawCurrency =
     typeof rawBody.targetCurrency === "string" ? rawBody.targetCurrency.trim().toUpperCase() : "USD";
@@ -1835,6 +2609,7 @@ export function validateEarthQueryRequest(rawBodyInput) {
   return {
     query,
     model: requestedModel,
+    provider: requestedProvider,
     targetCurrency,
     filters,
     userLocation,
@@ -1959,82 +2734,159 @@ export async function runEarthIntelligencePipeline({
     .filter(Boolean)
     .join("\n\n");
 
-  const basePayload = {
-    systemInstruction: { parts: [{ text: buildEarthSystemPrompt() }] },
-    contents: [{ role: "user", parts: [{ text: userPromptText }] }],
-    tools: [{ google_search: {} }],
-    generationConfig: {
-      temperature: 0.2,
-      topP: 0.88,
-      maxOutputTokens: 4096,
-    },
-  };
-
+  const provider = validated.provider || MODEL_REGISTRY[validated.model]?.provider || DEFAULT_PROVIDER;
   let searchGrounded = true;
-  let res = await callGeminiModelWithTimeout({
-    fetchImpl,
-    apiKey,
-    modelId: validated.model,
-    payload: basePayload,
-    timeoutMs,
-  });
+  let rawModelText = "";
+  const verifiedSources = [];
+  const seenUrls = new Set();
 
-  // Compatibility safeguard if a model alias rejects google_search tool syntax
-  if (!res.ok && res.status === 400 && /google_search|tool|search/i.test(String(res.text || ""))) {
-    const fallbackPayload = {
-      systemInstruction: basePayload.systemInstruction,
-      contents: basePayload.contents,
+  if (provider === "openai") {
+    const openAiPlan = {
+      effort: "medium",
       generationConfig: {
-        ...basePayload.generationConfig,
-        responseMimeType: "application/json",
+        temperature: 0.2,
+        topP: 0.88,
+        maxOutputTokens: 4096,
       },
     };
-    searchGrounded = false;
-    res = await callGeminiModelWithTimeout({
+    const webPayload = buildOpenAiResponsesPayload({
+      modelId: validated.model,
+      contents: [{ role: "user", parts: [{ text: userPromptText }] }],
+      systemInstruction: buildEarthSystemPrompt(),
+      plan: openAiPlan,
+      isJsonStructuredMode: false,
+      stream: false,
+      tools: [{ type: "web_search" }],
+    });
+
+    let res = await callOpenAiResponsesWithTimeout({
+      fetchImpl,
+      apiKey,
+      payload: webPayload,
+      timeoutMs,
+    });
+
+    if (!res.ok && res.status === 400 && /web_search|tool|hosted_tool/i.test(String(res.text || ""))) {
+      searchGrounded = false;
+      const jsonFallbackPayload = buildOpenAiResponsesPayload({
+        modelId: validated.model,
+        contents: [{ role: "user", parts: [{ text: userPromptText }] }],
+        systemInstruction: buildEarthSystemPrompt(),
+        plan: openAiPlan,
+        isJsonStructuredMode: true,
+        stream: false,
+      });
+      res = await callOpenAiResponsesWithTimeout({
+        fetchImpl,
+        apiKey,
+        payload: jsonFallbackPayload,
+        timeoutMs,
+      });
+    }
+
+    if (!res.ok) {
+      return { ok: false, provider: "openai", upstreamRes: res };
+    }
+
+    let openAiJson;
+    try {
+      openAiJson = JSON.parse(res.text);
+    } catch {
+      return {
+        ok: false,
+        provider: "openai",
+        customError: {
+          status: 502,
+          code: "INVALID_UPSTREAM_JSON",
+          retryable: true,
+          message: "Received malformed intelligence response. Please try again.",
+        },
+      };
+    }
+    const extracted = extractOpenAiResponseText(openAiJson);
+    rawModelText = extracted.text;
+    for (const c of extracted.citations) {
+      if (!seenUrls.has(c.url)) {
+        seenUrls.add(c.url);
+        verifiedSources.push(c);
+      }
+    }
+  } else {
+    const basePayload = {
+      systemInstruction: { parts: [{ text: buildEarthSystemPrompt() }] },
+      contents: [{ role: "user", parts: [{ text: userPromptText }] }],
+      tools: [{ google_search: {} }],
+      generationConfig: {
+        temperature: 0.2,
+        topP: 0.88,
+        maxOutputTokens: 4096,
+      },
+    };
+
+    let res = await callGeminiModelWithTimeout({
       fetchImpl,
       apiKey,
       modelId: validated.model,
-      payload: fallbackPayload,
+      payload: basePayload,
       timeoutMs,
     });
-  }
 
-  if (!res.ok) {
-    return { ok: false, upstreamRes: res };
-  }
-
-  let geminiJson;
-  try {
-    geminiJson = JSON.parse(res.text);
-  } catch {
-    return {
-      ok: false,
-      customError: {
-        status: 502,
-        code: "INVALID_UPSTREAM_JSON",
-        retryable: true,
-        message: "Received malformed intelligence response. Please try again.",
-      },
-    };
-  }
-
-  const candidate = geminiJson?.candidates?.[0];
-  const rawModelText = candidate?.content?.parts?.map(p => p.text || "").join("")?.trim() || "";
-  const parsedObj = extractJsonObjectFromText(rawModelText);
-
-  const groundingChunks = candidate?.groundingMetadata?.groundingChunks || [];
-  const verifiedSources = [];
-  const seenUrls = new Set();
-  for (const chunk of groundingChunks) {
-    const cleanUrl = sanitizeVerifiedUrl(chunk?.web?.uri);
-    if (cleanUrl && !seenUrls.has(cleanUrl)) {
-      seenUrls.add(cleanUrl);
-      verifiedSources.push({
-        title: String(chunk?.web?.title || new URL(cleanUrl).hostname).slice(0, 140),
-        url: cleanUrl,
+    // Compatibility safeguard if a model alias rejects google_search tool syntax
+    if (!res.ok && res.status === 400 && /google_search|tool|search/i.test(String(res.text || ""))) {
+      const fallbackPayload = {
+        systemInstruction: basePayload.systemInstruction,
+        contents: basePayload.contents,
+        generationConfig: {
+          ...basePayload.generationConfig,
+          responseMimeType: "application/json",
+        },
+      };
+      searchGrounded = false;
+      res = await callGeminiModelWithTimeout({
+        fetchImpl,
+        apiKey,
+        modelId: validated.model,
+        payload: fallbackPayload,
+        timeoutMs,
       });
     }
+
+    if (!res.ok) {
+      return { ok: false, provider: "gemini", upstreamRes: res };
+    }
+
+    let geminiJson;
+    try {
+      geminiJson = JSON.parse(res.text);
+    } catch {
+      return {
+        ok: false,
+        provider: "gemini",
+        customError: {
+          status: 502,
+          code: "INVALID_UPSTREAM_JSON",
+          retryable: true,
+          message: "Received malformed intelligence response. Please try again.",
+        },
+      };
+    }
+
+    const candidate = geminiJson?.candidates?.[0];
+    rawModelText = candidate?.content?.parts?.map(p => p.text || "").join("")?.trim() || "";
+    const groundingChunks = candidate?.groundingMetadata?.groundingChunks || [];
+    for (const chunk of groundingChunks) {
+      const cleanUrl = sanitizeVerifiedUrl(chunk?.web?.uri);
+      if (cleanUrl && !seenUrls.has(cleanUrl)) {
+        seenUrls.add(cleanUrl);
+        verifiedSources.push({
+          title: String(chunk?.web?.title || new URL(cleanUrl).hostname).slice(0, 140),
+          url: cleanUrl,
+        });
+      }
+    }
   }
+
+  const parsedObj = extractJsonObjectFromText(rawModelText);
 
   if (!parsedObj) {
     return {
@@ -2316,6 +3168,8 @@ export async function handleRequest(request, env = {}, deps = {}) {
   }
 
   if (request.method === "GET" && (pathname === "/" || pathname === "/health")) {
+    const openAiConfigured = Boolean(resolveServerSecret(env, "OPENAI_API_KEY"));
+    const geminiConfigured = Boolean(resolveServerSecret(env, "GEMINI_API_KEY"));
     return jsonResponse(
       {
         ok: true,
@@ -2331,7 +3185,13 @@ export async function handleRequest(request, env = {}, deps = {}) {
         earthEndpoint: "/earth/query",
         earthRatesEndpoint: "/earth/rates",
         firebaseProjectId: String(env.FIREBASE_PROJECT_ID || DEFAULT_FIREBASE_PROJECT_ID),
-        secretConfigured: Boolean(env.GEMINI_API_KEY),
+        defaultProvider: DEFAULT_PROVIDER,
+        defaultModel: DEFAULT_MODEL,
+        supportedProviders: ["openai", "gemini"],
+        openaiConfigured: openAiConfigured,
+        geminiConfigured,
+        streamingSupported: true,
+        secretConfigured: openAiConfigured || geminiConfigured,
         multimodalEnabled: true,
         allowedModels: Array.from(ALLOWED_MODELS),
         modelCapabilities: MODEL_REGISTRY,
@@ -2390,14 +3250,6 @@ export async function handleRequest(request, env = {}, deps = {}) {
     return jsonResponse({ error: "Method not allowed. Use POST." }, 405, corsHeaders);
   }
 
-  if (!env.GEMINI_API_KEY) {
-    return jsonResponse(
-      { error: "Server GEMINI_API_KEY secret is not configured in Cloudflare Worker." },
-      503,
-      corsHeaders
-    );
-  }
-
   const contentType = request.headers.get("Content-Type") || "";
   if (!contentType.toLowerCase().includes("application/json")) {
     return jsonResponse({ error: "Content-Type must be application/json." }, 415, corsHeaders);
@@ -2438,6 +3290,9 @@ export async function handleRequest(request, env = {}, deps = {}) {
       return jsonResponse({ error: "Malformed JSON payload." }, 400, corsHeaders);
     }
 
+    const openAiKey = resolveServerSecret(env, "OPENAI_API_KEY");
+    const geminiKey = resolveServerSecret(env, "GEMINI_API_KEY");
+
     if (pathname === "/earth/query") {
       const validatedEarth = validateEarthQueryRequest(parsedBody);
       if (validatedEarth.error) {
@@ -2453,9 +3308,22 @@ export async function handleRequest(request, env = {}, deps = {}) {
         );
       }
 
+      const earthApiKey = validatedEarth.provider === "openai" ? openAiKey : geminiKey;
+      if (!earthApiKey) {
+        const missingName = validatedEarth.provider === "openai" ? "OPENAI_API_KEY" : "GEMINI_API_KEY";
+        return jsonResponse(
+          {
+            error: `Server ${missingName} secret is not configured. Set ${missingName} in backend environment variables or Cloudflare Worker Secrets.`,
+            code: "MISSING_API_KEY",
+          },
+          503,
+          corsHeaders
+        );
+      }
+
       const earthOutcome = await runEarthIntelligencePipeline({
         validated: validatedEarth,
-        apiKey: env.GEMINI_API_KEY,
+        apiKey: earthApiKey,
         fetchImpl,
         timeoutMs,
       });
@@ -2473,17 +3341,25 @@ export async function handleRequest(request, env = {}, deps = {}) {
           );
         }
         const upstream = earthOutcome.upstreamRes;
-        const classified = classifyGeminiUpstreamError(
-          upstream.status,
-          upstream.text,
-          upstream.headers?.get?.("Retry-After") || null
-        );
+        const classified =
+          earthOutcome.provider === "openai"
+            ? classifyOpenAiUpstreamError(
+                upstream.status,
+                upstream.text,
+                upstream.headers?.get?.("Retry-After") || null
+              )
+            : classifyGeminiUpstreamError(
+                upstream.status,
+                upstream.text,
+                upstream.headers?.get?.("Retry-After") || null
+              );
         const responseHeaders = { ...corsHeaders };
         if (classified.retryAfterSec) {
           responseHeaders["Retry-After"] = String(classified.retryAfterSec);
         }
         return jsonResponse(
           {
+            provider: earthOutcome.provider,
             error: classified.message,
             code: classified.code,
             quotaType: classified.quotaType,
@@ -2513,9 +3389,92 @@ export async function handleRequest(request, env = {}, deps = {}) {
       );
     }
 
+    const activeProvider = validated.provider || "openai";
+    const activeApiKey = activeProvider === "openai" ? openAiKey : geminiKey;
+    if (!activeApiKey) {
+      const missingName = activeProvider === "openai" ? "OPENAI_API_KEY" : "GEMINI_API_KEY";
+      return jsonResponse(
+        {
+          error: `Server ${missingName} secret is not configured. Set ${missingName} in backend environment variables or Cloudflare Worker Secrets.`,
+          code: "MISSING_API_KEY",
+        },
+        503,
+        corsHeaders
+      );
+    }
+
+    const isJsonStructuredMode = validated.payload.generationConfig?.responseMimeType === "application/json";
+    if (validated.stream && activeProvider === "openai" && !isJsonStructuredMode) {
+      const lastUserPrompt = extractLastUserText(validated.payload.contents);
+      const plan = buildReasoningPlan({
+        promptText: lastUserPrompt,
+        historyTurnsCount: validated.payload.contents.length,
+        hasImages: validated.hasImages,
+        requestedMode: validated.reasoningMode,
+        modelId: validated.model,
+      });
+      const baseSys = validated.payload.systemInstruction?.parts?.[0]?.text || "";
+      const upstreamPayload = buildOpenAiResponsesPayload({
+        modelId: validated.model,
+        contents: validated.payload.contents,
+        systemInstruction: buildEngineSystemInstruction(baseSys, plan),
+        plan,
+        isJsonStructuredMode: false,
+        stream: true,
+      });
+
+      const streamOutcome = await streamOpenAiResponsesToSse({
+        fetchImpl,
+        apiKey: activeApiKey,
+        upstreamPayload,
+        plan,
+        modelId: validated.model,
+        timeoutMs,
+        corsHeaders,
+      });
+
+      if (streamOutcome.ok) {
+        return streamOutcome.response;
+      }
+      if (streamOutcome.customError) {
+        return jsonResponse(
+          {
+            error: streamOutcome.customError.message,
+            code: streamOutcome.customError.code,
+            retryable: streamOutcome.customError.retryable,
+          },
+          streamOutcome.customError.status,
+          corsHeaders
+        );
+      }
+      const upstream = streamOutcome.upstreamRes;
+      const classified = classifyOpenAiUpstreamError(
+        upstream.status,
+        upstream.text,
+        upstream.headers?.get?.("Retry-After") || null
+      );
+      const responseHeaders = { ...corsHeaders };
+      if (classified.retryAfterSec) {
+        responseHeaders["Retry-After"] = String(classified.retryAfterSec);
+      }
+      return jsonResponse(
+        {
+          provider: "openai",
+          error: classified.message,
+          code: classified.code,
+          quotaType: classified.quotaType,
+          retryable: classified.retryable,
+          retryAfterSec: classified.retryAfterSec,
+          modelRequested: validated.model,
+        },
+        upstream.status,
+        responseHeaders
+      );
+    }
+
     const outcome = await runReasoningPipeline({
       validated,
-      apiKey: env.GEMINI_API_KEY,
+      apiKey: activeApiKey,
       fetchImpl,
       timeoutMs,
     });
@@ -2533,17 +3492,25 @@ export async function handleRequest(request, env = {}, deps = {}) {
         );
       }
       const upstream = outcome.upstreamRes;
-      const classified = classifyGeminiUpstreamError(
-        upstream.status,
-        upstream.text,
-        upstream.headers?.get?.("Retry-After") || null
-      );
+      const classified =
+        outcome.provider === "openai"
+          ? classifyOpenAiUpstreamError(
+              upstream.status,
+              upstream.text,
+              upstream.headers?.get?.("Retry-After") || null
+            )
+          : classifyGeminiUpstreamError(
+              upstream.status,
+              upstream.text,
+              upstream.headers?.get?.("Retry-After") || null
+            );
       const responseHeaders = { ...corsHeaders };
       if (classified.retryAfterSec) {
         responseHeaders["Retry-After"] = String(classified.retryAfterSec);
       }
       return jsonResponse(
         {
+          provider: outcome.provider,
           error: classified.message,
           code: classified.code,
           quotaType: classified.quotaType,
@@ -2561,7 +3528,7 @@ export async function handleRequest(request, env = {}, deps = {}) {
     if (err?.isTimeout) {
       return jsonResponse(
         {
-          error: "Gemini AI timed out while reasoning. Please try again or switch to Quick Mode.",
+          error: "Upstream AI service timed out while reasoning. Please try again or switch to Quick Mode.",
           code: "UPSTREAM_TIMEOUT",
           retryable: true,
         },

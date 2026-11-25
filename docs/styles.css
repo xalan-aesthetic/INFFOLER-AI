@@ -688,6 +688,7 @@ body {
   box-shadow: 0 0 8px var(--teal);
 }
 
+.provider-select,
 .model-select {
   background: var(--bg-input);
   color: var(--cyan);
@@ -697,6 +698,12 @@ body {
   font-size: 0.75rem;
   font-weight: 600;
   outline: none;
+  cursor: pointer;
+}
+
+.provider-select {
+  color: var(--teal);
+  border-color: rgba(0, 245, 212, 0.36);
 }
 
 .topbar-profile-chip {
@@ -3103,6 +3110,7 @@ body {
   .engine-selectors-group {
     gap: 4px;
   }
+  .provider-select,
   .model-select,
   .mode-select {
     max-width: 108px;
@@ -3136,6 +3144,7 @@ body {
   cursor: pointer;
 }
 
+.provider-select:focus,
 .mode-select:focus,
 .model-select:focus {
   border-color: var(--cyan);
@@ -3174,6 +3183,12 @@ body {
   font-family: var(--font-mono);
   font-size: 0.65rem;
   font-weight: 600;
+}
+
+.engine-meta-pill.provider {
+  border-color: rgba(0, 245, 212, 0.4);
+  background: rgba(0, 245, 212, 0.1);
+  color: var(--teal);
 }
 
 .engine-meta-pill.mode {

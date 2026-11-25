@@ -55,14 +55,21 @@ import {
   increment,
 } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
 import {
+  DEFAULT_PROVIDER,
+  DEFAULT_OPENAI_MODEL,
+  MODEL_CATALOG,
   REASONING_MODES,
+  normalizeProvider,
+  getProviderForModel,
+  getDefaultModelForProvider,
+  getProviderDisplayLabel,
   normalizeReasoningMode,
   getModelDisplayLabel,
   validatePromptInput,
   classifyTaskPreview,
   normalizeReasoningMetadata,
   formatVerificationBadge,
-} from "./reasoning-engine.js?v=20261125a";
+} from "./reasoning-engine.js?v=20261125c";
 import {
   normalizePhoneInput,
   validateOtpCode,
@@ -193,6 +200,9 @@ const STORAGE_SFX = "inffoler_v2_sfx";
 const STORAGE_MUSIC = "inffoler_v2_music";
 const STORAGE_VOLUME = "inffoler_v2_volume";
 const STORAGE_REASONING_MODE = "inffoler_v2_reasoning_mode";
+const STORAGE_PROVIDER = "inffoler_v2_provider";
+const STORAGE_MODEL = "inffoler_v2_model";
+const STORAGE_ENGINE_EXPLICIT = "inffoler_v2_engine_explicit";
 
 const INSTAGRAM_ACCOUNTS = [
   { username: "@xalan_vetrnen", url: "https://www.instagram.com/xalan_vetrnen?cplk=b2c4NXRjcTkxbWR3" },
@@ -257,8 +267,20 @@ const STARTER_PROMPTS = [
   { icon: "\uD83D\uDCF7", title: "Analyze an Image", action: "attach" },
 ];
 
-// Respect the user's selected model strictly — never silently switch models.
+// Respect the user's selected provider & model strictly — OpenAI is the default on launch.
 let selectedReasoningMode = normalizeReasoningMode(loadPrefSafe(STORAGE_REASONING_MODE, "balanced"));
+let selectedModelId = (() => {
+  const savedModel = loadPrefSafe(STORAGE_MODEL, "");
+  if (savedModel && Object.prototype.hasOwnProperty.call(MODEL_CATALOG, savedModel)) {
+    return savedModel;
+  }
+  const savedProvider = loadPrefSafe(STORAGE_PROVIDER, "");
+  if (savedProvider) {
+    return getDefaultModelForProvider(savedProvider);
+  }
+  return DEFAULT_OPENAI_MODEL;
+})();
+let selectedProvider = getProviderForModel(selectedModelId);
 
 const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const MAX_PENDING_IMAGES = 3;
@@ -724,8 +746,8 @@ function makeSafeId(prefix = "id") {
 }
 
 function normalizeModel(modelId) {
-  if (modelId === "gemini-3.5-flash-lite" || modelId === "gemini-4-argon") return modelId;
-  return "gemini-3.8-flash";
+  const raw = String(modelId || "").trim();
+  return Object.prototype.hasOwnProperty.call(MODEL_CATALOG, raw) ? raw : DEFAULT_OPENAI_MODEL;
 }
 
 function mapFirebaseError(err, contextProvider = "") {
@@ -1186,7 +1208,7 @@ function subscribeUserSimulations(uid, onUpdate, onError) {
   );
 }
 
-async function createCloudChat(uid, chatId, { title = "New Exploration", modelId = "gemini-3.8-flash" } = {}) {
+async function createCloudChat(uid, chatId, { title = "New Exploration", modelId = DEFAULT_OPENAI_MODEL } = {}) {
   await setDoc(doc(db, "users", uid, "chats", chatId), {
     userId: uid,
     title: String(title).trim().slice(0, 120) || "New Exploration",
@@ -1301,7 +1323,41 @@ function showToast(msg) {
 }
 
 function getSelectedModel() {
-  return document.getElementById("modelSelect")?.value || "gemini-3.8-flash";
+  const domVal = document.getElementById("modelSelect")?.value;
+  if (domVal && Object.prototype.hasOwnProperty.call(MODEL_CATALOG, domVal)) {
+    return domVal;
+  }
+  return normalizeModel(selectedModelId);
+}
+
+function getSelectedProvider() {
+  return getProviderForModel(getSelectedModel());
+}
+
+function setActiveProviderAndModel(providerId, modelId = null, { persistCloud = false, markExplicit = false } = {}) {
+  const resolvedModel =
+    modelId && Object.prototype.hasOwnProperty.call(MODEL_CATALOG, modelId)
+      ? modelId
+      : getDefaultModelForProvider(providerId || DEFAULT_PROVIDER);
+  const resolvedProvider = getProviderForModel(resolvedModel);
+  selectedProvider = resolvedProvider;
+  selectedModelId = resolvedModel;
+
+  const provSelect = document.getElementById("providerSelect");
+  if (provSelect) provSelect.value = resolvedProvider;
+  const modelSelect = document.getElementById("modelSelect");
+  if (modelSelect) modelSelect.value = resolvedModel;
+
+  savePrefSafe(STORAGE_PROVIDER, resolvedProvider);
+  savePrefSafe(STORAGE_MODEL, resolvedModel);
+  if (markExplicit) {
+    savePrefSafe(STORAGE_ENGINE_EXPLICIT, "1");
+  }
+
+  if (persistCloud && currentUser) {
+    updateUserProfileAndPrefs(currentUser.uid, { preferredModel: resolvedModel }).catch(() => {});
+  }
+  return { provider: resolvedProvider, model: resolvedModel };
 }
 
 function getSelectedReasoningMode() {
@@ -1318,17 +1374,32 @@ function setEnginePhaseStatus(message, tone = "idle") {
 }
 
 function syncEngineStatusBar(phaseMessage = null, tone = "idle") {
+  const providerEl = document.getElementById("engineActiveProvider");
   const modelEl = document.getElementById("engineActiveModel");
   const modeEl = document.getElementById("engineActiveMode");
+  const providerSelect = document.getElementById("providerSelect");
+  const modelSelect = document.getElementById("modelSelect");
   const modeSelect = document.getElementById("reasoningModeSelect");
+
+  const activeModel = getSelectedModel();
+  const activeProvider = getProviderForModel(activeModel);
   const modeKey = getSelectedReasoningMode();
   const modeMeta = REASONING_MODES[modeKey] || REASONING_MODES.balanced;
 
+  if (providerSelect && providerSelect.value !== activeProvider) {
+    providerSelect.value = activeProvider;
+  }
+  if (modelSelect && modelSelect.value !== activeModel) {
+    modelSelect.value = activeModel;
+  }
   if (modeSelect && modeSelect.value !== modeKey) {
     modeSelect.value = modeKey;
   }
+  if (providerEl) {
+    providerEl.textContent = `Provider: ${getProviderDisplayLabel(activeProvider)}`;
+  }
   if (modelEl) {
-    modelEl.textContent = getModelDisplayLabel(getSelectedModel());
+    modelEl.textContent = getModelDisplayLabel(activeModel);
   }
   if (modeEl) {
     modeEl.textContent = `${modeMeta.icon} ${modeMeta.label}`;
@@ -1721,8 +1792,15 @@ async function onAuthChange(user) {
       });
       const profile = await loadUserProfile(currentUser.uid);
       if (profile?.theme) setTheme(profile.theme, false);
-      if (profile?.preferredModel) {
-        document.getElementById("modelSelect").value = profile.preferredModel;
+      const hasExplicitEnginePref = loadPref(STORAGE_ENGINE_EXPLICIT, "") === "1";
+      if (
+        profile?.preferredModel &&
+        Object.prototype.hasOwnProperty.call(MODEL_CATALOG, profile.preferredModel) &&
+        (hasExplicitEnginePref || getProviderForModel(profile.preferredModel) === DEFAULT_PROVIDER)
+      ) {
+        setActiveProviderAndModel(getProviderForModel(profile.preferredModel), profile.preferredModel, {
+          persistCloud: false,
+        });
       }
       syncEngineStatusBar("Reasoning Engine 1.0 · Ready", "idle");
     } catch (err) {
@@ -2035,7 +2113,7 @@ function openLightbox(src) {
   document.getElementById("imageLightbox").classList.remove("hidden");
 }
 
-/* ==================== GEMINI WORKER CLIENT ==================== */
+/* ==================== AI PROXY CLIENT (OPENAI RESPONSES + GEMINI) ==================== */
 function sanitizeConversationTurns(messages) {
   const cleaned = [];
   for (const m of messages) {
@@ -2049,15 +2127,18 @@ function sanitizeConversationTurns(messages) {
 
 function redactSensitiveText(text) {
   return String(text || "")
+    .replace(/sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{12,}/g, "[REDACTED_KEY]")
     .replace(/AIza[0-9A-Za-z\-_]{12,}/g, "[REDACTED_KEY]")
     .replace(/([?&]key=)[^&\s"']+/gi, "$1[REDACTED]")
     .replace(/Bearer\s+[A-Za-z0-9\-_.]+/gi, "Bearer [REDACTED]");
 }
 
-function classifyClientAiError(status, errJson = null, retryAfterHeader = null, rawText = "") {
+function classifyClientAiError(status, errJson = null, retryAfterHeader = null, rawText = "", providerId = null) {
   const errPayload = errJson && typeof errJson === "object" ? errJson : {};
   const nestedErr = errPayload.error && typeof errPayload.error === "object" ? errPayload.error : null;
-  const serverCode = String(errPayload.code || nestedErr?.status || "").toUpperCase();
+  const activeProvider = normalizeProvider(errPayload.provider || providerId || getSelectedProvider());
+  const providerLabel = getProviderDisplayLabel(activeProvider);
+  const serverCode = String(errPayload.code || nestedErr?.code || nestedErr?.status || "").toUpperCase();
   const serverQuotaType = errPayload.quotaType || null;
   const rawMessage = redactSensitiveText(
     typeof errPayload.error === "string"
@@ -2074,8 +2155,13 @@ function classifyClientAiError(status, errJson = null, retryAfterHeader = null, 
     if (Number.isFinite(hVal) && hVal > 0) retryAfterSec = Math.ceil(hVal);
   }
   if (!retryAfterSec) {
-    const m = rawMessage.match(/(?:wait|retry\s+(?:in|after)|about)\s+(\d+(?:\.\d+)?)s/i);
-    if (m) retryAfterSec = Math.max(1, Math.ceil(Number(m[1])));
+    const msMatch = rawMessage.match(/try again in\s+(\d+(?:\.\d+)?)\s*ms/i);
+    if (msMatch) {
+      retryAfterSec = Math.max(1, Math.ceil(Number(msMatch[1]) / 1000));
+    } else {
+      const m = rawMessage.match(/(?:wait|retry\s+(?:in|after)|try again in|about)\s+(\d+(?:\.\d+)?)s/i);
+      if (m) retryAfterSec = Math.max(1, Math.ceil(Number(m[1])));
+    }
   }
 
   let hasZeroQuota = false;
@@ -2097,6 +2183,7 @@ function classifyClientAiError(status, errJson = null, retryAfterHeader = null, 
   if (
     status === 429 ||
     serverCode === "DAILY_QUOTA_EXCEEDED" ||
+    serverCode === "INSUFFICIENT_QUOTA" ||
     serverCode === "RATE_LIMIT_EXCEEDED" ||
     serverCode === "RATE_LIMIT" ||
     serverCode === "QUOTA_EXCEEDED" ||
@@ -2105,8 +2192,9 @@ function classifyClientAiError(status, errJson = null, retryAfterHeader = null, 
     const isDaily =
       serverQuotaType === "daily" ||
       serverCode === "DAILY_QUOTA_EXCEEDED" ||
+      serverCode === "INSUFFICIENT_QUOTA" ||
       hasZeroQuota ||
-      /perday|per_day|requestsperday|tokensperday|daily\s+quota|daily\s+usage|daily\s+anti-abuse|plan and billing|billing details|try again tomorrow/i.test(
+      /insufficient_quota|exceeded your current quota|perday|per_day|requestsperday|tokensperday|daily\s+quota|daily\s+usage|daily\s+anti-abuse|plan and billing|billing details|try again tomorrow/i.test(
         combined
       );
 
@@ -2119,7 +2207,9 @@ function classifyClientAiError(status, errJson = null, retryAfterHeader = null, 
         retryAfterSec,
         badgeLabel: "DAILY QUOTA EXHAUSTED",
         userMessage:
-          "Daily Gemini API quota has been reached for today. Quota resets on the next daily cycle — please try again later.",
+          activeProvider === "openai"
+            ? "OpenAI API quota has been exhausted. Check plan/billing quota limits or switch providers/try again later."
+            : "Daily Gemini API quota has been reached for today. Quota resets on the next daily cycle — please try again later.",
       };
     }
 
@@ -2131,8 +2221,8 @@ function classifyClientAiError(status, errJson = null, retryAfterHeader = null, 
       retryAfterSec,
       badgeLabel: "TEMPORARY RATE LIMIT (429)",
       userMessage: retryAfterSec
-        ? `Too many requests right now. Please wait about ${retryAfterSec}s and tap Retry.`
-        : "Gemini API temporary rate limit reached due to high traffic. Please wait a few seconds and tap Retry.",
+        ? `${providerLabel} rate limit reached right now. Please wait about ${retryAfterSec}s and tap Retry.`
+        : `${providerLabel} API temporary rate limit reached due to high traffic. Please wait a few seconds and tap Retry.`,
     };
   }
 
@@ -2146,7 +2236,7 @@ function classifyClientAiError(status, errJson = null, retryAfterHeader = null, 
       badgeLabel: "UNSUPPORTED MODEL",
       userMessage:
         rawMessage ||
-        "The selected model is unavailable or unsupported. Please choose Gemini 3.8 Flash, Gemini 3.5 Flash-Lite, or Gemini 4 Argon.",
+        "The selected AI model is unavailable or unsupported. Please choose GPT-4.1 Mini, GPT-4.1, GPT-4o Mini, o4-mini, or a Gemini model.",
     };
   }
 
@@ -2170,7 +2260,7 @@ function classifyClientAiError(status, errJson = null, retryAfterHeader = null, 
       retryable: true,
       retryAfterSec,
       badgeLabel: "REQUEST TIMED OUT (504)",
-      userMessage: rawMessage || "Gemini AI timed out while reasoning. Tap Retry or switch to Quick Mode.",
+      userMessage: rawMessage || `${providerLabel} timed out while reasoning. Tap Retry or switch to Quick Mode.`,
     };
   }
 
@@ -2189,7 +2279,10 @@ function classifyClientAiError(status, errJson = null, retryAfterHeader = null, 
       retryable: true,
       retryAfterSec,
       badgeLabel: `SERVER BUSY (HTTP ${status || 503})`,
-      userMessage: `Gemini AI servers are temporarily busy or unavailable (HTTP ${status || 503}). Please tap Retry in a moment.`,
+      userMessage:
+        rawMessage && /api key|configured|misconfigured/i.test(rawMessage)
+          ? rawMessage
+          : `${providerLabel} servers are temporarily busy or unavailable (HTTP ${status || 503}). Please tap Retry in a moment.`,
     };
   }
 
@@ -2216,6 +2309,19 @@ function classifyClientAiError(status, errJson = null, retryAfterHeader = null, 
   };
 }
 
+function buildClassifiedClientError(status, errJson, retryAfterHeader, rawText, providerId) {
+  const classified = classifyClientAiError(status, errJson, retryAfterHeader, rawText, providerId);
+  const err = new Error(classified.userMessage);
+  err.status = status;
+  err.code = classified.code;
+  err.quotaType = classified.quotaType;
+  err.errorKind = classified.kind;
+  err.badgeLabel = classified.badgeLabel;
+  err.retryable = classified.retryable;
+  err.retryAfterSec = classified.retryAfterSec;
+  return err;
+}
+
 function sleepWithAbort(ms, signal) {
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve, reject) => {
@@ -2235,17 +2341,164 @@ function sleepWithAbort(ms, signal) {
   });
 }
 
+function extractTextFromJsonResponse(data) {
+  if (!data || typeof data !== "object") return "";
+  const geminiText = data?.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("")?.trim();
+  if (geminiText) return geminiText;
+  if (typeof data.output_text === "string" && data.output_text.trim()) {
+    return data.output_text.trim();
+  }
+  if (Array.isArray(data.output)) {
+    const out = [];
+    for (const item of data.output) {
+      if (item?.type === "message" && Array.isArray(item.content)) {
+        for (const c of item.content) {
+          if (typeof c?.text === "string") out.push(c.text);
+        }
+      }
+    }
+    if (out.join("").trim()) return out.join("").trim();
+  }
+  return "";
+}
+
+async function readSseResponseStream(response, modelId, providerId, signal, onStreamDelta) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  let accumulatedText = "";
+  let donePayload = null;
+  let metaReasoning = null;
+  let receivedAnyDelta = false;
+
+  const processEventBlock = rawBlock => {
+    const lines = rawBlock.split(/\r?\n/);
+    let eventName = "message";
+    const dataLines = [];
+    for (const line of lines) {
+      if (!line || line.startsWith(":")) continue;
+      if (line.startsWith("event:")) {
+        eventName = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    }
+    if (dataLines.length === 0) return;
+    const dataStr = dataLines.join("\n").trim();
+    if (!dataStr || dataStr === "[DONE]") return;
+
+    let parsed = null;
+    try {
+      parsed = JSON.parse(dataStr);
+    } catch {
+      return;
+    }
+
+    if (eventName === "meta") {
+      if (parsed?.inffolerReasoning) {
+        metaReasoning = parsed.inffolerReasoning;
+      }
+      return;
+    }
+
+    if (eventName === "delta") {
+      const delta = typeof parsed?.delta === "string" ? parsed.delta : "";
+      if (delta) {
+        accumulatedText += delta;
+        receivedAnyDelta = true;
+      } else if (typeof parsed?.fullText === "string" && parsed.fullText.length >= accumulatedText.length) {
+        accumulatedText = parsed.fullText;
+        receivedAnyDelta = true;
+      }
+      if (typeof onStreamDelta === "function" && accumulatedText) {
+        onStreamDelta(accumulatedText, { partial: true, metaReasoning });
+      }
+      return;
+    }
+
+    if (eventName === "done") {
+      donePayload = parsed;
+      if (typeof parsed?.text === "string" && parsed.text.trim()) {
+        accumulatedText = parsed.text.trim();
+      }
+      return;
+    }
+
+    if (eventName === "error") {
+      const errStatus = Number(parsed?.status) || 502;
+      throw buildClassifiedClientError(errStatus, parsed, null, parsed?.error || "", providerId);
+    }
+  };
+
+  try {
+    while (true) {
+      if (signal?.aborted) {
+        throw Object.assign(new Error("Generation stopped."), {
+          name: "AbortError",
+          userStopped: true,
+          partialText: accumulatedText,
+        });
+      }
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split(/\r?\n\r?\n/);
+      buffer = blocks.pop() || "";
+      for (const block of blocks) {
+        if (block.trim()) processEventBlock(block);
+      }
+    }
+    const tail = (buffer + decoder.decode()).trim();
+    if (tail) {
+      for (const block of tail.split(/\r?\n\r?\n/)) {
+        if (block.trim()) processEventBlock(block);
+      }
+    }
+  } catch (err) {
+    try {
+      await reader.cancel();
+    } catch { /* ignore */ }
+    if (err?.userStopped && accumulatedText) {
+      err.partialText = accumulatedText;
+    }
+    throw err;
+  }
+
+  const finalText = String(accumulatedText || extractTextFromJsonResponse(donePayload) || "").trim();
+  if (!finalText) {
+    throw new Error(`Model ${modelId} returned an empty response.`);
+  }
+
+  const rawResponse =
+    donePayload && typeof donePayload === "object"
+      ? donePayload
+      : {
+          candidates: [{ content: { parts: [{ text: finalText }] } }],
+          inffolerReasoning: metaReasoning || { modelUsed: modelId, providerUsed: providerId },
+        };
+
+  return {
+    text: finalText,
+    rawResponse,
+    streamed: receivedAnyDelta,
+  };
+}
+
 async function callProxyOnce(
   modelId,
   contents,
   systemInstruction,
   responseMimeType,
   signal,
-  reasoningMode = "balanced"
+  reasoningMode = "balanced",
+  onStreamDelta = null
 ) {
   if (!auth.currentUser) {
     throw new Error("Authentication required. Please log in to access INFFOLER AI.");
   }
+
+  const providerId = getProviderForModel(modelId);
+  const wantsStream = Boolean(onStreamDelta && !responseMimeType);
 
   const payload = {
     systemInstruction: { parts: [{ text: systemInstruction }] },
@@ -2256,7 +2509,7 @@ async function callProxyOnce(
   }
 
   const timeoutController = new AbortController();
-  const timeoutId = setTimeout(() => timeoutController.abort(), 45000);
+  const timeoutId = setTimeout(() => timeoutController.abort(), 55000);
   const onExternalAbort = () => timeoutController.abort();
   if (signal) {
     if (signal.aborted) {
@@ -2274,7 +2527,9 @@ async function callProxyOnce(
         Authorization: `Bearer ${idToken}`,
       },
       body: JSON.stringify({
+        provider: providerId,
         model: modelId,
+        stream: wantsStream,
         reasoningMode: normalizeReasoningMode(reasoningMode),
         payload,
       }),
@@ -2291,45 +2546,55 @@ async function callProxyOnce(
       response = await sendAuthorizedRequest(true);
     }
 
-    const bodyText = await response.text();
-    if (signal?.aborted) {
-      throw Object.assign(new Error("Generation stopped."), { name: "AbortError", userStopped: true });
-    }
     if (!response.ok) {
+      const bodyText = await response.text();
+      if (signal?.aborted) {
+        throw Object.assign(new Error("Generation stopped."), { name: "AbortError", userStopped: true });
+      }
       let errJson = null;
       try {
         errJson = JSON.parse(bodyText);
       } catch { /* ignore */ }
-      const classified = classifyClientAiError(
+      throw buildClassifiedClientError(
         response.status,
         errJson,
         response.headers?.get?.("Retry-After") || null,
-        bodyText
+        bodyText,
+        providerId
       );
-      const err = new Error(classified.userMessage);
-      err.status = response.status;
-      err.code = classified.code;
-      err.quotaType = classified.quotaType;
-      err.errorKind = classified.kind;
-      err.badgeLabel = classified.badgeLabel;
-      err.retryable = classified.retryable;
-      err.retryAfterSec = classified.retryAfterSec;
-      throw err;
+    }
+
+    const contentType = String(response.headers?.get?.("Content-Type") || "").toLowerCase();
+    if (
+      wantsStream &&
+      contentType.includes("text/event-stream") &&
+      response.body &&
+      typeof response.body.getReader === "function"
+    ) {
+      return await readSseResponseStream(response, modelId, providerId, signal, onStreamDelta);
+    }
+
+    const bodyText = await response.text();
+    if (signal?.aborted) {
+      throw Object.assign(new Error("Generation stopped."), { name: "AbortError", userStopped: true });
     }
 
     const data = JSON.parse(bodyText);
-    const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("")?.trim();
+    const text = extractTextFromJsonResponse(data);
     if (!text) throw new Error(`Model ${modelId} returned an empty response.`);
-    return { text, rawResponse: data };
+    return { text, rawResponse: data, streamed: false };
   } catch (err) {
     if (err.userStopped) throw err;
     if (err.name === "AbortError" || signal?.aborted) {
       if (signal?.aborted) {
         const stopErr = new Error("Generation stopped.");
         stopErr.userStopped = true;
+        if (err?.partialText) stopErr.partialText = err.partialText;
         throw stopErr;
       }
-      const timeoutErr = new Error("Request timed out while waiting for Gemini AI. Tap Retry to try again.");
+      const timeoutErr = new Error(
+        `Request timed out while waiting for ${getProviderDisplayLabel(providerId)}. Tap Retry to try again.`
+      );
       timeoutErr.status = 504;
       timeoutErr.errorKind = "server_temp";
       timeoutErr.badgeLabel = "REQUEST TIMED OUT (504)";
@@ -2357,9 +2622,10 @@ async function executeSelectedModelRequest(
   responseMimeType,
   signal,
   reasoningMode = "balanced",
-  onStatus = null
+  onStatus = null,
+  onStreamDelta = null
 ) {
-  // Never silently switch to another model: strictly respect the user's selected model.
+  // Never silently switch provider or model: strictly respect the user's selection.
   const MAX_TEMPORARY_RETRIES = 2; // Strictly bounded: max 2 retries (never retries indefinitely)
   const BASE_BACKOFF_MS = 750;
   const MAX_BACKOFF_MS = 8000;
@@ -2367,18 +2633,20 @@ async function executeSelectedModelRequest(
 
   while (true) {
     try {
-      const { text, rawResponse } = await callProxyOnce(
+      const { text, rawResponse, streamed } = await callProxyOnce(
         selectedModel,
         contents,
         systemInstruction,
         responseMimeType,
         signal,
-        reasoningMode
+        reasoningMode,
+        onStreamDelta
       );
       return {
         modelId: rawResponse?.inffolerReasoning?.modelUsed || selectedModel,
         text,
         rawResponse,
+        streamed: Boolean(streamed),
       };
     } catch (err) {
       if (err.userStopped || signal?.aborted) {
@@ -2386,7 +2654,6 @@ async function executeSelectedModelRequest(
         throw err;
       }
 
-      // Unsupported model, empty/oversized payload, daily quota exhaustion, or auth errors fail immediately
       if (
         err.quotaType === "daily" ||
         err.code === "DAILY_QUOTA_EXCEEDED" ||
@@ -2876,7 +3143,10 @@ async function dispatchAiCompletion(priorTurns, promptText, imagesToSend) {
 
   activeMessages.push({ role: "model", isTypingPlaceholder: true, text: "" });
   setGeneratingUi(true);
-  syncEngineStatusBar(`Reasoning (${previewCategory} · ${REASONING_MODES[reasoningMode]?.shortLabel || "Balanced"})…`, "active");
+  syncEngineStatusBar(
+    `${getProviderDisplayLabel(getProviderForModel(selectedModel))} · ${previewCategory} (${REASONING_MODES[reasoningMode]?.shortLabel || "Balanced"})…`,
+    "active"
+  );
   renderChatMessages();
 
   activeAbortController = new AbortController();
@@ -2885,16 +3155,65 @@ async function dispatchAiCompletion(priorTurns, promptText, imagesToSend) {
   }
   abortRequestedBeforeDispatch = false;
 
+  let streamMsg = null;
+  let streamRenderTimer = null;
+  let lastStreamRenderAt = 0;
+
+  const flushStreamRender = () => {
+    streamRenderTimer = null;
+    lastStreamRenderAt = Date.now();
+    renderChatMessages();
+  };
+
+  const handleStreamDelta = fullText => {
+    if (!streamMsg) {
+      const placeholderIdx = activeMessages.findIndex(m => m.isTypingPlaceholder);
+      streamMsg = {
+        id: makeSafeId("msg"),
+        role: "model",
+        text: fullText,
+        modelId: selectedModel,
+        isStreaming: true,
+        feedback: "none",
+      };
+      if (placeholderIdx >= 0) {
+        activeMessages[placeholderIdx] = streamMsg;
+      } else {
+        activeMessages.push(streamMsg);
+      }
+      flushStreamRender();
+      return;
+    }
+
+    streamMsg.text = fullText;
+    const elapsed = Date.now() - lastStreamRenderAt;
+    if (elapsed >= 36) {
+      if (streamRenderTimer) {
+        clearTimeout(streamRenderTimer);
+        streamRenderTimer = null;
+      }
+      flushStreamRender();
+    } else if (!streamRenderTimer) {
+      streamRenderTimer = setTimeout(flushStreamRender, Math.max(8, 36 - elapsed));
+    }
+  };
+
   try {
-    const { modelId, text, rawResponse } = await executeSelectedModelRequest(
+    const { modelId, text, rawResponse, streamed } = await executeSelectedModelRequest(
       selectedModel,
       contents,
       systemPrompt,
       null,
       activeAbortController.signal,
       reasoningMode,
-      statusMsg => syncEngineStatusBar(statusMsg, "active")
+      statusMsg => syncEngineStatusBar(statusMsg, "active"),
+      handleStreamDelta
     );
+
+    if (streamRenderTimer) {
+      clearTimeout(streamRenderTimer);
+      streamRenderTimer = null;
+    }
 
     const reasoningMeta = normalizeReasoningMetadata(rawResponse, {
       selectedModel,
@@ -2903,11 +3222,23 @@ async function dispatchAiCompletion(priorTurns, promptText, imagesToSend) {
       elapsedMs: Date.now() - startedAt,
     });
 
-    const revealedMsg = await animateTypingReveal(text, modelId, reasoningMeta);
-    revealedMsg.justCompleted = true;
+    let revealedMsg;
+    if (streamed && streamMsg) {
+      streamMsg.text = text;
+      streamMsg.modelId = modelId;
+      streamMsg.reasoning = reasoningMeta;
+      streamMsg.isStreaming = false;
+      streamMsg.justCompleted = true;
+      revealedMsg = streamMsg;
+      renderChatMessages();
+    } else {
+      revealedMsg = await animateTypingReveal(text, modelId, reasoningMeta);
+      revealedMsg.justCompleted = true;
+    }
+
     playReceivedSfx();
     syncEngineStatusBar(
-      `${reasoningMeta.category} · ${reasoningMeta.verification?.label || "Complete"}`,
+      `${getProviderDisplayLabel(getProviderForModel(modelId))} · ${reasoningMeta.category} · ${reasoningMeta.verification?.label || "Complete"}`,
       reasoningMeta.verification?.status === "caution" ? "error" : "idle"
     );
 
@@ -2919,26 +3250,41 @@ async function dispatchAiCompletion(priorTurns, promptText, imagesToSend) {
       });
     }
   } catch (err) {
+    if (streamRenderTimer) {
+      clearTimeout(streamRenderTimer);
+      streamRenderTimer = null;
+    }
     activeMessages = activeMessages.filter(m => !m.isTypingPlaceholder);
     const stopped = Boolean(err.userStopped);
-    const errText = stopped ? "Generation stopped." : redactSensitiveText(err.message);
-    syncEngineStatusBar(
-      stopped ? "Cancelled by user" : err.badgeLabel || "Request failed",
-      stopped ? "idle" : "error"
-    );
-    activeMessages.push({
-      id: makeSafeId("err"),
-      role: "model",
-      isError: !stopped,
-      wasStopped: stopped,
-      errorKind: err.errorKind || "generic",
-      errorBadge: err.badgeLabel || (stopped ? "STOPPED" : "REQUEST ERROR"),
-      retryAfterSec: err.retryAfterSec || null,
-      retryContext: { priorTurns, promptText, imagesToSend },
-      text: errText,
-      feedback: "none",
-    });
-    renderChatMessages();
+    if (stopped && streamMsg && String(streamMsg.text || "").trim()) {
+      streamMsg.isStreaming = false;
+      streamMsg.wasStopped = true;
+      streamMsg.retryContext = { priorTurns, promptText, imagesToSend };
+      syncEngineStatusBar("Cancelled by user", "idle");
+      renderChatMessages();
+    } else {
+      if (streamMsg) {
+        activeMessages = activeMessages.filter(m => m !== streamMsg);
+      }
+      const errText = stopped ? "Generation stopped." : redactSensitiveText(err.message);
+      syncEngineStatusBar(
+        stopped ? "Cancelled by user" : err.badgeLabel || "Request failed",
+        stopped ? "idle" : "error"
+      );
+      activeMessages.push({
+        id: makeSafeId("err"),
+        role: "model",
+        isError: !stopped,
+        wasStopped: stopped,
+        errorKind: err.errorKind || "generic",
+        errorBadge: err.badgeLabel || (stopped ? "STOPPED" : "REQUEST ERROR"),
+        retryAfterSec: err.retryAfterSec || null,
+        retryContext: { priorTurns, promptText, imagesToSend },
+        text: errText,
+        feedback: "none",
+      });
+      renderChatMessages();
+    }
   } finally {
     activeAbortController = null;
     setGeneratingUi(false);
@@ -3389,11 +3735,23 @@ function bindEvents() {
   document.getElementById("btnThemeToggleSidebar").addEventListener("click", toggleTheme);
   document.getElementById("btnThemeToggleModal").addEventListener("click", toggleTheme);
 
-  document.getElementById("modelSelect").addEventListener("change", e => {
-    syncEngineStatusBar("Model updated · Ready", "idle");
-    if (currentUser) {
-      updateUserProfileAndPrefs(currentUser.uid, { preferredModel: e.target.value }).catch(() => {});
-    }
+  document.getElementById("providerSelect")?.addEventListener("change", e => {
+    const nextProvider = normalizeProvider(e.target.value);
+    const nextModel = getDefaultModelForProvider(nextProvider);
+    setActiveProviderAndModel(nextProvider, nextModel, { persistCloud: true, markExplicit: true });
+    const label = `${getProviderDisplayLabel(nextProvider)} (${getModelDisplayLabel(nextModel)})`;
+    syncEngineStatusBar(`${label} · Ready`, "idle");
+    showToast(`Switched AI provider to ${getProviderDisplayLabel(nextProvider)}`);
+  });
+
+  document.getElementById("modelSelect")?.addEventListener("change", e => {
+    const pickedModel = normalizeModel(e.target.value);
+    const pickedProvider = getProviderForModel(pickedModel);
+    setActiveProviderAndModel(pickedProvider, pickedModel, { persistCloud: true, markExplicit: true });
+    syncEngineStatusBar(
+      `${getProviderDisplayLabel(pickedProvider)} · ${getModelDisplayLabel(pickedModel)} · Ready`,
+      "idle"
+    );
   });
 
   document.getElementById("reasoningModeSelect")?.addEventListener("change", e => {
@@ -4699,6 +5057,7 @@ function boot() {
   } catch { /* ignore */ }
 
   setTheme(loadPref(STORAGE_THEME, "dark"), false);
+  setActiveProviderAndModel(selectedProvider, selectedModelId, { persistCloud: false });
   syncAudioUi();
   syncEngineStatusBar("Reasoning Engine 1.0 · Ready", "idle");
   renderInstagramLists();

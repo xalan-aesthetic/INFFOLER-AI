@@ -24,7 +24,15 @@ service cloud.firestore {
     }
 
     function isValidModel(modelId) {
-      return modelId in ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-4-argon'];
+      return modelId in [
+        'gpt-4.1-mini',
+        'gpt-4.1',
+        'gpt-4o-mini',
+        'o4-mini',
+        'gemini-3.8-flash',
+        'gemini-3.5-flash-lite',
+        'gemini-4-argon'
+      ];
     }
 
     function isValidUserProfile(data) {
