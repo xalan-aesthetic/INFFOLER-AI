@@ -124,6 +124,72 @@ export const MODEL_REGISTRY = Object.freeze({
 });
 
 const ALLOWED_MODELS = new Set(Object.keys(MODEL_REGISTRY));
+export const OPENAI_MODELS = new Set(
+  Object.values(MODEL_REGISTRY).filter(m => m.provider === "openai").map(m => m.id)
+);
+export const GEMINI_MODELS = new Set(
+  Object.values(MODEL_REGISTRY).filter(m => m.provider === "gemini").map(m => m.id)
+);
+export const SUPPORTED_PROVIDERS = new Set(["openai", "gemini"]);
+
+export function resolveRequestedProviderAndModel(rawBody = {}) {
+  const hasExplicitProvider = typeof rawBody.provider === "string" && rawBody.provider.trim().length > 0;
+  const rawProvider = hasExplicitProvider ? rawBody.provider.trim().toLowerCase() : "";
+  const rawModel = typeof rawBody.model === "string" ? rawBody.model.trim() : "";
+
+  if (hasExplicitProvider && !SUPPORTED_PROVIDERS.has(rawProvider)) {
+    return {
+      error: `Unsupported provider '${rawProvider}'. Supported providers: openai, gemini.`,
+      code: "UNSUPPORTED_PROVIDER",
+      provider: rawProvider,
+      requestedModel: rawModel || null,
+      allowedModels: Array.from(ALLOWED_MODELS),
+    };
+  }
+
+  if (rawProvider === "openai") {
+    const modelId = rawModel || DEFAULT_MODEL;
+    if (!OPENAI_MODELS.has(modelId)) {
+      return {
+        error: `Unsupported OpenAI model '${modelId}'. Allowed OpenAI models: ${Array.from(OPENAI_MODELS).join(", ")}.`,
+        code: "UNSUPPORTED_MODEL",
+        provider: "openai",
+        requestedModel: modelId,
+        allowedModels: Array.from(OPENAI_MODELS),
+      };
+    }
+    return { provider: "openai", model: modelId };
+  }
+
+  if (rawProvider === "gemini") {
+    const modelId = rawModel || "gemini-3.8-flash";
+    if (!GEMINI_MODELS.has(modelId)) {
+      return {
+        error: `Unsupported Gemini model '${modelId}'. Allowed Gemini models: ${Array.from(GEMINI_MODELS).join(", ")}.`,
+        code: "UNSUPPORTED_MODEL",
+        provider: "gemini",
+        requestedModel: modelId,
+        allowedModels: Array.from(GEMINI_MODELS),
+      };
+    }
+    return { provider: "gemini", model: modelId };
+  }
+
+  const inferredModel = rawModel || DEFAULT_MODEL;
+  if (!ALLOWED_MODELS.has(inferredModel)) {
+    return {
+      error: `Unsupported model '${inferredModel}'. Allowed models: ${Array.from(ALLOWED_MODELS).join(", ")}.`,
+      code: "UNSUPPORTED_MODEL",
+      provider: null,
+      requestedModel: inferredModel,
+      allowedModels: Array.from(ALLOWED_MODELS),
+    };
+  }
+  return {
+    provider: MODEL_REGISTRY[inferredModel].provider,
+    model: inferredModel,
+  };
+}
 
 export const REASONING_MODES = Object.freeze({
   quick: {
@@ -1322,20 +1388,12 @@ export function validateAndSanitizeRequest(rawBody) {
     return { error: "Invalid JSON request body.", code: "INVALID_PAYLOAD" };
   }
 
-  const requestedModel =
-    typeof rawBody.model === "string" && rawBody.model.trim()
-      ? rawBody.model.trim()
-      : DEFAULT_MODEL;
-  if (!ALLOWED_MODELS.has(requestedModel)) {
-    return {
-      error: `Unsupported model '${requestedModel}'. Allowed models: ${Array.from(ALLOWED_MODELS).join(", ")}.`,
-      code: "UNSUPPORTED_MODEL",
-      requestedModel,
-      allowedModels: Array.from(ALLOWED_MODELS),
-    };
+  const resolvedEngine = resolveRequestedProviderAndModel(rawBody);
+  if (resolvedEngine.error) {
+    return resolvedEngine;
   }
-
-  const requestedProvider = MODEL_REGISTRY[requestedModel].provider;
+  const requestedModel = resolvedEngine.model;
+  const requestedProvider = resolvedEngine.provider;
   const streamRequested = Boolean(rawBody.stream);
   const rawMode = typeof rawBody.reasoningMode === "string" ? rawBody.reasoningMode.trim().toLowerCase() : "balanced";
   const requestedMode = Object.prototype.hasOwnProperty.call(REASONING_MODES, rawMode) ? rawMode : "balanced";
@@ -1990,31 +2048,17 @@ function extractGeminiCandidateText(geminiData) {
   return { text, finishReason };
 }
 
-export async function runReasoningPipeline({
+async function runOpenAiReasoningPipeline({
   validated,
   apiKey,
   fetchImpl,
   timeoutMs = DEFAULT_UPSTREAM_TIMEOUT_MS,
+  plan,
+  effectiveSystemInstruction,
+  isJsonStructuredMode,
+  startMs,
 }) {
-  const startMs = Date.now();
-  const provider = validated.provider || MODEL_REGISTRY[validated.model]?.provider || DEFAULT_PROVIDER;
-  const isJsonStructuredMode = validated.payload.generationConfig?.responseMimeType === "application/json";
-  const lastUserPrompt = extractLastUserText(validated.payload.contents);
-
-  const plan = buildReasoningPlan({
-    promptText: lastUserPrompt,
-    historyTurnsCount: validated.payload.contents.length,
-    hasImages: validated.hasImages,
-    requestedMode: validated.reasoningMode,
-    modelId: validated.model,
-  });
-
-  const baseSys = validated.payload.systemInstruction?.parts?.[0]?.text || "";
-  const effectiveSystemInstruction = isJsonStructuredMode
-    ? baseSys
-    : buildEngineSystemInstruction(baseSys, plan);
-
-  if (provider === "openai") {
+  if (true) {
     const openAiPayload = buildOpenAiResponsesPayload({
       modelId: validated.model,
       contents: validated.payload.contents,
@@ -2161,8 +2205,19 @@ export async function runReasoningPipeline({
       },
     };
   }
+}
 
-  // Gemini pipeline (preserved intact)
+async function runGeminiReasoningPipeline({
+  validated,
+  apiKey,
+  fetchImpl,
+  timeoutMs = DEFAULT_UPSTREAM_TIMEOUT_MS,
+  plan,
+  effectiveSystemInstruction,
+  isJsonStructuredMode,
+  startMs,
+}) {
+  // Gemini pipeline (independent of OpenAI)
   const upstreamPayload = {
     contents: validated.payload.contents,
     generationConfig: {
@@ -2351,6 +2406,287 @@ export async function runReasoningPipeline({
       },
     },
   };
+}
+
+export async function runReasoningPipeline({
+  validated,
+  apiKey,
+  fetchImpl,
+  timeoutMs = DEFAULT_UPSTREAM_TIMEOUT_MS,
+}) {
+  const startMs = Date.now();
+  const provider = validated.provider || MODEL_REGISTRY[validated.model]?.provider || DEFAULT_PROVIDER;
+  const isJsonStructuredMode = validated.payload.generationConfig?.responseMimeType === "application/json";
+  const lastUserPrompt = extractLastUserText(validated.payload.contents);
+
+  const plan = buildReasoningPlan({
+    promptText: lastUserPrompt,
+    historyTurnsCount: validated.payload.contents.length,
+    hasImages: validated.hasImages,
+    requestedMode: validated.reasoningMode,
+    modelId: validated.model,
+  });
+
+  const baseSys = validated.payload.systemInstruction?.parts?.[0]?.text || "";
+  const effectiveSystemInstruction = isJsonStructuredMode
+    ? baseSys
+    : buildEngineSystemInstruction(baseSys, plan);
+
+  if (provider === "openai") {
+    return await runOpenAiReasoningPipeline({
+      validated,
+      apiKey,
+      fetchImpl,
+      timeoutMs,
+      plan,
+      effectiveSystemInstruction,
+      isJsonStructuredMode,
+      startMs,
+    });
+  }
+
+  return await runGeminiReasoningPipeline({
+    validated,
+    apiKey,
+    fetchImpl,
+    timeoutMs,
+    plan,
+    effectiveSystemInstruction,
+    isJsonStructuredMode,
+    startMs,
+  });
+}
+
+export async function handleOpenAiProviderRequest({
+  validated,
+  openAiKey,
+  fetchImpl,
+  timeoutMs = DEFAULT_UPSTREAM_TIMEOUT_MS,
+  corsHeaders = {},
+}) {
+  if (!openAiKey) {
+    return jsonResponse(
+      {
+        provider: "openai",
+        error: "Server OPENAI_API_KEY secret is not configured. Set OPENAI_API_KEY in backend environment variables or Cloudflare Worker Secrets.",
+        code: "MISSING_API_KEY",
+      },
+      503,
+      corsHeaders
+    );
+  }
+
+  const startMs = Date.now();
+  const isJsonStructuredMode = validated.payload.generationConfig?.responseMimeType === "application/json";
+  const lastUserPrompt = extractLastUserText(validated.payload.contents);
+  const plan = buildReasoningPlan({
+    promptText: lastUserPrompt,
+    historyTurnsCount: validated.payload.contents.length,
+    hasImages: validated.hasImages,
+    requestedMode: validated.reasoningMode,
+    modelId: validated.model,
+  });
+  const baseSys = validated.payload.systemInstruction?.parts?.[0]?.text || "";
+  const effectiveSystemInstruction = isJsonStructuredMode
+    ? baseSys
+    : buildEngineSystemInstruction(baseSys, plan);
+
+  if (validated.stream && !isJsonStructuredMode) {
+    const upstreamPayload = buildOpenAiResponsesPayload({
+      modelId: validated.model,
+      contents: validated.payload.contents,
+      systemInstruction: effectiveSystemInstruction,
+      plan,
+      isJsonStructuredMode: false,
+      stream: true,
+    });
+
+    const streamOutcome = await streamOpenAiResponsesToSse({
+      fetchImpl,
+      apiKey: openAiKey,
+      upstreamPayload,
+      plan,
+      modelId: validated.model,
+      timeoutMs,
+      corsHeaders,
+    });
+
+    if (streamOutcome.ok) {
+      return streamOutcome.response;
+    }
+    if (streamOutcome.customError) {
+      return jsonResponse(
+        {
+          provider: "openai",
+          error: streamOutcome.customError.message,
+          code: streamOutcome.customError.code,
+          retryable: streamOutcome.customError.retryable,
+        },
+        streamOutcome.customError.status,
+        corsHeaders
+      );
+    }
+    const upstream = streamOutcome.upstreamRes;
+    const classified = classifyOpenAiUpstreamError(
+      upstream.status,
+      upstream.text,
+      upstream.headers?.get?.("Retry-After") || null
+    );
+    const responseHeaders = { ...corsHeaders };
+    if (classified.retryAfterSec) {
+      responseHeaders["Retry-After"] = String(classified.retryAfterSec);
+    }
+    return jsonResponse(
+      {
+        provider: "openai",
+        error: classified.message,
+        code: classified.code,
+        quotaType: classified.quotaType,
+        retryable: classified.retryable,
+        retryAfterSec: classified.retryAfterSec,
+        modelRequested: validated.model,
+      },
+      upstream.status,
+      responseHeaders
+    );
+  }
+
+  const outcome = await runOpenAiReasoningPipeline({
+    validated,
+    apiKey: openAiKey,
+    fetchImpl,
+    timeoutMs,
+    plan,
+    effectiveSystemInstruction,
+    isJsonStructuredMode,
+    startMs,
+  });
+
+  if (!outcome.ok) {
+    if (outcome.customError) {
+      return jsonResponse(
+        {
+          provider: "openai",
+          error: outcome.customError.message,
+          code: outcome.customError.code,
+          retryable: outcome.customError.retryable,
+        },
+        outcome.customError.status,
+        corsHeaders
+      );
+    }
+    const upstream = outcome.upstreamRes;
+    const classified = classifyOpenAiUpstreamError(
+      upstream.status,
+      upstream.text,
+      upstream.headers?.get?.("Retry-After") || null
+    );
+    const responseHeaders = { ...corsHeaders };
+    if (classified.retryAfterSec) {
+      responseHeaders["Retry-After"] = String(classified.retryAfterSec);
+    }
+    return jsonResponse(
+      {
+        provider: "openai",
+        error: classified.message,
+        code: classified.code,
+        quotaType: classified.quotaType,
+        retryable: classified.retryable,
+        retryAfterSec: classified.retryAfterSec,
+        modelRequested: validated.model,
+      },
+      upstream.status,
+      responseHeaders
+    );
+  }
+
+  return jsonResponse(outcome.data, 200, corsHeaders);
+}
+
+export async function handleGeminiProviderRequest({
+  validated,
+  geminiKey,
+  fetchImpl,
+  timeoutMs = DEFAULT_UPSTREAM_TIMEOUT_MS,
+  corsHeaders = {},
+}) {
+  if (!geminiKey) {
+    return jsonResponse(
+      {
+        provider: "gemini",
+        error: "Server GEMINI_API_KEY secret is not configured. Set GEMINI_API_KEY in backend environment variables or Cloudflare Worker Secrets.",
+        code: "MISSING_API_KEY",
+      },
+      503,
+      corsHeaders
+    );
+  }
+
+  const startMs = Date.now();
+  const isJsonStructuredMode = validated.payload.generationConfig?.responseMimeType === "application/json";
+  const lastUserPrompt = extractLastUserText(validated.payload.contents);
+  const plan = buildReasoningPlan({
+    promptText: lastUserPrompt,
+    historyTurnsCount: validated.payload.contents.length,
+    hasImages: validated.hasImages,
+    requestedMode: validated.reasoningMode,
+    modelId: validated.model,
+  });
+  const baseSys = validated.payload.systemInstruction?.parts?.[0]?.text || "";
+  const effectiveSystemInstruction = isJsonStructuredMode
+    ? baseSys
+    : buildEngineSystemInstruction(baseSys, plan);
+
+  const outcome = await runGeminiReasoningPipeline({
+    validated,
+    apiKey: geminiKey,
+    fetchImpl,
+    timeoutMs,
+    plan,
+    effectiveSystemInstruction,
+    isJsonStructuredMode,
+    startMs,
+  });
+
+  if (!outcome.ok) {
+    if (outcome.customError) {
+      return jsonResponse(
+        {
+          provider: "gemini",
+          error: outcome.customError.message,
+          code: outcome.customError.code,
+          retryable: outcome.customError.retryable,
+        },
+        outcome.customError.status,
+        corsHeaders
+      );
+    }
+    const upstream = outcome.upstreamRes;
+    const classified = classifyGeminiUpstreamError(
+      upstream.status,
+      upstream.text,
+      upstream.headers?.get?.("Retry-After") || null
+    );
+    const responseHeaders = { ...corsHeaders };
+    if (classified.retryAfterSec) {
+      responseHeaders["Retry-After"] = String(classified.retryAfterSec);
+    }
+    return jsonResponse(
+      {
+        provider: "gemini",
+        error: classified.message,
+        code: classified.code,
+        quotaType: classified.quotaType,
+        retryable: classified.retryable,
+        retryAfterSec: classified.retryAfterSec,
+        modelRequested: validated.model,
+      },
+      upstream.status,
+      responseHeaders
+    );
+  }
+
+  return jsonResponse(outcome.data, 200, corsHeaders);
 }
 
 /* ==================== MODULE 6: THE EARTH GLOBAL PRICE & LOCATION INTELLIGENCE ==================== */
@@ -2543,19 +2879,12 @@ export function validateEarthQueryRequest(rawBodyInput) {
     return { error: "Search query cannot exceed 600 characters.", code: "PAYLOAD_TOO_LARGE" };
   }
 
-  const requestedModel =
-    typeof rawBody.model === "string" && rawBody.model.trim()
-      ? rawBody.model.trim()
-      : DEFAULT_MODEL;
-  if (!ALLOWED_MODELS.has(requestedModel)) {
-    return {
-      error: `Unsupported model '${requestedModel}'. Allowed models: ${Array.from(ALLOWED_MODELS).join(", ")}.`,
-      code: "UNSUPPORTED_MODEL",
-      requestedModel,
-      allowedModels: Array.from(ALLOWED_MODELS),
-    };
+  const resolvedEarthEngine = resolveRequestedProviderAndModel(rawBody);
+  if (resolvedEarthEngine.error) {
+    return resolvedEarthEngine;
   }
-  const requestedProvider = MODEL_REGISTRY[requestedModel].provider;
+  const requestedModel = resolvedEarthEngine.model;
+  const requestedProvider = resolvedEarthEngine.provider;
 
   const rawCurrency =
     typeof rawBody.targetCurrency === "string" ? rawBody.targetCurrency.trim().toUpperCase() : "USD";
@@ -3379,6 +3708,7 @@ export async function handleRequest(request, env = {}, deps = {}) {
     if (validated.error) {
       return jsonResponse(
         {
+          provider: validated.provider || null,
           error: validated.error,
           code: validated.code || "INVALID_PAYLOAD",
           requestedModel: validated.requestedModel || null,
@@ -3389,141 +3719,34 @@ export async function handleRequest(request, env = {}, deps = {}) {
       );
     }
 
-    const activeProvider = validated.provider || "openai";
-    const activeApiKey = activeProvider === "openai" ? openAiKey : geminiKey;
-    if (!activeApiKey) {
-      const missingName = activeProvider === "openai" ? "OPENAI_API_KEY" : "GEMINI_API_KEY";
-      return jsonResponse(
-        {
-          error: `Server ${missingName} secret is not configured. Set ${missingName} in backend environment variables or Cloudflare Worker Secrets.`,
-          code: "MISSING_API_KEY",
-        },
-        503,
-        corsHeaders
-      );
-    }
-
-    const isJsonStructuredMode = validated.payload.generationConfig?.responseMimeType === "application/json";
-    if (validated.stream && activeProvider === "openai" && !isJsonStructuredMode) {
-      const lastUserPrompt = extractLastUserText(validated.payload.contents);
-      const plan = buildReasoningPlan({
-        promptText: lastUserPrompt,
-        historyTurnsCount: validated.payload.contents.length,
-        hasImages: validated.hasImages,
-        requestedMode: validated.reasoningMode,
-        modelId: validated.model,
-      });
-      const baseSys = validated.payload.systemInstruction?.parts?.[0]?.text || "";
-      const upstreamPayload = buildOpenAiResponsesPayload({
-        modelId: validated.model,
-        contents: validated.payload.contents,
-        systemInstruction: buildEngineSystemInstruction(baseSys, plan),
-        plan,
-        isJsonStructuredMode: false,
-        stream: true,
-      });
-
-      const streamOutcome = await streamOpenAiResponsesToSse({
+    if (validated.provider === "openai") {
+      return await handleOpenAiProviderRequest({
+        validated,
+        openAiKey,
         fetchImpl,
-        apiKey: activeApiKey,
-        upstreamPayload,
-        plan,
-        modelId: validated.model,
         timeoutMs,
         corsHeaders,
       });
-
-      if (streamOutcome.ok) {
-        return streamOutcome.response;
-      }
-      if (streamOutcome.customError) {
-        return jsonResponse(
-          {
-            error: streamOutcome.customError.message,
-            code: streamOutcome.customError.code,
-            retryable: streamOutcome.customError.retryable,
-          },
-          streamOutcome.customError.status,
-          corsHeaders
-        );
-      }
-      const upstream = streamOutcome.upstreamRes;
-      const classified = classifyOpenAiUpstreamError(
-        upstream.status,
-        upstream.text,
-        upstream.headers?.get?.("Retry-After") || null
-      );
-      const responseHeaders = { ...corsHeaders };
-      if (classified.retryAfterSec) {
-        responseHeaders["Retry-After"] = String(classified.retryAfterSec);
-      }
-      return jsonResponse(
-        {
-          provider: "openai",
-          error: classified.message,
-          code: classified.code,
-          quotaType: classified.quotaType,
-          retryable: classified.retryable,
-          retryAfterSec: classified.retryAfterSec,
-          modelRequested: validated.model,
-        },
-        upstream.status,
-        responseHeaders
-      );
     }
 
-    const outcome = await runReasoningPipeline({
-      validated,
-      apiKey: activeApiKey,
-      fetchImpl,
-      timeoutMs,
-    });
-
-    if (!outcome.ok) {
-      if (outcome.customError) {
-        return jsonResponse(
-          {
-            error: outcome.customError.message,
-            code: outcome.customError.code,
-            retryable: outcome.customError.retryable,
-          },
-          outcome.customError.status,
-          corsHeaders
-        );
-      }
-      const upstream = outcome.upstreamRes;
-      const classified =
-        outcome.provider === "openai"
-          ? classifyOpenAiUpstreamError(
-              upstream.status,
-              upstream.text,
-              upstream.headers?.get?.("Retry-After") || null
-            )
-          : classifyGeminiUpstreamError(
-              upstream.status,
-              upstream.text,
-              upstream.headers?.get?.("Retry-After") || null
-            );
-      const responseHeaders = { ...corsHeaders };
-      if (classified.retryAfterSec) {
-        responseHeaders["Retry-After"] = String(classified.retryAfterSec);
-      }
-      return jsonResponse(
-        {
-          provider: outcome.provider,
-          error: classified.message,
-          code: classified.code,
-          quotaType: classified.quotaType,
-          retryable: classified.retryable,
-          retryAfterSec: classified.retryAfterSec,
-          modelRequested: validated.model,
-        },
-        upstream.status,
-        responseHeaders
-      );
+    if (validated.provider === "gemini") {
+      return await handleGeminiProviderRequest({
+        validated,
+        geminiKey,
+        fetchImpl,
+        timeoutMs,
+        corsHeaders,
+      });
     }
 
-    return jsonResponse(outcome.data, 200, corsHeaders);
+    return jsonResponse(
+      {
+        error: `Unsupported provider '${validated.provider}'.`,
+        code: "UNSUPPORTED_PROVIDER",
+      },
+      400,
+      corsHeaders
+    );
   } catch (err) {
     if (err?.isTimeout) {
       return jsonResponse(

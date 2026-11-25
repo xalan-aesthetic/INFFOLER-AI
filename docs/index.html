@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css?v=20261125c" />
+  <link rel="stylesheet" href="./styles.css?v=20261125d" />
   <meta name="google-site-verification" content="Om7GhGfftaHC09g1tFhgVwqzQMmgXFK7NEo_Lw-V-LI" />
 </head>
 <body>
@@ -420,14 +420,6 @@
         </div>
 
         <div class="topbar-right">
-          <button type="button" class="icon-btn audio-toggle-btn active" id="btnSoundToggleTop" aria-label="Toggle sound effects" aria-pressed="true" title="Sound Effects">
-            <span id="soundIconTop">&#x1F50A;</span>
-          </button>
-
-          <button type="button" class="icon-btn audio-toggle-btn" id="btnMusicToggleTop" aria-label="Toggle ambient music" aria-pressed="false" title="Ambient Music">
-            <span id="musicIconTop">&#x1F3B5;</span>
-          </button>
-
           <div class="engine-selectors-group">
             <select id="providerSelect" class="provider-select" aria-label="Select AI provider">
               <option value="openai" selected>OpenAI</option>
@@ -457,14 +449,24 @@
             </select>
           </div>
 
-          <button type="button" class="icon-btn" id="btnThemeToggleTop" aria-label="Toggle theme" title="Switch Theme">
-            <span id="themeIconTop">&#x2600;&#xFE0F;</span>
-          </button>
+          <div class="topbar-utility-actions">
+            <button type="button" class="icon-btn audio-toggle-btn active" id="btnSoundToggleTop" aria-label="Toggle sound effects" aria-pressed="true" title="Sound Effects">
+              <span id="soundIconTop">&#x1F50A;</span>
+            </button>
 
-          <button type="button" class="topbar-profile-chip" id="btnTopbarAuth" title="Account &amp; Profile">
-            <span class="topbar-avatar-mini" id="topbarUserAvatar"><span>AI</span></span>
-            <span id="topbarUserLabel">Profile</span>
-          </button>
+            <button type="button" class="icon-btn audio-toggle-btn" id="btnMusicToggleTop" aria-label="Toggle ambient music" aria-pressed="false" title="Ambient Music">
+              <span id="musicIconTop">&#x1F3B5;</span>
+            </button>
+
+            <button type="button" class="icon-btn" id="btnThemeToggleTop" aria-label="Toggle theme" title="Switch Theme">
+              <span id="themeIconTop">&#x2600;&#xFE0F;</span>
+            </button>
+
+            <button type="button" class="topbar-profile-chip" id="btnTopbarAuth" title="Account &amp; Profile">
+              <span class="topbar-avatar-mini" id="topbarUserAvatar"><span>AI</span></span>
+              <span id="topbarUserLabel">Profile</span>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -1179,6 +1181,6 @@
 
   <div class="toast hidden" id="toastBanner" role="status" aria-live="polite"></div>
 
-  <script type="module" src="./app.js?v=20261125c"></script>
+  <script type="module" src="./app.js?v=20261125d"></script>
 </body>
 </html>

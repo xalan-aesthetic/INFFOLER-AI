@@ -636,6 +636,13 @@ body {
   gap: 8px;
 }
 
+.topbar-utility-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
 .icon-btn {
   width: 38px;
   height: 38px;
@@ -3097,31 +3104,122 @@ body {
     justify-content: center;
   }
   .topbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    align-items: center;
+    gap: 5px 6px;
     height: auto;
-    min-height: 54px;
+    min-height: 0;
     padding: 6px 10px;
-    flex-wrap: wrap;
+  }
+  .topbar-left {
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+    gap: 6px;
+  }
+  .topbar-brand {
+    min-width: 0;
+    gap: 5px;
+  }
+  .topbar-title {
+    font-size: 0.88rem;
+    white-space: nowrap;
   }
   .topbar-right {
+    display: contents;
+  }
+  .topbar-utility-actions {
+    grid-column: 2;
+    grid-row: 1;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    justify-self: end;
+  }
+  .topbar-left .icon-btn,
+  .topbar-utility-actions .icon-btn {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    min-height: 36px;
+    border-radius: 10px;
+    font-size: 0.94rem;
+  }
+  .topbar-profile-chip {
+    height: 36px;
+    min-height: 36px;
+    padding: 3px 8px 3px 3px;
     gap: 5px;
-    flex-wrap: wrap;
-    justify-content: flex-end;
+    max-width: 100px;
+    font-size: 0.7rem;
+  }
+  .topbar-avatar-mini {
+    width: 26px;
+    height: 26px;
+    font-size: 0.62rem;
   }
   .engine-selectors-group {
-    gap: 4px;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    display: grid;
+    grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.32fr) minmax(0, 1fr);
+    gap: 5px;
+    width: 100%;
   }
   .provider-select,
   .model-select,
   .mode-select {
-    max-width: 108px;
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    min-height: 36px;
     padding: 5px 7px;
-    font-size: 0.68rem;
+    font-size: 0.7rem;
+    text-overflow: ellipsis;
+  }
+  .chat-subbar {
+    padding: 5px 10px;
+    gap: 6px;
+  }
+  .active-chat-title {
+    font-size: 0.8rem;
+  }
+  .chat-cloud-hint {
+    display: none;
   }
   .engine-status-bar {
-    flex-direction: column;
-    align-items: flex-start;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px 6px;
+    padding: 4px 10px;
+  }
+  .engine-status-pills {
     gap: 4px;
-    padding: 6px 12px;
+  }
+  .engine-meta-pill {
+    padding: 2px 6px;
+    font-size: 0.6rem;
+  }
+  .engine-phase-text {
+    font-size: 0.6rem;
+  }
+}
+
+@media (max-width: 460px) {
+  .topbar .status-badge {
+    padding: 4px;
+    gap: 0;
+  }
+  #topbarProxyLabel {
+    display: none;
+  }
+  .topbar-profile-chip {
+    max-width: 82px;
+    padding-right: 7px;
   }
 }
 

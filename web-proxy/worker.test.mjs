@@ -14,6 +14,11 @@ import {
   resolveServerSecret,
   DEFAULT_PROVIDER,
   DEFAULT_MODEL,
+  OPENAI_MODELS,
+  GEMINI_MODELS,
+  resolveRequestedProviderAndModel,
+  handleOpenAiProviderRequest,
+  handleGeminiProviderRequest,
   validateAndSanitizeRequest,
   evaluateMathExpression,
   classifyTaskCategory,
@@ -4076,6 +4081,140 @@ test("OpenAI Responses API Default Provider: SSE streaming, multi-turn history, 
     globalThis.fetch = REAL_NODE_FETCH;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test("Independent OpenAI vs Gemini Routing, Provider-Scoped Validation, Error Codes & Mobile Header Compaction", async () => {
+  clearJwkCache();
+  const { jwt, publicJwk, now } = await generateTestKeyAndJwt(
+    { sub: "uid_routing_check", user_id: "uid_routing_check", email: "route@example.com", email_verified: true },
+    { kid: "route-kid-1" }
+  );
+
+  // 1. Independent provider-scoped validation (OpenAI never gets Gemini allowlist and vice versa)
+  assert.equal(OPENAI_MODELS.has("gpt-4.1-mini"), true);
+  assert.equal(GEMINI_MODELS.has("gpt-4.1-mini"), false);
+
+  const openAiBad = resolveRequestedProviderAndModel({ provider: "openai", model: "gemini-3.8-flash" });
+  assert.equal(openAiBad.code, "UNSUPPORTED_MODEL");
+  assert.equal(openAiBad.provider, "openai");
+  assert.ok(!openAiBad.error.includes("gemini-4-argon"), "OpenAI validation must never list Gemini models");
+  assert.ok(openAiBad.allowedModels.includes("gpt-4.1-mini"));
+
+  const geminiBad = resolveRequestedProviderAndModel({ provider: "gemini", model: "gpt-4.1-mini" });
+  assert.equal(geminiBad.code, "UNSUPPORTED_MODEL");
+  assert.equal(geminiBad.provider, "gemini");
+  assert.ok(!geminiBad.error.includes("gpt-4.1-mini\"."), "Gemini validation must list Gemini models");
+  assert.ok(geminiBad.allowedModels.includes("gemini-3.8-flash"));
+
+  const badProvider = resolveRequestedProviderAndModel({ provider: "unknown-ai", model: "gpt-4.1-mini" });
+  assert.equal(badProvider.code, "UNSUPPORTED_PROVIDER");
+
+  // 2. HTTP 400 when OpenAI provider receives a Gemini model directly at /
+  const crossMismatchRes = await handleRequest(
+    new Request("https://worker.example/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({
+        provider: "openai",
+        model: "gemini-3.8-flash",
+        payload: { contents: [{ role: "user", parts: [{ text: "Hello, who are you?" }] }] },
+      }),
+    }),
+    { OPENAI_API_KEY: "sk-proj-test", GEMINI_API_KEY: "gem-test", FIREBASE_PROJECT_ID: PROJECT_ID },
+    { nowSec: now, fetchImpl: async () => new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 }) }
+  );
+  assert.equal(crossMismatchRes.status, 400);
+  const crossBody = await crossMismatchRes.json();
+  assert.equal(crossBody.provider, "openai");
+  assert.equal(crossBody.code, "UNSUPPORTED_MODEL");
+  assert.ok(!crossBody.error.includes("gemini-4-argon"));
+
+  // 3. Independent handlers: OpenAI "Hello, who are you?" + Gemini switch + error codes (401/429/503)
+  const openAiValidated = validateAndSanitizeRequest({
+    provider: "openai",
+    model: "gpt-4.1-mini",
+    stream: false,
+    payload: { contents: [{ role: "user", parts: [{ text: "Hello, who are you?" }] }] },
+  });
+  assert.equal(openAiValidated.provider, "openai");
+  assert.equal(openAiValidated.model, "gpt-4.1-mini");
+
+  const openAiDirectRes = await handleOpenAiProviderRequest({
+    validated: openAiValidated,
+    openAiKey: "sk-proj-direct-route-key",
+    fetchImpl: async (url, init = {}) => {
+      assert.equal(String(url), "https://api.openai.com/v1/responses");
+      assert.equal(init.headers.Authorization, "Bearer sk-proj-direct-route-key");
+      const reqBody = JSON.parse(init.body);
+      assert.equal(reqBody.model, "gpt-4.1-mini");
+      assert.equal(reqBody.input[0].content[0].text, "Hello, who are you?");
+      return new Response(
+        JSON.stringify({ id: "resp_who", status: "completed", output_text: "I am INFFOLER AI running on GPT-4.1 Mini." }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    },
+  });
+  assert.equal(openAiDirectRes.status, 200);
+  const openAiDirectJson = await openAiDirectRes.json();
+  assert.equal(openAiDirectJson.providerUsed, "openai");
+  assert.equal(openAiDirectJson.modelUsed, "gpt-4.1-mini");
+  assert.match(openAiDirectJson.output_text, /GPT-4\.1 Mini/);
+
+  const geminiValidated = validateAndSanitizeRequest({
+    provider: "gemini",
+    model: "gemini-3.8-flash",
+    payload: { contents: [{ role: "user", parts: [{ text: "Hello, who are you?" }] }] },
+  });
+  const geminiDirectRes = await handleGeminiProviderRequest({
+    validated: geminiValidated,
+    geminiKey: "gem-direct-route-key",
+    fetchImpl: async url => {
+      assert.ok(String(url).includes("generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"));
+      return new Response(
+        JSON.stringify({ candidates: [{ content: { parts: [{ text: "I am INFFOLER AI running on Gemini 3.8 Flash." }] } }] }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    },
+  });
+  assert.equal(geminiDirectRes.status, 200);
+  const geminiDirectJson = await geminiDirectRes.json();
+  assert.equal(geminiDirectJson.providerUsed, "gemini");
+  assert.equal(geminiDirectJson.inffolerReasoning.modelUsed, "gemini-3.8-flash");
+
+  // Missing API key -> 503 for selected provider only
+  const neverFetch = async () => { throw new Error("Must not call upstream without API key"); };
+  const missingOpenAi = await handleOpenAiProviderRequest({ validated: openAiValidated, openAiKey: "", fetchImpl: neverFetch });
+  assert.equal(missingOpenAi.status, 503);
+  const missingGemini = await handleGeminiProviderRequest({ validated: geminiValidated, geminiKey: "", fetchImpl: neverFetch });
+  assert.equal(missingGemini.status, 503);
+
+  // Upstream 401 & 429 from OpenAI propagate cleanly without switching to Gemini
+  const openAi401 = await handleOpenAiProviderRequest({
+    validated: openAiValidated,
+    openAiKey: "sk-proj-bad",
+    fetchImpl: async () => new Response(JSON.stringify({ error: { message: "Incorrect API key" } }), { status: 401 }),
+  });
+  assert.equal(openAi401.status, 401);
+  assert.equal((await openAi401.json()).code, "INVALID_API_KEY");
+
+  const openAi429 = await handleOpenAiProviderRequest({
+    validated: openAiValidated,
+    openAiKey: "sk-proj-rate",
+    fetchImpl: async () =>
+      new Response(JSON.stringify({ error: { code: "rate_limit_exceeded", message: "Please try again in 3s." } }), { status: 429 }),
+  });
+  assert.equal(openAi429.status, 429);
+  assert.equal((await openAi429.json()).quotaType, "rate_limit");
+
+  // 4. Mobile header CSS & HTML optimization check (no excessive wrapping, compact grid, zero blur)
+  const html = fs.readFileSync(path.resolve(__dirname, "../docs/index.html"), "utf8");
+  const css = fs.readFileSync(path.resolve(__dirname, "../docs/styles.css"), "utf8");
+  assert.ok(html.includes('class="topbar-utility-actions"'), "Mobile utility controls grouped cleanly for Row 1");
+  assert.ok(html.includes('id="providerSelect"') && html.includes('id="modelSelect"') && html.includes('id="reasoningModeSelect"'));
+  assert.ok(!/backdrop-filter|filter\s*:\s*blur/i.test(css), "Must keep zero backdrop-filter/blur");
+  assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.topbar\s*\{[\s\S]*?display:\s*grid;/);
+  assert.match(css, /\.engine-selectors-group\s*\{[\s\S]*?grid-template-columns:/);
+  assert.match(css, /min-height:\s*36px/);
 });
 
 

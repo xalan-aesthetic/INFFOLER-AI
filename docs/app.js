@@ -2226,17 +2226,22 @@ function classifyClientAiError(status, errJson = null, retryAfterHeader = null, 
     };
   }
 
-  if (serverCode === "UNSUPPORTED_MODEL" || status === 404) {
+  if (serverCode === "UNSUPPORTED_MODEL" || serverCode === "UNSUPPORTED_PROVIDER" || status === 404) {
+    const isStaleGeminiOnlyWorker =
+      activeProvider === "openai" &&
+      /unsupported model\s*['"]?(gpt-|o4-)/i.test(rawMessage) &&
+      /gemini-/i.test(rawMessage);
     return {
       kind: "unsupported_model",
-      code: "UNSUPPORTED_MODEL",
+      code: serverCode || "UNSUPPORTED_MODEL",
       quotaType: null,
       retryable: false,
       retryAfterSec: null,
-      badgeLabel: "UNSUPPORTED MODEL",
-      userMessage:
-        rawMessage ||
-        "The selected AI model is unavailable or unsupported. Please choose GPT-4.1 Mini, GPT-4.1, GPT-4o Mini, o4-mini, or a Gemini model.",
+      badgeLabel: isStaleGeminiOnlyWorker ? "BACKEND DEPLOYMENT OUTDATED (400)" : "UNSUPPORTED MODEL",
+      userMessage: isStaleGeminiOnlyWorker
+        ? `${rawMessage} The live Cloudflare Worker proxy has not been redeployed with the OpenAI Responses API update yet. Deploy web-proxy/cloudflare-worker.js with OPENAI_API_KEY configured in Worker Secrets.`
+        : rawMessage ||
+          "The selected AI model is unavailable or unsupported. Please choose GPT-4.1 Mini, GPT-4.1, GPT-4o Mini, o4-mini, or a Gemini model.",
     };
   }
 
@@ -2497,7 +2502,8 @@ async function callProxyOnce(
     throw new Error("Authentication required. Please log in to access INFFOLER AI.");
   }
 
-  const providerId = getProviderForModel(modelId);
+  const resolvedModelId = normalizeModel(modelId);
+  const providerId = getProviderForModel(resolvedModelId);
   const wantsStream = Boolean(onStreamDelta && !responseMimeType);
 
   const payload = {
@@ -2528,7 +2534,7 @@ async function callProxyOnce(
       },
       body: JSON.stringify({
         provider: providerId,
-        model: modelId,
+        model: resolvedModelId,
         stream: wantsStream,
         reasoningMode: normalizeReasoningMode(reasoningMode),
         payload,
@@ -4686,6 +4692,7 @@ async function executeEarthRootProxyFallback({
         Authorization: `Bearer ${idToken}`,
       },
       body: JSON.stringify({
+        provider: getProviderForModel(model),
         model,
         reasoningMode: "balanced",
         payload,
@@ -4814,6 +4821,7 @@ async function runEarthQuery(rawQuery, { isFollowUp = false } = {}) {
           },
           body: JSON.stringify({
             query,
+            provider: getProviderForModel(selectedModel),
             model: selectedModel,
             targetCurrency,
             filters,
