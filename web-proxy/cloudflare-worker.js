@@ -1697,9 +1697,9 @@ export async function fetchLiveExchangeRates(fetchImpl, targetCurrency = "USD", 
     };
   }
 
-  const fallback = await tryFetchJson("https://api.frankfurter.app/latest?from=USD");
-  if (fallback && fallback.rates && typeof fallback.rates === "object") {
-    const rates = { USD: 1, ...fallback.rates };
+  const fallbackV1 = await tryFetchJson("https://api.frankfurter.dev/v1/latest?base=USD");
+  if (fallbackV1 && fallbackV1.rates && typeof fallbackV1.rates === "object") {
+    const rates = { USD: 1, ...fallbackV1.rates };
     const rateToTarget = Number.isFinite(Number(rates[cleanTarget])) ? Number(rates[cleanTarget]) : null;
     return {
       ok: true,
@@ -1707,7 +1707,24 @@ export async function fetchLiveExchangeRates(fetchImpl, targetCurrency = "USD", 
       targetCurrency: cleanTarget,
       rateToTarget,
       rates,
-      asOfDate: String(fallback.date || new Date().toISOString().slice(0, 10)),
+      asOfDate: String(fallbackV1.date || new Date().toISOString().slice(0, 10)),
+      provider: "api.frankfurter.dev (ECB)",
+      providerUrl: "https://api.frankfurter.dev/v1/latest?base=USD",
+      isLiveFx: true,
+    };
+  }
+
+  const fallbackLegacy = await tryFetchJson("https://api.frankfurter.app/latest?from=USD");
+  if (fallbackLegacy && fallbackLegacy.rates && typeof fallbackLegacy.rates === "object") {
+    const rates = { USD: 1, ...fallbackLegacy.rates };
+    const rateToTarget = Number.isFinite(Number(rates[cleanTarget])) ? Number(rates[cleanTarget]) : null;
+    return {
+      ok: true,
+      base: "USD",
+      targetCurrency: cleanTarget,
+      rateToTarget,
+      rates,
+      asOfDate: String(fallbackLegacy.date || new Date().toISOString().slice(0, 10)),
       provider: "api.frankfurter.app (ECB)",
       providerUrl: "https://api.frankfurter.app/latest?from=USD",
       isLiveFx: true,
@@ -1727,12 +1744,25 @@ export async function fetchLiveExchangeRates(fetchImpl, targetCurrency = "USD", 
   };
 }
 
-export function validateEarthQueryRequest(rawBody) {
-  if (!rawBody || typeof rawBody !== "object") {
+export function validateEarthQueryRequest(rawBodyInput) {
+  if (!rawBodyInput || typeof rawBodyInput !== "object") {
     return { error: "Invalid JSON request body.", code: "INVALID_PAYLOAD" };
   }
 
-  const query = typeof rawBody.query === "string" ? rawBody.query.trim() : "";
+  const wrapped =
+    rawBodyInput.payload && typeof rawBodyInput.payload === "object" ? rawBodyInput.payload : null;
+  const rawBody = wrapped && typeof rawBodyInput.query !== "string"
+    ? { ...wrapped, ...rawBodyInput }
+    : rawBodyInput;
+
+  let query = typeof rawBody.query === "string" ? rawBody.query.trim() : "";
+  if (!query && Array.isArray(wrapped?.contents)) {
+    const lastUserTurn = [...wrapped.contents].reverse().find(t => t?.role === "user");
+    const firstText = Array.isArray(lastUserTurn?.parts)
+      ? lastUserTurn.parts.map(p => (typeof p?.text === "string" ? p.text : "")).join(" ").trim()
+      : "";
+    query = firstText;
+  }
   if (query.length < 2) {
     return { error: "Please enter a location, product, commodity, or global market question.", code: "EMPTY_PROMPT" };
   }
@@ -2273,6 +2303,7 @@ export async function handleRequest(request, env = {}, deps = {}) {
   const fetchImpl = deps.fetchImpl || fetch;
   const timeoutMs = typeof deps.timeoutMs === "number" ? deps.timeoutMs : DEFAULT_UPSTREAM_TIMEOUT_MS;
   const url = new URL(request.url);
+  const pathname = (url.pathname || "/").replace(/\/+$/, "") || "/";
   const origin = request.headers.get("Origin") || "";
   const corsHeaders = getCorsHeaders(origin);
 
@@ -2284,7 +2315,7 @@ export async function handleRequest(request, env = {}, deps = {}) {
     return new Response(null, { status: 204, headers: corsHeaders });
   }
 
-  if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
+  if (request.method === "GET" && (pathname === "/" || pathname === "/health")) {
     return jsonResponse(
       {
         ok: true,
@@ -2328,7 +2359,7 @@ export async function handleRequest(request, env = {}, deps = {}) {
     );
   }
 
-  if ((request.method === "GET" || request.method === "POST") && url.pathname === "/auth/session") {
+  if ((request.method === "GET" || request.method === "POST") && pathname === "/auth/session") {
     const phoneMasked = authCheck.phoneNumber
       ? `${authCheck.phoneNumber.slice(0, 3)}••••••${authCheck.phoneNumber.slice(-4)}`
       : null;
@@ -2349,7 +2380,7 @@ export async function handleRequest(request, env = {}, deps = {}) {
     );
   }
 
-  if (request.method === "GET" && url.pathname === "/earth/rates") {
+  if (request.method === "GET" && pathname === "/earth/rates") {
     const targetCurrency = (url.searchParams.get("target") || "USD").toUpperCase();
     const fxData = await fetchLiveExchangeRates(fetchImpl, targetCurrency, timeoutMs);
     return jsonResponse(fxData, fxData.ok ? 200 : 503, corsHeaders);
@@ -2407,7 +2438,7 @@ export async function handleRequest(request, env = {}, deps = {}) {
       return jsonResponse({ error: "Malformed JSON payload." }, 400, corsHeaders);
     }
 
-    if (url.pathname === "/earth/query") {
+    if (pathname === "/earth/query") {
       const validatedEarth = validateEarthQueryRequest(parsedBody);
       if (validatedEarth.error) {
         return jsonResponse(

@@ -51,6 +51,8 @@ import {
   filterAndSortEarthEntries,
   detectLocalMapAction,
   projectGlobePoint,
+  sanitizeEarthErrorMessage,
+  createEarthGlobeController,
 } from "../docs/earth-intelligence.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -3431,4 +3433,276 @@ test("Part 3 & 4 — THE EARTH Backend & E2E: Auth guard, Live FX + Search Groun
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test("THE EARTH API Diagnostic, Payload Compatibility Fallback (all 6 Popular Searches), Error/Retry & Three.js Assets", async () => {
+  clearJwkCache();
+  const { jwt, publicJwk, now } = await generateTestKeyAndJwt(
+    { sub: "uid_earth_diag", user_id: "uid_earth_diag", email: "diag@example.com", email_verified: true },
+    { kid: "earth-diag-1" }
+  );
+  const env = { GEMINI_API_KEY: "secret-diag-key", FIREBASE_PROJECT_ID: PROJECT_ID };
+
+  // 1. Validate Worker handles trailing slash & payload-wrapped Earth queries
+  const wrappedReq = validateEarthQueryRequest({
+    model: "gemini-3.8-flash",
+    targetCurrency: "INR",
+    payload: { query: "Where is sugar produced the most globally?" },
+  });
+  assert.equal(wrappedReq.query, "Where is sugar produced the most globally?");
+  assert.equal(wrappedReq.targetCurrency, "INR");
+
+  const contentsWrappedReq = validateEarthQueryRequest({
+    payload: { contents: [{ role: "user", parts: [{ text: "24K Gold Price Comparison" }] }] },
+  });
+  assert.equal(contentsWrappedReq.query, "24K Gold Price Comparison");
+
+  const trailingSlashRes = await handleRequest(
+    new Request("https://worker.example/earth/rates/?target=INR", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${jwt}` },
+    }),
+    env,
+    {
+      nowSec: now,
+      fetchImpl: async url => {
+        if (String(url) === GOOGLE_JWK_URL) return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 });
+        if (String(url).startsWith("https://open.er-api.com/")) {
+          return new Response(JSON.stringify({ result: "success", rates: { USD: 1, INR: 92.2 } }), { status: 200 });
+        }
+        return new Response("{}", { status: 404 });
+      },
+    }
+  );
+  assert.equal(trailingSlashRes.status, 200);
+  const trailingRatesJson = await trailingSlashRes.json();
+  assert.equal(trailingRatesJson.rateToTarget, 92.2);
+
+  // 2. Sanitize raw technical errors so "Missing 'payload' object.", undefined, or keys never leak to UI
+  assert.ok(!sanitizeEarthErrorMessage("Missing 'payload' object.").includes("payload' object"));
+  assert.ok(!sanitizeEarthErrorMessage(undefined).includes("undefined"));
+  assert.ok(!sanitizeEarthErrorMessage("Error AIzaSySecretKey123456").includes("AIzaSySecretKey123456"));
+
+  // 3. Verify Three.js vendor module & NASA Blue Marble equirectangular assets are bundled locally
+  for (const relPath of [
+    "../docs/vendor/three.module.min.js",
+    "../docs/assets/earth/earth_albedo_2048.jpg",
+    "../docs/assets/earth/earth_normal_2048.jpg",
+    "../docs/assets/earth/earth_specular_2048.jpg",
+  ]) {
+    const absPath = path.resolve(__dirname, relPath);
+    assert.ok(fs.existsSync(absPath), `Missing bundled Earth asset: ${relPath}`);
+    assert.ok(fs.statSync(absPath).size > 10_000, `Asset looks empty: ${relPath}`);
+  }
+  const earthSrc = fs.readFileSync(path.resolve(__dirname, "../docs/earth-intelligence.js"), "utf8");
+  assert.ok(earthSrc.includes("./vendor/three.module.min.js") && earthSrc.includes("SphereGeometry"));
+  assert.ok(earthSrc.includes("./assets/earth/earth_albedo_2048.jpg") && earthSrc.includes("BackSide"));
+
+  // 4. E2E Compatibility Test against simulated live Worker v2.1.0 (returns 400 "Missing 'payload' object." on /earth/query)
+  const html = fs.readFileSync(path.resolve(__dirname, "../docs/index.html"), "utf8");
+  const originalJs = fs.readFileSync(path.resolve(__dirname, "../docs/app.js"), "utf8");
+  const { document } = createLightweightDomFromHtml(html);
+  const store = new Map();
+  const sessStore = new Map([[INTRO_SESSION_KEY, "1"]]);
+  globalThis.document = document;
+  globalThis.localStorage = { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: k => store.delete(k) };
+  globalThis.sessionStorage = { getItem: k => (sessStore.has(k) ? sessStore.get(k) : null), setItem: (k, v) => sessStore.set(k, String(v)), removeItem: k => sessStore.delete(k) };
+  globalThis.window = {
+    innerWidth: 390,
+    innerHeight: 844,
+    devicePixelRatio: 2,
+    location: { hostname: "xalan-aesthetic.github.io" },
+    matchMedia: () => ({ matches: false }),
+    addEventListener: () => {},
+    confirm: () => true,
+  };
+  globalThis.requestAnimationFrame = cb => (cb?.name === "tick" || cb?.name === "frame" ? 1 : setTimeout(() => cb(Date.now()), 0));
+  globalThis.cancelAnimationFrame = id => clearTimeout(id);
+  Object.defineProperty(globalThis, "navigator", { value: { clipboard: { writeText: async () => {} } }, configurable: true });
+
+  const topicSamples = [
+    { match: /clothes|apparel/i, city: "Surat", country: "India", cc: "IN", lat: 21.17, lng: 72.83, price: 3.1, unit: "per piece", mType: "wholesale" },
+    { match: /sugar/i, city: "Sao Paulo", country: "Brazil", cc: "BR", lat: -23.55, lng: -46.63, price: 410, unit: "per metric ton", mType: "production" },
+    { match: /gold/i, city: "Zurich", country: "Switzerland", cc: "CH", lat: 47.37, lng: 8.54, price: 86.2, unit: "per 24K gram", mType: "retail" },
+    { match: /petrol|fuel/i, city: "Caracas", country: "Venezuela", cc: "VE", lat: 10.48, lng: -66.9, price: 0.04, unit: "per liter", mType: "retail" },
+    { match: /electronics|smartphone/i, city: "Shenzhen", country: "China", cc: "CN", lat: 22.54, lng: 114.05, price: 320, unit: "per unit", mType: "wholesale" },
+    { match: /coffee|cocoa/i, city: "Minas Gerais", country: "Brazil", cc: "BR", lat: -18.51, lng: -44.55, price: 5.4, unit: "per kg", mType: "production" },
+  ];
+
+  let earthEndpointCalls = 0;
+  let rootProxyEarthCalls = 0;
+  let failNextRootCall = false;
+
+  globalThis.fetch = async (url, init = {}) => {
+    const sUrl = String(url);
+    if (sUrl.startsWith("https://www.googleapis.com/identitytoolkit/v3/relyingparty/getProjectConfig")) {
+      return new Response(JSON.stringify({ authorizedDomains: ["xalan-aesthetic.github.io"] }), { status: 200 });
+    }
+    if (sUrl.startsWith("https://open.er-api.com/v6/latest/USD")) {
+      return new Response(
+        JSON.stringify({ result: "success", time_last_update_utc: "2026-11-25", rates: { USD: 1, INR: 90, EUR: 0.91 } }),
+        { status: 200 }
+      );
+    }
+    if (sUrl.startsWith("https://inffoler-ai-proxy.xalanvetrnen.workers.dev/earth/query")) {
+      earthEndpointCalls += 1;
+      // Simulate live Cloudflare Worker v2.1.0 returning exact error observed by user
+      return new Response(JSON.stringify({ error: "Missing 'payload' object.", code: "INVALID_PAYLOAD" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (sUrl.startsWith("https://inffoler-ai-proxy.xalanvetrnen.workers.dev")) {
+      const parsedBody = JSON.parse(init.body || "{}");
+      if (init.method === "GET" || sUrl.endsWith("/auth/session")) {
+        return new Response(JSON.stringify({ error: "Method not allowed" }), { status: 405 });
+      }
+      assert.ok(parsedBody.payload && typeof parsedBody.payload === "object", "Root fallback MUST include payload object");
+      rootProxyEarthCalls += 1;
+      if (failNextRootCall) {
+        failNextRootCall = false;
+        return new Response(JSON.stringify({ error: "Upstream unavailable", code: "TEMPORARY_SERVER_ERROR" }), { status: 503 });
+      }
+      const userPrompt = parsedBody.payload.contents?.[0]?.parts?.[0]?.text || "";
+      const matched = topicSamples.find(t => t.match.test(userPrompt)) || topicSamples[0];
+      return handleRequest(new Request(url, init), env, {
+        nowSec: now,
+        fetchImpl: async u => {
+          if (String(u) === GOOGLE_JWK_URL) return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 });
+          return new Response(
+            JSON.stringify({
+              candidates: [
+                {
+                  content: {
+                    parts: [
+                      {
+                        text: JSON.stringify({
+                          queryIntent: "comparison",
+                          commodity: `${matched.city} Benchmark`,
+                          unitSpec: matched.unit,
+                          dataUnavailable: false,
+                          summary: `Verified regional hub analysis for ${matched.city}, ${matched.country}.`,
+                          insights: [`Leading benchmark observed in ${matched.city}.`],
+                          entries: [
+                            {
+                              id: `${matched.city.toLowerCase().replace(/\s+/g, "-")}`,
+                              country: matched.country,
+                              countryCode: matched.cc,
+                              city: matched.city,
+                              lat: matched.lat,
+                              lng: matched.lng,
+                              marketName: `${matched.city} Hub`,
+                              marketType: matched.mType,
+                              originalPriceNumeric: matched.price,
+                              originalCurrency: "USD",
+                              unit: matched.unit,
+                              productionVolume: matched.mType === "production" ? "32M metric tons" : "",
+                              productionSharePct: matched.mType === "production" ? 28 : null,
+                              dataDate: "Nov 2026",
+                              freshness: "historical",
+                              isEstimate: true,
+                              availability: "Active hub",
+                              sourceTitle: "Market Reference",
+                              sourceUrl: "",
+                            },
+                          ],
+                        }),
+                      },
+                    ],
+                  },
+                },
+              ],
+            }),
+            { status: 200 }
+          );
+        },
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "inffoler-earth-diag-"));
+  try {
+    fs.writeFileSync(path.join(tmpDir, "firebase-app.js"), `const apps=[]; export const getApps=()=>apps; export const getApp=()=>apps[0]; export function initializeApp(c){const a={cfg:c,options:c};apps.push(a);return a;}`);
+    fs.writeFileSync(
+      path.join(tmpDir, "firebase-auth.js"),
+      `export const __state={currentUser:null,listeners:[]};
+       export class GoogleAuthProvider{setCustomParameters(){}} export class OAuthProvider{setCustomParameters(){}addScope(){}}
+       export class EmailAuthProvider{static credential(e,p){return{e,p};}} export class RecaptchaVerifier{clear(){}}
+       export const browserLocalPersistence={}; export const getAuth=()=>__state; export const setPersistence=async()=>{};
+       export function onAuthStateChanged(_a,cb){__state.listeners.push(cb);cb(__state.currentUser);return()=>{};}
+       export const getRedirectResult=async()=>null;
+       export async function signInWithEmailAndPassword(_a,email){
+         const u={uid:"uid_earth_diag",email,displayName:"Diag User",providerData:[{providerId:"password"}],getIdToken:async()=>${JSON.stringify(jwt)},reload:async()=>{}};
+         __state.currentUser=u; await Promise.all(__state.listeners.map(f=>f(u))); return{user:u};
+       }
+       export async function createUserWithEmailAndPassword(){} export async function updateProfile(){}
+       export async function signInWithPopup(){} export async function signInWithRedirect(){}
+       export async function signInWithPhoneNumber(){return{async confirm(){return{user:null};}};}
+       export async function sendPasswordResetEmail(){} export async function linkWithPopup(){} export async function linkWithRedirect(){}
+       export async function linkWithCredential(){} export async function linkWithPhoneNumber(){return{async confirm(){return{user:null};}};}
+       export async function deleteUser(){} export async function signOut(){}`
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "firebase-firestore.js"),
+      `export const getFirestore=()=>({}); export const doc=(_d,...p)=>p.join("/"); export const collection=(_d,...p)=>p.join("/");
+       export const query=c=>c; export const orderBy=()=>null; export const limit=()=>null; export const serverTimestamp=()=>"now"; export const increment=n=>n;
+       export const getDoc=async()=>({exists:()=>false,data:()=>({})}); export const setDoc=async()=>{}; export const updateDoc=async()=>{}; export const deleteDoc=async()=>{};
+       export const getDocs=async()=>({docs:[]}); export const writeBatch=()=>({set(){},update(){},delete(){},async commit(){}}); export const onSnapshot=(_q,cb)=>{cb({docs:[]});return()=>{};};`
+    );
+    const patched = originalJs
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js", "./firebase-app.js")
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js", "./firebase-auth.js")
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js", "./firebase-firestore.js");
+    fs.writeFileSync(path.join(tmpDir, "app.js"), patched);
+    for (const f of ["reasoning-engine.js", "auth-providers.js", "intro-cinema.js", "earth-intelligence.js"]) {
+      fs.copyFileSync(path.resolve(__dirname, `../docs/${f}`), path.join(tmpDir, f));
+    }
+
+    await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
+    await new Promise(r => setTimeout(r, 20));
+    document.getElementById("loginEmail").value = "diag@example.com";
+    document.getElementById("loginPassword").value = "pass1234";
+    await document.getElementById("emailLoginForm").submit();
+    await new Promise(r => setTimeout(r, 20));
+    await document.querySelectorAll('[data-nav="earth"]')[0].click();
+
+    document.getElementById("earthCurrencySelect").value = "INR";
+
+    // Test ALL 6 Popular Search sections individually against simulated stale v2.1.0 Worker!
+    const popularCards = document.getElementById("earthPopularGrid").querySelectorAll("[data-earth-popular]");
+    assert.equal(popularCards.length, 6);
+    const expectedCities = ["Surat", "Sao Paulo", "Zurich", "Caracas", "Shenzhen", "Minas Gerais"];
+    for (let i = 0; i < popularCards.length; i++) {
+      await popularCards[i].click();
+      await new Promise(r => setTimeout(r, 35));
+      const resultsHtml = document.getElementById("earthResultsList").innerHTML;
+      const summaryText = document.getElementById("earthSummaryText").textContent;
+      assert.ok(!summaryText.includes("Missing 'payload'"), "Raw payload error must never surface in UI");
+      assert.ok(resultsHtml.includes(expectedCities[i]), `Section ${i + 1} must render ${expectedCities[i]}`);
+    }
+    assert.equal(earthEndpointCalls, 1, "Should detect missing /earth/query once and remember fallback");
+    assert.equal(rootProxyEarthCalls, 6, "All 6 sections must succeed cleanly via root proxy + live FX");
+    assert.match(document.getElementById("earthFxStatusBadge").textContent, /Live FX \(INR/);
+
+    // Verify Error State + Retry button recovery
+    failNextRootCall = true;
+    await popularCards[2].click();
+    await new Promise(r => setTimeout(r, 35));
+    assert.ok(document.getElementById("earthResultsList").innerHTML.includes("btnEarthRetry"));
+    await document.getElementById("btnEarthRetry").click();
+    await new Promise(r => setTimeout(r, 35));
+    assert.ok(document.getElementById("earthResultsList").innerHTML.includes("Zurich"), "Retry button must recover cleanly");
+
+    // Verify Globe Controller state transitions in headless fallback
+    const globeCtrl = createEarthGlobeController({ canvasId: "earthGlobeCanvas" });
+    globeCtrl.setMode("globe");
+    globeCtrl.adjustZoom(0.22);
+    assert.equal(globeCtrl.getState().zoom, 1.22);
+    globeCtrl.resetView();
+    assert.equal(globeCtrl.getState().zoom, 1);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 

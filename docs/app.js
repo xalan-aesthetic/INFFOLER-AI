@@ -75,16 +75,20 @@ import {
 import {
   createCinematicIntroController,
   hasIntroPlayedThisSession,
-} from "./intro-cinema.js?v=20261125a";
+} from "./intro-cinema.js?v=20261125b";
 import {
   EARTH_POPULAR_SEARCHES,
   sanitizeExternalHref,
+  sanitizeEarthErrorMessage,
   formatCurrencyAmount,
   classifyEarthMarkerTone,
   filterAndSortEarthEntries,
   detectLocalMapAction,
+  fetchClientLiveExchangeRates,
+  buildEarthFallbackRequestPayload,
+  normalizeEarthClientResponse,
   createEarthGlobeController,
-} from "./earth-intelligence.js?v=20261125a";
+} from "./earth-intelligence.js?v=20261125b";
 
 /* =========================================================================
  * PUBLIC CLOUDFLARE WORKER PROXY (GEMINI_API_KEY LIVES ONLY IN CLOUDFLARE SECRETS)
@@ -296,8 +300,12 @@ let earthState = {
   targetCurrency: "USD",
 };
 
+let earthEndpointSupported = null;
+
 const earthGlobeController = createEarthGlobeController({
   canvasId: "earthGlobeCanvas",
+  flatCanvasId: "earthFlatCanvas",
+  labelsLayerId: "earthPinLabelsLayer",
   onSelectEntry: entry => {
     if (entry) selectEarthLocation(entry.id, false);
   },
@@ -4295,6 +4303,79 @@ function renderEarthResultsView(data, filteredList) {
   renderEarthLocationPopup(firstEntry);
 }
 
+async function executeEarthRootProxyFallback({
+  query,
+  model,
+  targetCurrency,
+  filters,
+  userLocation,
+  followUpHistory,
+}) {
+  const payload = buildEarthFallbackRequestPayload({
+    query,
+    targetCurrency,
+    filters,
+    userLocation,
+    followUpHistory,
+  });
+
+  const sendRootPost = async forceRefresh => {
+    const idToken = await currentUser.getIdToken(forceRefresh);
+    return fetch(PUBLIC_PROXY_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${idToken}`,
+      },
+      body: JSON.stringify({
+        model,
+        reasoningMode: "balanced",
+        payload,
+      }),
+    });
+  };
+
+  const [fxData, firstRes] = await Promise.all([
+    fetchClientLiveExchangeRates(fetch, targetCurrency),
+    sendRootPost(false),
+  ]);
+
+  let res = firstRes;
+  if (res.status === 401 && currentUser) {
+    res = await sendRootPost(true);
+  }
+
+  const bodyText = await res.text();
+  let errJson = null;
+  if (!res.ok) {
+    try {
+      errJson = JSON.parse(bodyText);
+    } catch { /* ignore */ }
+    const classified = classifyClientAiError(
+      res.status,
+      errJson,
+      res.headers?.get?.("Retry-After") || null,
+      bodyText
+    );
+    throw new Error(sanitizeEarthErrorMessage(classified.userMessage));
+  }
+
+  const geminiData = JSON.parse(bodyText);
+  const rawText = geminiData?.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("")?.trim() || "";
+  if (!rawText) {
+    throw new Error("Global market intelligence returned an empty response. Please tap Retry.");
+  }
+
+  return normalizeEarthClientResponse({
+    rawText,
+    query,
+    model,
+    targetCurrency,
+    filters,
+    fxData,
+  });
+}
+
 async function runEarthQuery(rawQuery, { isFollowUp = false } = {}) {
   if (!currentUser) {
     showToast("Please sign in to explore THE EARTH.");
@@ -4331,44 +4412,111 @@ async function runEarthQuery(rawQuery, { isFollowUp = false } = {}) {
   const btn = document.getElementById("btnEarthSearch");
   const followBtn = document.getElementById("btnEarthFollowUp");
   const summaryEl = document.getElementById("earthSummaryText");
+  const srcBadge = document.getElementById("earthSourceStatusBadge");
+  const resultsEl = document.getElementById("earthResultsList");
+  const listHeading = document.getElementById("earthListHeading");
+
   if (btn) {
     btn.disabled = true;
     btn.textContent = "Scanning Globe…";
   }
   if (followBtn) followBtn.disabled = true;
-  if (summaryEl) summaryEl.textContent = "Querying global search grounding & live FX rates…";
+  if (srcBadge) srcBadge.textContent = "Querying Live Data…";
+  if (summaryEl) summaryEl.textContent = `Scanning global markets & live FX for "${query}"…`;
+  if (listHeading) listHeading.textContent = "Scanning Global Locations…";
+  if (resultsEl) {
+    resultsEl.innerHTML = `
+      <div class="phase-card earth-loading-card" id="earthLoadingCard">
+        <div class="earth-spinner" aria-hidden="true"></div>
+        <div>
+          <h4>SCANNING GLOBAL INTELLIGENCE</h4>
+          <p>Fetching verified regional markets, unit conversions, and coordinates…</p>
+        </div>
+      </div>
+    `;
+  }
 
   const targetCurrency = document.getElementById("earthCurrencySelect")?.value || earthState.targetCurrency || "USD";
   earthState.targetCurrency = targetCurrency;
   const filters = getEarthFiltersFromUi();
+  const selectedModel = getSelectedModel();
+  const followUpHistory = isFollowUp ? earthState.followUpHistory : [];
 
   try {
-    const idToken = await currentUser.getIdToken();
-    const res = await fetch(`${PUBLIC_PROXY_URL}/earth/query`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${idToken}`,
-      },
-      body: JSON.stringify({
+    let parsed = null;
+
+    if (earthEndpointSupported !== false) {
+      const sendEarthPost = async forceRefresh => {
+        const idToken = await currentUser.getIdToken(forceRefresh);
+        return fetch(`${PUBLIC_PROXY_URL}/earth/query`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({
+            query,
+            model: selectedModel,
+            targetCurrency,
+            filters,
+            userLocation: earthState.userLocation,
+            followUpHistory,
+          }),
+        });
+      };
+
+      let res = await sendEarthPost(false);
+      if (res.status === 401 && currentUser) {
+        res = await sendEarthPost(true);
+      }
+
+      const bodyText = await res.text();
+      let jsonBody = null;
+      try {
+        jsonBody = JSON.parse(bodyText);
+      } catch {
+        jsonBody = null;
+      }
+
+      const isMissingEarthRoute =
+        res.status === 404 ||
+        res.status === 405 ||
+        (res.status === 400 &&
+          (jsonBody?.code === "INVALID_PAYLOAD" ||
+            /missing\s*['"]?payload['"]?/i.test(String(jsonBody?.error || bodyText))));
+
+      if (res.ok && jsonBody) {
+        earthEndpointSupported = true;
+        parsed = jsonBody;
+      } else if (isMissingEarthRoute) {
+        // Deployed Worker only exposes root Gemini proxy (`/`) -> execute clean payload-compatible query + live FX
+        earthEndpointSupported = false;
+        parsed = await executeEarthRootProxyFallback({
+          query,
+          model: selectedModel,
+          targetCurrency,
+          filters,
+          userLocation: earthState.userLocation,
+          followUpHistory,
+        });
+      } else {
+        const classified = classifyClientAiError(
+          res.status,
+          jsonBody,
+          res.headers?.get?.("Retry-After") || null,
+          bodyText
+        );
+        throw new Error(sanitizeEarthErrorMessage(jsonBody?.error || classified.userMessage));
+      }
+    } else {
+      parsed = await executeEarthRootProxyFallback({
         query,
-        model: getSelectedModel(),
+        model: selectedModel,
         targetCurrency,
         filters,
         userLocation: earthState.userLocation,
-        followUpHistory: isFollowUp ? earthState.followUpHistory : [],
-      }),
-    });
-
-    const bodyText = await res.text();
-    let parsed = null;
-    try {
-      parsed = JSON.parse(bodyText);
-    } catch {
-      parsed = null;
-    }
-    if (!res.ok || !parsed) {
-      throw new Error(parsed?.error || `THE EARTH request failed (HTTP ${res.status})`);
+        followUpHistory,
+      });
     }
 
     earthState.currentResult = parsed;
@@ -4389,10 +4537,27 @@ async function runEarthQuery(rawQuery, { isFollowUp = false } = {}) {
 
     renderEarthResultsView(parsed, earthState.displayedEntries);
   } catch (err) {
-    if (summaryEl) {
-      summaryEl.textContent = redactSensitiveText(err?.message || "Unable to fetch verified global market data right now.");
+    const cleanMsg = sanitizeEarthErrorMessage(err?.message);
+    if (srcBadge) srcBadge.textContent = "Connection Issue";
+    if (summaryEl) summaryEl.textContent = cleanMsg;
+    if (listHeading) {
+      listHeading.textContent = earthState.currentResult ? "Saved Results Paused" : "Unable to Load Market Data";
     }
-    showToast(redactSensitiveText(err?.message || "THE EARTH search failed"));
+    if (resultsEl) {
+      resultsEl.innerHTML = `
+        <div class="phase-card earth-error-card" id="earthErrorCard">
+          <div class="error-status-pill generic">EARTH INTELLIGENCE ISSUE</div>
+          <p class="error-text">${escapeHtml(cleanMsg)}</p>
+          <div style="margin-top:10px;">
+            <button type="button" class="outline-pill-btn" id="btnEarthRetry">&#x21BB; Retry Search</button>
+          </div>
+        </div>
+      `;
+      document.getElementById("btnEarthRetry")?.addEventListener("click", () => {
+        runEarthQuery(query, { isFollowUp });
+      });
+    }
+    showToast(cleanMsg);
   } finally {
     earthState.isLoading = false;
     if (btn) {
