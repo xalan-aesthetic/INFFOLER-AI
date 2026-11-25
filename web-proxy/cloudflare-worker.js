@@ -1580,6 +1580,695 @@ export async function runReasoningPipeline({
   };
 }
 
+/* ==================== MODULE 6: THE EARTH GLOBAL PRICE & LOCATION INTELLIGENCE ==================== */
+const COUNTRY_ISO_TO_FLAG = (iso2) => {
+  const code = String(iso2 || "").trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(code)) return "\uD83C\uDF0D";
+  return String.fromCodePoint(
+    0x1f1e6 + code.charCodeAt(0) - 65,
+    0x1f1e6 + code.charCodeAt(1) - 65
+  );
+};
+
+export function sanitizeVerifiedUrl(rawUrl) {
+  if (typeof rawUrl !== "string") return null;
+  const trimmed = rawUrl.trim();
+  if (!trimmed || trimmed.length > 1000) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
+    if (parsed.username || parsed.password) return null;
+    const host = parsed.hostname.toLowerCase();
+    if (
+      !host ||
+      host === "localhost" ||
+      host === "0.0.0.0" ||
+      /^127\./.test(host) ||
+      /^10\./.test(host) ||
+      /^192\.168\./.test(host) ||
+      /^169\.254\./.test(host) ||
+      /^\[?::1\]?$/.test(host) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+    ) {
+      return null;
+    }
+    return parsed.href;
+  } catch {
+    return null;
+  }
+}
+
+export function extractJsonObjectFromText(rawText) {
+  const src = String(rawText || "").trim();
+  if (!src) return null;
+  const stripped = src
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+  try {
+    const direct = JSON.parse(stripped);
+    if (direct && typeof direct === "object" && !Array.isArray(direct)) return direct;
+  } catch {
+    // Fallback to scanning balanced outer JSON object
+  }
+  const firstBrace = stripped.indexOf("{");
+  if (firstBrace < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escapeNext = false;
+  for (let i = firstBrace; i < stripped.length; i++) {
+    const ch = stripped[i];
+    if (inString) {
+      if (escapeNext) escapeNext = false;
+      else if (ch === "\\") escapeNext = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          const parsed = JSON.parse(stripped.slice(firstBrace, i + 1));
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+export async function fetchLiveExchangeRates(fetchImpl, targetCurrency = "USD", timeoutMs = 6000) {
+  const cleanTarget = /^[A-Z]{3}$/.test(String(targetCurrency || "").toUpperCase())
+    ? String(targetCurrency).toUpperCase()
+    : "USD";
+
+  const tryFetchJson = async (endpointUrl) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.min(6000, timeoutMs));
+    try {
+      const res = await fetchImpl(endpointUrl, { method: "GET", signal: controller.signal });
+      if (!res || !res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const primary = await tryFetchJson("https://open.er-api.com/v6/latest/USD");
+  if (primary && primary.result === "success" && primary.rates && typeof primary.rates === "object") {
+    const rates = { USD: 1, ...primary.rates };
+    const rateToTarget = Number.isFinite(Number(rates[cleanTarget])) ? Number(rates[cleanTarget]) : null;
+    return {
+      ok: true,
+      base: "USD",
+      targetCurrency: cleanTarget,
+      rateToTarget,
+      rates,
+      asOfDate: String(primary.time_last_update_utc || new Date().toISOString().slice(0, 10)),
+      provider: "open.er-api.com",
+      providerUrl: "https://open.er-api.com/v6/latest/USD",
+      isLiveFx: true,
+    };
+  }
+
+  const fallback = await tryFetchJson("https://api.frankfurter.app/latest?from=USD");
+  if (fallback && fallback.rates && typeof fallback.rates === "object") {
+    const rates = { USD: 1, ...fallback.rates };
+    const rateToTarget = Number.isFinite(Number(rates[cleanTarget])) ? Number(rates[cleanTarget]) : null;
+    return {
+      ok: true,
+      base: "USD",
+      targetCurrency: cleanTarget,
+      rateToTarget,
+      rates,
+      asOfDate: String(fallback.date || new Date().toISOString().slice(0, 10)),
+      provider: "api.frankfurter.app (ECB)",
+      providerUrl: "https://api.frankfurter.app/latest?from=USD",
+      isLiveFx: true,
+    };
+  }
+
+  return {
+    ok: false,
+    base: "USD",
+    targetCurrency: cleanTarget,
+    rateToTarget: cleanTarget === "USD" ? 1 : null,
+    rates: cleanTarget === "USD" ? { USD: 1 } : null,
+    asOfDate: null,
+    provider: "Unavailable",
+    providerUrl: null,
+    isLiveFx: false,
+  };
+}
+
+export function validateEarthQueryRequest(rawBody) {
+  if (!rawBody || typeof rawBody !== "object") {
+    return { error: "Invalid JSON request body.", code: "INVALID_PAYLOAD" };
+  }
+
+  const query = typeof rawBody.query === "string" ? rawBody.query.trim() : "";
+  if (query.length < 2) {
+    return { error: "Please enter a location, product, commodity, or global market question.", code: "EMPTY_PROMPT" };
+  }
+  if (query.length > 600) {
+    return { error: "Search query cannot exceed 600 characters.", code: "PAYLOAD_TOO_LARGE" };
+  }
+
+  const requestedModel =
+    typeof rawBody.model === "string" && rawBody.model.trim()
+      ? rawBody.model.trim()
+      : "gemini-3.8-flash";
+  if (!ALLOWED_MODELS.has(requestedModel)) {
+    return {
+      error: `Unsupported model '${requestedModel}'. Allowed models: ${Array.from(ALLOWED_MODELS).join(", ")}.`,
+      code: "UNSUPPORTED_MODEL",
+      requestedModel,
+      allowedModels: Array.from(ALLOWED_MODELS),
+    };
+  }
+
+  const rawCurrency =
+    typeof rawBody.targetCurrency === "string" ? rawBody.targetCurrency.trim().toUpperCase() : "USD";
+  const targetCurrency = /^[A-Z]{3}$/.test(rawCurrency) ? rawCurrency : "USD";
+
+  const rawFilters = rawBody.filters && typeof rawBody.filters === "object" ? rawBody.filters : {};
+  const cleanStr = (v, max = 80) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+  const cleanPrice = (v) => {
+    if (v === "" || v === null || v === undefined) return null;
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  };
+  const validMarketTypes = new Set(["all", "retail", "wholesale", "production"]);
+  const rawMarketType = cleanStr(rawFilters.marketType, 24).toLowerCase();
+  const validSorts = new Set(["relevance", "price_asc", "price_desc", "production_desc"]);
+  const rawSort = cleanStr(rawFilters.sortBy, 24).toLowerCase();
+
+  const filters = {
+    country: cleanStr(rawFilters.country, 64),
+    city: cleanStr(rawFilters.city, 64),
+    category: cleanStr(rawFilters.category, 64),
+    marketType: validMarketTypes.has(rawMarketType) ? rawMarketType : "all",
+    minPrice: cleanPrice(rawFilters.minPrice),
+    maxPrice: cleanPrice(rawFilters.maxPrice),
+    sortBy: validSorts.has(rawSort) ? rawSort : "relevance",
+  };
+
+  let userLocation = null;
+  if (rawBody.userLocation && typeof rawBody.userLocation === "object") {
+    const lat = Number(rawBody.userLocation.lat);
+    const lng = Number(rawBody.userLocation.lng);
+    if (Number.isFinite(lat) && Number.isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+      userLocation = { lat: Number(lat.toFixed(4)), lng: Number(lng.toFixed(4)) };
+    }
+  }
+
+  const followUpHistory = Array.isArray(rawBody.followUpHistory)
+    ? rawBody.followUpHistory
+        .slice(-6)
+        .filter(item => item && typeof item === "object" && typeof item.query === "string")
+        .map(item => ({
+          query: String(item.query || "").trim().slice(0, 300),
+          commodity: String(item.commodity || "").trim().slice(0, 80),
+          summary: String(item.summary || "").trim().slice(0, 360),
+          topCountries: Array.isArray(item.topCountries)
+            ? item.topCountries.slice(0, 6).map(c => String(c || "").slice(0, 48))
+            : [],
+        }))
+    : [];
+
+  return {
+    query,
+    model: requestedModel,
+    targetCurrency,
+    filters,
+    userLocation,
+    followUpHistory,
+  };
+}
+
+function buildEarthSystemPrompt() {
+  return [
+    "You are THE EARTH Intelligence Engine inside INFFOLER AI 2.0 (created by Alankrit Pathak).",
+    "Your mission is factual, grounded global price, market, commodity, and production location intelligence.",
+    "",
+    "STRICT ANTI-FABRICATION & ACCURACY RULES:",
+    "1. NEVER invent or fabricate prices, exchange rates, production quantities, dates, coordinates, or URLs.",
+    "2. Use live Google Search grounding results to report real, verifiable market prices, wholesale/retail markets, fuel/gold/commodity/apparel/electronics prices, or FAO/USDA/official production volumes.",
+    "3. Distinguish clearly between PRODUCTION volume (e.g. '35 million metric tons/year') vs CONSUMPTION vs RETAIL/WHOLESALE unit prices (e.g. '$0.85 per liter', '$84 per gram', '₹450 per piece').",
+    "4. Always include comparable unit descriptions (`unit`), real `originalCurrency` (3-letter ISO code), `originalPriceNumeric` (number or null), observed `dataDate` (e.g. 'Nov 2026', '2024 FAO', '2025-12'), `freshness` ('live' | 'historical' | 'estimate'), and `isEstimate` boolean.",
+    "5. Provide exact city/hub latitude (`lat`) and longitude (`lng`) ONLY for real geographical places returned; do NOT guess arbitrary coordinates.",
+    "6. If verified price or location data is unavailable or uncertain for the request, set `dataUnavailable: true` and explain clearly in `unavailableReason` rather than guessing numbers.",
+    "7. Return ONLY a single valid JSON object matching this exact schema (no extra commentary outside JSON):",
+    "{",
+    '  "queryIntent": "price" | "production" | "availability" | "comparison",',
+    '  "commodity": "Short standardized topic name",',
+    '  "unitSpec": "Comparable baseline unit used across entries, e.g. per liter / per 24K gram / per metric ton",',
+    '  "dataUnavailable": false,',
+    '  "unavailableReason": "",',
+    '  "summary": "2-4 sentence clear factual summary citing timeframe, currency/unit context, and key global comparison",',
+    '  "insights": ["Key factual bullet 1", "Key factual bullet 2", "Key factual bullet 3"],',
+    '  "entries": [',
+    "    {",
+    '      "id": "unique-slug",',
+    '      "country": "Country Name",',
+    '      "countryCode": "ISO-2 e.g. IN, US, TR, BD, AE, VN",',
+    '      "city": "City or Market Hub",',
+    '      "lat": 19.076,',
+    '      "lng": 72.8777,',
+    '      "marketName": "Specific famous market, hub, exchange, or region",',
+    '      "marketType": "retail" | "wholesale" | "production",',
+    '      "originalPriceNumeric": 12.5,',
+    '      "originalCurrency": "USD",',
+    '      "unit": "per liter",',
+    '      "productionVolume": "Optional volume/share string for production queries",',
+    '      "productionSharePct": 24.5,',
+    '      "dataDate": "Observed month/year or dataset year",',
+    '      "freshness": "live" | "historical" | "estimate",',
+    '      "isEstimate": false,',
+    '      "availability": "Widely available / Seasonal / Wholesale export hub",',
+    '      "taxesOrNotes": "VAT/GST/import duty or market benchmark note",',
+    '      "sourceTitle": "Official/reputable source name",',
+    '      "sourceUrl": "https://... exact verified URL from grounding results or empty string"',
+    "    }",
+    "  ]",
+    "}",
+  ].join("\n");
+}
+
+function convertCurrencyWithFx(amount, fromCode, toCode, fxData) {
+  const numeric = Number(amount);
+  const from = String(fromCode || "").trim().toUpperCase();
+  const to = String(toCode || "USD").trim().toUpperCase();
+  if (!Number.isFinite(numeric) || !/^[A-Z]{3}$/.test(from)) return null;
+  if (from === to) return Number(numeric.toFixed(2));
+  if (!fxData?.ok || !fxData.rates) return null;
+  const fromRate = from === "USD" ? 1 : Number(fxData.rates[from]);
+  const toRate = to === "USD" ? 1 : Number(fxData.rates[to]);
+  if (!Number.isFinite(fromRate) || fromRate <= 0 || !Number.isFinite(toRate) || toRate <= 0) {
+    return null;
+  }
+  const usdValue = numeric / fromRate;
+  return Number((usdValue * toRate).toFixed(2));
+}
+
+function normalizeUnitBucket(unitStr) {
+  const s = String(unitStr || "").toLowerCase().trim();
+  if (/liter|litre|\bl\b/.test(s)) return "liter";
+  if (/gallon/.test(s)) return "gallon";
+  if (/gram|\bg\b/.test(s) && !/kilogram|kg/.test(s)) return "gram";
+  if (/troy ounce|ounce|\boz\b/.test(s)) return "oz";
+  if (/kilogram|kilo|\bkg\b/.test(s)) return "kg";
+  if (/metric ton|tonne|\bton\b/.test(s)) return "ton";
+  return s || "unit";
+}
+
+export async function runEarthIntelligencePipeline({
+  validated,
+  apiKey,
+  fetchImpl,
+  timeoutMs = DEFAULT_UPSTREAM_TIMEOUT_MS,
+}) {
+  const startMs = Date.now();
+  const fxData = await fetchLiveExchangeRates(fetchImpl, validated.targetCurrency, timeoutMs);
+
+  const conversationBlock = validated.followUpHistory.length
+    ? [
+        "Previous EARTH session context (for follow-up resolution):",
+        ...validated.followUpHistory.map(
+          (h, idx) =>
+            `${idx + 1}. Query: "${h.query}" | Topic: ${h.commodity || "N/A"} | Countries: ${h.topCountries.join(", ") || "N/A"} | Summary: ${h.summary}`
+        ),
+        "",
+      ].join("\n")
+    : "";
+
+  const activeFiltersList = [];
+  if (validated.filters.country) activeFiltersList.push(`Country filter: ${validated.filters.country}`);
+  if (validated.filters.city) activeFiltersList.push(`City filter: ${validated.filters.city}`);
+  if (validated.filters.category) activeFiltersList.push(`Category: ${validated.filters.category}`);
+  if (validated.filters.marketType !== "all") activeFiltersList.push(`Market Type: ${validated.filters.marketType}`);
+  if (validated.userLocation) {
+    activeFiltersList.push(
+      `User shared coordinates: lat ${validated.userLocation.lat}, lng ${validated.userLocation.lng} (include relevant nearby/regional hubs when helpful).`
+    );
+  }
+
+  const userPromptText = [
+    conversationBlock,
+    `User Question: ${validated.query}`,
+    `Preferred Display Currency: ${validated.targetCurrency}`,
+    activeFiltersList.length ? `Active Filters:\n- ${activeFiltersList.join("\n- ")}` : "",
+    "Provide 4 to 8 diverse, real, verifiable geographic entries across relevant cities/countries so the user can compare locations on the globe.",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const basePayload = {
+    systemInstruction: { parts: [{ text: buildEarthSystemPrompt() }] },
+    contents: [{ role: "user", parts: [{ text: userPromptText }] }],
+    tools: [{ google_search: {} }],
+    generationConfig: {
+      temperature: 0.2,
+      topP: 0.88,
+      maxOutputTokens: 4096,
+    },
+  };
+
+  let searchGrounded = true;
+  let res = await callGeminiModelWithTimeout({
+    fetchImpl,
+    apiKey,
+    modelId: validated.model,
+    payload: basePayload,
+    timeoutMs,
+  });
+
+  // Compatibility safeguard if a model alias rejects google_search tool syntax
+  if (!res.ok && res.status === 400 && /google_search|tool|search/i.test(String(res.text || ""))) {
+    const fallbackPayload = {
+      systemInstruction: basePayload.systemInstruction,
+      contents: basePayload.contents,
+      generationConfig: {
+        ...basePayload.generationConfig,
+        responseMimeType: "application/json",
+      },
+    };
+    searchGrounded = false;
+    res = await callGeminiModelWithTimeout({
+      fetchImpl,
+      apiKey,
+      modelId: validated.model,
+      payload: fallbackPayload,
+      timeoutMs,
+    });
+  }
+
+  if (!res.ok) {
+    return { ok: false, upstreamRes: res };
+  }
+
+  let geminiJson;
+  try {
+    geminiJson = JSON.parse(res.text);
+  } catch {
+    return {
+      ok: false,
+      customError: {
+        status: 502,
+        code: "INVALID_UPSTREAM_JSON",
+        retryable: true,
+        message: "Received malformed intelligence response. Please try again.",
+      },
+    };
+  }
+
+  const candidate = geminiJson?.candidates?.[0];
+  const rawModelText = candidate?.content?.parts?.map(p => p.text || "").join("")?.trim() || "";
+  const parsedObj = extractJsonObjectFromText(rawModelText);
+
+  const groundingChunks = candidate?.groundingMetadata?.groundingChunks || [];
+  const verifiedSources = [];
+  const seenUrls = new Set();
+  for (const chunk of groundingChunks) {
+    const cleanUrl = sanitizeVerifiedUrl(chunk?.web?.uri);
+    if (cleanUrl && !seenUrls.has(cleanUrl)) {
+      seenUrls.add(cleanUrl);
+      verifiedSources.push({
+        title: String(chunk?.web?.title || new URL(cleanUrl).hostname).slice(0, 140),
+        url: cleanUrl,
+      });
+    }
+  }
+
+  if (!parsedObj) {
+    return {
+      ok: true,
+      data: {
+        ok: true,
+        dataStatus: "unavailable",
+        searchGrounded: searchGrounded && verifiedSources.length > 0,
+        modelUsed: validated.model,
+        query: validated.query,
+        queryIntent: "comparison",
+        commodity: validated.query.slice(0, 60),
+        unitSpec: "",
+        targetCurrency: validated.targetCurrency,
+        exchangeRates: {
+          ok: fxData.ok,
+          base: fxData.base,
+          targetCurrency: fxData.targetCurrency,
+          rateToTarget: fxData.rateToTarget,
+          asOfDate: fxData.asOfDate,
+          provider: fxData.provider,
+          isLiveFx: fxData.isLiveFx,
+        },
+        summary:
+          "Verified structured market entries were not returned for this query. Try specifying a clear product, commodity, city, or country.",
+        unavailableReason: "Structured location data could not be verified from search results.",
+        insights: [],
+        entries: [],
+        verifiedSources,
+        highlights: { cheapestId: null, mostExpensiveId: null, topProducerId: null },
+        timingMs: Date.now() - startMs,
+      },
+    };
+  }
+
+  const rawEntries = Array.isArray(parsedObj.entries) ? parsedObj.entries : [];
+  const normalizedEntries = [];
+
+  for (let idx = 0; idx < rawEntries.length && normalizedEntries.length < 18; idx++) {
+    const item = rawEntries[idx];
+    if (!item || typeof item !== "object") continue;
+
+    const country = String(item.country || "").trim().slice(0, 80);
+    const city = String(item.city || "").trim().slice(0, 80);
+    if (!country && !city) continue;
+
+    const lat = Number(item.lat);
+    const lng = Number(item.lng);
+    const hasValidCoords =
+      Number.isFinite(lat) && Number.isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+    if (!hasValidCoords) continue;
+
+    const origCurrencyRaw = String(item.originalCurrency || "").trim().toUpperCase();
+    const origCurrency = /^[A-Z]{3}$/.test(origCurrencyRaw) ? origCurrencyRaw : "";
+    const origNumRaw = item.originalPriceNumeric;
+    const origNum =
+      origNumRaw !== null && origNumRaw !== undefined && origNumRaw !== "" && Number.isFinite(Number(origNumRaw))
+        ? Number(Number(origNumRaw).toFixed(4))
+        : null;
+
+    const usdPrice =
+      origNum !== null && origCurrency ? convertCurrencyWithFx(origNum, origCurrency, "USD", fxData) : null;
+    const convertedPrice =
+      origNum !== null && origCurrency
+        ? convertCurrencyWithFx(origNum, origCurrency, validated.targetCurrency, fxData)
+        : null;
+
+    let cleanSourceUrl = sanitizeVerifiedUrl(item.sourceUrl);
+    let cleanSourceTitle = String(item.sourceTitle || "").trim().slice(0, 120);
+    if (!cleanSourceUrl && verifiedSources.length > 0) {
+      const matchedChunk = verifiedSources[idx % verifiedSources.length];
+      if (matchedChunk) {
+        cleanSourceUrl = matchedChunk.url;
+        if (!cleanSourceTitle) cleanSourceTitle = matchedChunk.title;
+      }
+    }
+    if (cleanSourceUrl && !seenUrls.has(cleanSourceUrl)) {
+      seenUrls.add(cleanSourceUrl);
+      verifiedSources.push({
+        title: cleanSourceTitle || new URL(cleanSourceUrl).hostname,
+        url: cleanSourceUrl,
+      });
+    }
+
+    const freshnessRaw = String(item.freshness || "historical").trim().toLowerCase();
+    const freshness =
+      freshnessRaw === "live" || freshnessRaw === "historical" || freshnessRaw === "estimate"
+        ? freshnessRaw
+        : "historical";
+    const mTypeRaw = String(item.marketType || "retail").trim().toLowerCase();
+    const marketType =
+      mTypeRaw === "retail" || mTypeRaw === "wholesale" || mTypeRaw === "production"
+        ? mTypeRaw
+        : "retail";
+
+    const countryCode = String(item.countryCode || "").trim().toUpperCase().slice(0, 2);
+    const prodShareRaw = item.productionSharePct;
+    const productionSharePct =
+      prodShareRaw !== null && prodShareRaw !== undefined && Number.isFinite(Number(prodShareRaw))
+        ? Number(Number(prodShareRaw).toFixed(2))
+        : null;
+
+    normalizedEntries.push({
+      id: String(item.id || `${countryCode || "gl"}-${idx}`).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 48) || `loc-${idx}`,
+      country,
+      countryCode,
+      flag: COUNTRY_ISO_TO_FLAG(countryCode),
+      city: city || country,
+      lat: Number(lat.toFixed(4)),
+      lng: Number(lng.toFixed(4)),
+      marketName: String(item.marketName || `${city || country} Market`).trim().slice(0, 120),
+      marketType,
+      originalPriceNumeric: origNum,
+      originalCurrency: origCurrency || null,
+      convertedPriceNumeric: convertedPrice,
+      convertedCurrency: convertedPrice !== null ? validated.targetCurrency : null,
+      priceNumericUsd: usdPrice,
+      unit: String(item.unit || parsedObj.unitSpec || "").trim().slice(0, 60),
+      unitBucket: normalizeUnitBucket(item.unit || parsedObj.unitSpec || ""),
+      productionVolume: String(item.productionVolume || "").trim().slice(0, 90),
+      productionSharePct,
+      dataDate: String(item.dataDate || "Recent market report").trim().slice(0, 48),
+      freshness: !searchGrounded && freshness === "live" ? "estimate" : freshness,
+      isEstimate: Boolean(item.isEstimate) || freshness === "estimate" || !searchGrounded,
+      availability: String(item.availability || "Market data reported").trim().slice(0, 110),
+      taxesOrNotes: String(item.taxesOrNotes || "").trim().slice(0, 220),
+      sourceTitle: cleanSourceTitle || (cleanSourceUrl ? "Verified Web Source" : "Market Reference"),
+      sourceUrl: cleanSourceUrl,
+    });
+  }
+
+  // Apply explicit server-side filters cleanly
+  let filteredEntries = normalizedEntries.filter(entry => {
+    if (validated.filters.country) {
+      const targetC = validated.filters.country.toLowerCase();
+      if (!entry.country.toLowerCase().includes(targetC) && entry.countryCode.toLowerCase() !== targetC) {
+        return false;
+      }
+    }
+    if (validated.filters.city) {
+      const targetCity = validated.filters.city.toLowerCase();
+      if (!entry.city.toLowerCase().includes(targetCity) && !entry.marketName.toLowerCase().includes(targetCity)) {
+        return false;
+      }
+    }
+    if (validated.filters.marketType !== "all" && entry.marketType !== validated.filters.marketType) {
+      return false;
+    }
+    const filterPrice = entry.convertedPriceNumeric ?? entry.originalPriceNumeric;
+    if (validated.filters.minPrice !== null && (filterPrice === null || filterPrice < validated.filters.minPrice)) {
+      return false;
+    }
+    if (validated.filters.maxPrice !== null && (filterPrice === null || filterPrice > validated.filters.maxPrice)) {
+      return false;
+    }
+    return true;
+  });
+
+  // Sort entries when requested
+  if (validated.filters.sortBy === "price_asc") {
+    filteredEntries = [...filteredEntries].sort((a, b) => {
+      const av = a.convertedPriceNumeric ?? a.priceNumericUsd ?? a.originalPriceNumeric ?? Number.POSITIVE_INFINITY;
+      const bv = b.convertedPriceNumeric ?? b.priceNumericUsd ?? b.originalPriceNumeric ?? Number.POSITIVE_INFINITY;
+      return av - bv;
+    });
+  } else if (validated.filters.sortBy === "price_desc") {
+    filteredEntries = [...filteredEntries].sort((a, b) => {
+      const av = a.convertedPriceNumeric ?? a.priceNumericUsd ?? a.originalPriceNumeric ?? Number.NEGATIVE_INFINITY;
+      const bv = b.convertedPriceNumeric ?? b.priceNumericUsd ?? b.originalPriceNumeric ?? Number.NEGATIVE_INFINITY;
+      return bv - av;
+    });
+  } else if (validated.filters.sortBy === "production_desc") {
+    filteredEntries = [...filteredEntries].sort(
+      (a, b) => (b.productionSharePct ?? -1) - (a.productionSharePct ?? -1)
+    );
+  }
+
+  // Identify comparable cheapest / most expensive only across shared dominant unit
+  const priced = filteredEntries.filter(
+    e => Number.isFinite(e.convertedPriceNumeric ?? e.priceNumericUsd)
+  );
+  const unitCounts = new Map();
+  for (const e of priced) {
+    unitCounts.set(e.unitBucket, (unitCounts.get(e.unitBucket) || 0) + 1);
+  }
+  let dominantUnit = "";
+  let dominantCount = 0;
+  for (const [u, cnt] of unitCounts.entries()) {
+    if (cnt > dominantCount) {
+      dominantUnit = u;
+      dominantCount = cnt;
+    }
+  }
+  const comparablePriced = dominantUnit ? priced.filter(e => e.unitBucket === dominantUnit) : priced;
+
+  let cheapestEntry = null;
+  let mostExpensiveEntry = null;
+  let avgPrice = null;
+  if (comparablePriced.length > 0) {
+    const sorted = [...comparablePriced].sort(
+      (a, b) => (a.convertedPriceNumeric ?? a.priceNumericUsd) - (b.convertedPriceNumeric ?? b.priceNumericUsd)
+    );
+    cheapestEntry = sorted[0];
+    mostExpensiveEntry = sorted[sorted.length - 1];
+    const sum = comparablePriced.reduce((acc, e) => acc + (e.convertedPriceNumeric ?? e.priceNumericUsd), 0);
+    avgPrice = Number((sum / comparablePriced.length).toFixed(2));
+  }
+
+  const topProducerEntry =
+    filteredEntries
+      .filter(e => e.productionVolume || e.productionSharePct !== null)
+      .sort((a, b) => (b.productionSharePct ?? -1) - (a.productionSharePct ?? -1))[0] || null;
+
+  const isUnavailable = Boolean(parsedObj.dataUnavailable) || filteredEntries.length === 0;
+
+  return {
+    ok: true,
+    data: {
+      ok: true,
+      dataStatus: isUnavailable ? "unavailable" : searchGrounded ? "verified" : "estimated",
+      searchGrounded: searchGrounded && verifiedSources.length > 0,
+      modelUsed: validated.model,
+      query: validated.query,
+      queryIntent: String(parsedObj.queryIntent || "comparison"),
+      commodity: String(parsedObj.commodity || validated.query.slice(0, 64)),
+      unitSpec: String(parsedObj.unitSpec || dominantUnit || ""),
+      targetCurrency: validated.targetCurrency,
+      exchangeRates: {
+        ok: fxData.ok,
+        base: fxData.base,
+        targetCurrency: fxData.targetCurrency,
+        rateToTarget: fxData.rateToTarget,
+        asOfDate: fxData.asOfDate,
+        provider: fxData.provider,
+        isLiveFx: fxData.isLiveFx,
+      },
+      summary: isUnavailable
+        ? String(
+            parsedObj.unavailableReason ||
+              "No verified data matching your query/filters could be confirmed right now. Try broadening your filters or checking another market."
+          )
+        : String(parsedObj.summary || "").slice(0, 900),
+      unavailableReason: isUnavailable
+        ? String(parsedObj.unavailableReason || "No verified matching global market records found.")
+        : "",
+      insights: Array.isArray(parsedObj.insights)
+        ? parsedObj.insights.slice(0, 5).map(s => String(s || "").slice(0, 240))
+        : [],
+      entries: filteredEntries,
+      verifiedSources: verifiedSources.slice(0, 10),
+      highlights: {
+        cheapestId: cheapestEntry?.id || null,
+        mostExpensiveId: mostExpensiveEntry?.id || null,
+        topProducerId: topProducerEntry?.id || null,
+        comparableCount: comparablePriced.length,
+        averageConvertedPrice: avgPrice,
+        currencyUsed:
+          cheapestEntry?.convertedCurrency || (cheapestEntry?.priceNumericUsd !== null ? "USD" : null),
+      },
+      timingMs: Date.now() - startMs,
+    },
+  };
+}
+
 export async function handleRequest(request, env = {}, deps = {}) {
   const fetchImpl = deps.fetchImpl || fetch;
   const timeoutMs = typeof deps.timeoutMs === "number" ? deps.timeoutMs : DEFAULT_UPSTREAM_TIMEOUT_MS;
@@ -1607,6 +2296,9 @@ export async function handleRequest(request, env = {}, deps = {}) {
         authRequired: true,
         authProviders: ["google.com", "microsoft.com", "apple.com", "phone", "password"],
         sessionEndpoint: "/auth/session",
+        earthIntelligenceEnabled: true,
+        earthEndpoint: "/earth/query",
+        earthRatesEndpoint: "/earth/rates",
         firebaseProjectId: String(env.FIREBASE_PROJECT_ID || DEFAULT_FIREBASE_PROJECT_ID),
         secretConfigured: Boolean(env.GEMINI_API_KEY),
         multimodalEnabled: true,
@@ -1655,6 +2347,12 @@ export async function handleRequest(request, env = {}, deps = {}) {
       200,
       corsHeaders
     );
+  }
+
+  if (request.method === "GET" && url.pathname === "/earth/rates") {
+    const targetCurrency = (url.searchParams.get("target") || "USD").toUpperCase();
+    const fxData = await fetchLiveExchangeRates(fetchImpl, targetCurrency, timeoutMs);
+    return jsonResponse(fxData, fxData.ok ? 200 : 503, corsHeaders);
   }
 
   if (request.method !== "POST") {
@@ -1707,6 +2405,67 @@ export async function handleRequest(request, env = {}, deps = {}) {
       parsedBody = JSON.parse(rawText);
     } catch {
       return jsonResponse({ error: "Malformed JSON payload." }, 400, corsHeaders);
+    }
+
+    if (url.pathname === "/earth/query") {
+      const validatedEarth = validateEarthQueryRequest(parsedBody);
+      if (validatedEarth.error) {
+        return jsonResponse(
+          {
+            error: validatedEarth.error,
+            code: validatedEarth.code || "INVALID_PAYLOAD",
+            requestedModel: validatedEarth.requestedModel || null,
+            allowedModels: validatedEarth.allowedModels || undefined,
+          },
+          400,
+          corsHeaders
+        );
+      }
+
+      const earthOutcome = await runEarthIntelligencePipeline({
+        validated: validatedEarth,
+        apiKey: env.GEMINI_API_KEY,
+        fetchImpl,
+        timeoutMs,
+      });
+
+      if (!earthOutcome.ok) {
+        if (earthOutcome.customError) {
+          return jsonResponse(
+            {
+              error: earthOutcome.customError.message,
+              code: earthOutcome.customError.code,
+              retryable: earthOutcome.customError.retryable,
+            },
+            earthOutcome.customError.status,
+            corsHeaders
+          );
+        }
+        const upstream = earthOutcome.upstreamRes;
+        const classified = classifyGeminiUpstreamError(
+          upstream.status,
+          upstream.text,
+          upstream.headers?.get?.("Retry-After") || null
+        );
+        const responseHeaders = { ...corsHeaders };
+        if (classified.retryAfterSec) {
+          responseHeaders["Retry-After"] = String(classified.retryAfterSec);
+        }
+        return jsonResponse(
+          {
+            error: classified.message,
+            code: classified.code,
+            quotaType: classified.quotaType,
+            retryable: classified.retryable,
+            retryAfterSec: classified.retryAfterSec,
+            modelRequested: validatedEarth.model,
+          },
+          upstream.status,
+          responseHeaders
+        );
+      }
+
+      return jsonResponse(earthOutcome.data, 200, corsHeaders);
     }
 
     const validated = validateAndSanitizeRequest(parsedBody);

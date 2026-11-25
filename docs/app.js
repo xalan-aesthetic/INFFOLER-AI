@@ -62,7 +62,7 @@ import {
   classifyTaskPreview,
   normalizeReasoningMetadata,
   formatVerificationBadge,
-} from "./reasoning-engine.js?v=20261124a";
+} from "./reasoning-engine.js?v=20261125a";
 import {
   normalizePhoneInput,
   validateOtpCode,
@@ -71,7 +71,20 @@ import {
   getProviderBadgeList,
   OtpRateLimiter,
   mapMultiProviderAuthError,
-} from "./auth-providers.js?v=20261124a";
+} from "./auth-providers.js?v=20261125a";
+import {
+  createCinematicIntroController,
+  hasIntroPlayedThisSession,
+} from "./intro-cinema.js?v=20261125a";
+import {
+  EARTH_POPULAR_SEARCHES,
+  sanitizeExternalHref,
+  formatCurrencyAmount,
+  classifyEarthMarkerTone,
+  filterAndSortEarthEntries,
+  detectLocalMapAction,
+  createEarthGlobeController,
+} from "./earth-intelligence.js?v=20261125a";
 
 /* =========================================================================
  * PUBLIC CLOUDFLARE WORKER PROXY (GEMINI_API_KEY LIVES ONLY IN CLOUDFLARE SECRETS)
@@ -269,6 +282,26 @@ let typingAnimFrame = null;
 let stopTypingRequested = false;
 let renamingChatId = null;
 let corePulseBoost = 0;
+
+let earthState = {
+  lastQuery: "",
+  currentResult: null,
+  allEntries: [],
+  displayedEntries: [],
+  selectedEntryId: null,
+  followUpHistory: [],
+  userLocation: null,
+  viewMode: "globe",
+  isLoading: false,
+  targetCurrency: "USD",
+};
+
+const earthGlobeController = createEarthGlobeController({
+  canvasId: "earthGlobeCanvas",
+  onSelectEntry: entry => {
+    if (entry) selectEarthLocation(entry.id, false);
+  },
+});
 
 /* ==================== SOUND EFFECTS & ROYALTY-FREE MUSIC ENGINE ==================== */
 let audioCtx = null;
@@ -1332,13 +1365,21 @@ function toggleTheme() {
 /* ==================== SIDEBAR DRAWER & NAVIGATION ==================== */
 function openSidebar() {
   if (!currentUser) return;
-  document.getElementById("appSidebar").classList.add("open");
-  document.getElementById("sidebarBackdrop").classList.remove("hidden");
+  const sidebar = document.getElementById("appSidebar");
+  const backdrop = document.getElementById("sidebarBackdrop");
+  const openBtn = document.getElementById("btnOpenSidebar");
+  sidebar?.classList.add("open");
+  backdrop?.classList.remove("hidden");
+  openBtn?.setAttribute("aria-expanded", "true");
 }
 
 function closeSidebar() {
-  document.getElementById("appSidebar").classList.remove("open");
-  document.getElementById("sidebarBackdrop").classList.add("hidden");
+  const sidebar = document.getElementById("appSidebar");
+  const backdrop = document.getElementById("sidebarBackdrop");
+  const openBtn = document.getElementById("btnOpenSidebar");
+  sidebar?.classList.remove("open");
+  backdrop?.classList.add("hidden");
+  openBtn?.setAttribute("aria-expanded", "false");
 }
 
 function navigateTo(viewName) {
@@ -1355,6 +1396,13 @@ function navigateTo(viewName) {
     renderChatMessages();
   } else if (viewName === "whatif") {
     renderSimulationsArchive();
+  }
+
+  if (viewName === "earth") {
+    earthGlobeController.startLoop();
+    earthGlobeController.drawOnce();
+  } else {
+    earthGlobeController.stopLoop();
   }
   closeSidebar();
 }
@@ -1654,6 +1702,9 @@ async function onAuthChange(user) {
     renderChatMessages();
     renderSidebarChats();
     updateActiveChatHeader();
+    if (!hasIntroPlayedThisSession()) {
+      introController.start({ force: false });
+    }
     verifyBackendSession(currentUser).catch(() => {});
     try {
       await ensureUserProfile(currentUser, {
@@ -1694,6 +1745,8 @@ async function onAuthChange(user) {
     );
 
   } else {
+    introController?.skip?.();
+    earthGlobeController?.stopLoop?.();
     chats = [];
     activeChatId = null;
     activeMessages = [];
@@ -3504,8 +3557,18 @@ function bindEvents() {
     if (currentUser) document.getElementById("settingsModal").classList.remove("hidden");
   });
   document.getElementById("btnSidebarAuthAction").addEventListener("click", async () => {
+    closeSidebar();
     await logoutUser();
     showToast("Signed out of INFFOLER AI");
+  });
+
+  document.addEventListener?.("keydown", e => {
+    if (e.key === "Escape") {
+      const sidebar = document.getElementById("appSidebar");
+      if (sidebar?.classList.contains("open")) {
+        closeSidebar();
+      }
+    }
   });
 
   document.querySelectorAll(".auth-tab[data-auth-tab]").forEach(btn => {
@@ -3886,6 +3949,14 @@ function bindEvents() {
     }
   });
 
+  document.getElementById("btnReplayIntro")?.addEventListener("click", () => {
+    hasUserInteracted = true;
+    document.getElementById("settingsModal")?.classList.add("hidden");
+    introController.start({ force: true });
+  });
+
+  bindEarthEvents();
+
   // Sound effects, ambient music & volume controls
   document.getElementById("btnSoundToggleTop")?.addEventListener("click", toggleSoundEffects);
   document.getElementById("toggleSfxSwitch")?.addEventListener("click", toggleSoundEffects);
@@ -3897,6 +3968,562 @@ function bindEvents() {
     savePrefSafe(STORAGE_VOLUME, audioVolumePct);
     applyMasterVolume();
     syncAudioUi();
+  });
+}
+
+/* ==================== CINEMATIC INTRO CONTROLLER ==================== */
+const introController = createCinematicIntroController({
+  getHasInteracted: () => hasUserInteracted,
+  isSfxEnabled: () => sfxEnabled,
+  playTone: playSynthTone,
+});
+
+/* ==================== THE EARTH — GLOBAL PRICE & LOCATION INTELLIGENCE ==================== */
+function getEarthFiltersFromUi() {
+  return {
+    country: document.getElementById("earthFilterCountry")?.value?.trim() || "",
+    city: document.getElementById("earthFilterCity")?.value?.trim() || "",
+    category: document.getElementById("earthFilterCategory")?.value || "",
+    marketType: document.getElementById("earthFilterMarketType")?.value || "all",
+    minPrice: document.getElementById("earthFilterMinPrice")?.value ?? "",
+    maxPrice: document.getElementById("earthFilterMaxPrice")?.value ?? "",
+    sortBy: document.getElementById("earthFilterSort")?.value || "relevance",
+  };
+}
+
+function renderEarthPopularSearches() {
+  const grid = document.getElementById("earthPopularGrid");
+  if (!grid) return;
+  grid.innerHTML = EARTH_POPULAR_SEARCHES.map(
+    (item, idx) => `
+      <button type="button" class="earth-popular-card" data-earth-popular="${idx}">
+        <strong>${item.icon} ${escapeHtml(item.title)}</strong>
+        <span>${escapeHtml(item.category)} &middot; Tap to explore</span>
+      </button>
+    `
+  ).join("");
+
+  grid.querySelectorAll("[data-earth-popular]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const item = EARTH_POPULAR_SEARCHES[Number(btn.getAttribute("data-earth-popular"))];
+      if (!item) return;
+      const input = document.getElementById("earthSearchInput");
+      if (input) input.value = item.query;
+      runEarthQuery(item.query, { isFollowUp: false });
+    });
+  });
+}
+
+function renderEarthLocationPopup(entry) {
+  const popup = document.getElementById("earthLocationPopup");
+  if (!popup) return;
+  if (!entry) {
+    popup.classList.add("hidden");
+    popup.innerHTML = "";
+    return;
+  }
+
+  const highlights = earthState.currentResult?.highlights || {};
+  const tone = classifyEarthMarkerTone(entry, highlights);
+  const badgeText =
+    tone === "cheapest"
+      ? "LOWEST FOUND"
+      : tone === "expensive"
+        ? "HIGHEST FOUND"
+        : tone === "producer"
+          ? String(entry.marketType || "HUB").toUpperCase()
+          : String(entry.marketType || "MARKET").toUpperCase();
+
+  const priceDisplay =
+    entry.convertedPriceNumeric !== null && entry.convertedCurrency
+      ? `${formatCurrencyAmount(entry.convertedPriceNumeric, entry.convertedCurrency)} ${entry.unit || ""}`.trim()
+      : entry.originalPriceNumeric !== null && entry.originalCurrency
+        ? `${formatCurrencyAmount(entry.originalPriceNumeric, entry.originalCurrency)} ${entry.unit || ""}`.trim()
+        : entry.productionVolume || "See details";
+
+  const origDisplay =
+    entry.originalPriceNumeric !== null &&
+    entry.originalCurrency &&
+    entry.originalCurrency !== entry.convertedCurrency
+      ? `Local: ${formatCurrencyAmount(entry.originalPriceNumeric, entry.originalCurrency)} ${entry.unit || ""}`.trim()
+      : "";
+
+  const safeHref = sanitizeExternalHref(entry.sourceUrl);
+  const freshnessLabel = entry.isEstimate
+    ? "Estimate"
+    : entry.freshness === "live"
+      ? "Live Verified"
+      : "Historical Verified";
+
+  popup.classList.remove("hidden");
+  popup.innerHTML = `
+    <div class="earth-card-top">
+      <div>
+        <div class="earth-card-place">${escapeHtml(entry.flag || "")} ${escapeHtml(entry.city)}, ${escapeHtml(entry.country)}</div>
+        <div class="earth-card-market">${escapeHtml(entry.marketName || "")}</div>
+      </div>
+      <span class="badge-chip ${tone === "cheapest" ? "teal" : tone === "expensive" ? "purple" : "cyan"}">${escapeHtml(badgeText)}</span>
+    </div>
+    <div class="earth-card-price-row">
+      <strong class="earth-card-price-main">${escapeHtml(priceDisplay)}</strong>
+      ${origDisplay ? `<span class="earth-card-price-orig">${escapeHtml(origDisplay)}</span>` : ""}
+    </div>
+    <div class="earth-card-meta">
+      <span>Status: ${escapeHtml(freshnessLabel)}</span>
+      <span>Date: ${escapeHtml(entry.dataDate || "N/A")}</span>
+      <span>Availability: ${escapeHtml(entry.availability || "N/A")}</span>
+    </div>
+    ${entry.taxesOrNotes ? `<p class="modal-desc">${escapeHtml(entry.taxesOrNotes)}</p>` : ""}
+    <div class="earth-card-actions">
+      ${
+        safeHref
+          ? `<a href="${escapeHtml(safeHref)}" target="_blank" rel="noopener noreferrer" class="earth-source-link">${escapeHtml(entry.sourceTitle || "Source")} &#x2197;</a>`
+          : `<span class="earth-card-price-orig">Source: ${escapeHtml(entry.sourceTitle || "Search synthesis")}</span>`
+      }
+      <button type="button" class="outline-pill-btn" id="btnEarthAskInChat">Ask AI More &rarr;</button>
+    </div>
+  `;
+
+  document.getElementById("btnEarthAskInChat")?.addEventListener("click", async () => {
+    navigateTo("chat");
+    await createAndSelectChat(`EARTH: ${entry.city} (${earthState.currentResult?.commodity || "Market"})`);
+    sendChatMessage(
+      `Tell me more practical details, market districts, and local pricing tips for "${earthState.currentResult?.commodity || earthState.lastQuery}" in ${entry.city}, ${entry.country} (${entry.marketName}).`
+    );
+  });
+}
+
+function selectEarthLocation(entryId, focusMap = true) {
+  earthState.selectedEntryId = entryId;
+  const hit = earthState.displayedEntries.find(e => e.id === entryId) || null;
+  if (focusMap && hit) {
+    earthGlobeController.focusCoordinates(hit.lat, hit.lng);
+  }
+  earthGlobeController.setSelectedId(entryId);
+  renderEarthLocationPopup(hit);
+  document.querySelectorAll(".earth-result-card").forEach(card => {
+    card.classList.toggle("selected", card.getAttribute("data-earth-entry") === entryId);
+  });
+}
+
+function renderEarthResultsView(data, filteredList) {
+  const fxBadge = document.getElementById("earthFxStatusBadge");
+  const srcBadge = document.getElementById("earthSourceStatusBadge");
+  const headline = document.getElementById("earthResultsHeadline");
+  const summaryEl = document.getElementById("earthSummaryText");
+  const insightsGrid = document.getElementById("earthInsightsGrid");
+  const bulletsEl = document.getElementById("earthInsightBullets");
+  const sourcesWrap = document.getElementById("earthSourcesWrap");
+  const listHeading = document.getElementById("earthListHeading");
+  const resultsEl = document.getElementById("earthResultsList");
+  const popularEl = document.getElementById("earthPopularGrid");
+  const followUpSection = document.getElementById("earthFollowUpSection");
+
+  if (!data) return;
+
+  const fx = data.exchangeRates || {};
+  if (fxBadge) {
+    fxBadge.textContent = fx.isLiveFx
+      ? `Live FX (${fx.targetCurrency}${fx.rateToTarget ? ` · 1 USD=${fx.rateToTarget}` : ""})`
+      : `FX: ${fx.targetCurrency || "USD"}`;
+  }
+  if (srcBadge) {
+    srcBadge.textContent =
+      data.dataStatus === "unavailable"
+        ? "No Verified Data"
+        : data.searchGrounded
+          ? "Live Web Grounded"
+          : "Estimate / Reference";
+  }
+
+  if (headline) headline.textContent = data.commodity || "Global Market Intelligence";
+  if (summaryEl) summaryEl.textContent = data.summary || "";
+
+  // Summary insight cards
+  const highlights = data.highlights || {};
+  const cheapest = filteredList.find(e => e.id === highlights.cheapestId) || null;
+  const expensive = filteredList.find(e => e.id === highlights.mostExpensiveId) || null;
+  const topProducer = filteredList.find(e => e.id === highlights.topProducerId) || null;
+
+  if (insightsGrid) {
+    const cards = [];
+    if (cheapest && (cheapest.convertedPriceNumeric ?? cheapest.originalPriceNumeric) !== null) {
+      const pVal =
+        cheapest.convertedPriceNumeric !== null
+          ? formatCurrencyAmount(cheapest.convertedPriceNumeric, cheapest.convertedCurrency)
+          : formatCurrencyAmount(cheapest.originalPriceNumeric, cheapest.originalCurrency);
+      cards.push(`<div class="earth-stat-box"><small>Lowest Found</small><strong>${escapeHtml(pVal)}</strong><span>${escapeHtml(cheapest.flag)} ${escapeHtml(cheapest.city)}</span></div>`);
+    }
+    if (expensive && (expensive.convertedPriceNumeric ?? expensive.originalPriceNumeric) !== null) {
+      const pVal =
+        expensive.convertedPriceNumeric !== null
+          ? formatCurrencyAmount(expensive.convertedPriceNumeric, expensive.convertedCurrency)
+          : formatCurrencyAmount(expensive.originalPriceNumeric, expensive.originalCurrency);
+      cards.push(`<div class="earth-stat-box"><small>Highest Found</small><strong>${escapeHtml(pVal)}</strong><span>${escapeHtml(expensive.flag)} ${escapeHtml(expensive.city)}</span></div>`);
+    }
+    if (highlights.averageConvertedPrice !== null && highlights.currencyUsed) {
+      cards.push(
+        `<div class="earth-stat-box"><small>Comparable Avg</small><strong>${escapeHtml(
+          formatCurrencyAmount(highlights.averageConvertedPrice, highlights.currencyUsed)
+        )}</strong><span>${escapeHtml(data.unitSpec || "standard unit")}</span></div>`
+      );
+    }
+    if (topProducer) {
+      cards.push(
+        `<div class="earth-stat-box"><small>Top Producer</small><strong>${escapeHtml(topProducer.flag)} ${escapeHtml(topProducer.country)}</strong><span>${escapeHtml(topProducer.productionVolume || `${topProducer.productionSharePct || ""}%`)}</span></div>`
+      );
+    }
+    insightsGrid.innerHTML = cards.join("");
+  }
+
+  if (bulletsEl) {
+    bulletsEl.innerHTML = Array.isArray(data.insights)
+      ? data.insights.map(line => `<li>${escapeHtml(line)}</li>`).join("")
+      : "";
+  }
+
+  if (sourcesWrap) {
+    const validSources = (data.verifiedSources || [])
+      .map(s => ({ title: s.title, href: sanitizeExternalHref(s.url) }))
+      .filter(s => s.href);
+    if (validSources.length > 0) {
+      sourcesWrap.classList.remove("hidden");
+      sourcesWrap.innerHTML = validSources
+        .map(
+          s =>
+            `<a href="${escapeHtml(s.href)}" target="_blank" rel="noopener noreferrer" class="earth-source-link">${escapeHtml(s.title)} &#x2197;</a>`
+        )
+        .join("");
+    } else {
+      sourcesWrap.classList.add("hidden");
+      sourcesWrap.innerHTML = "";
+    }
+  }
+
+  followUpSection?.classList.remove("hidden");
+  popularEl?.classList.add("hidden");
+
+  if (listHeading) {
+    listHeading.textContent =
+      filteredList.length > 0
+        ? `Verified Global Locations (${filteredList.length})`
+        : "No Verified Matching Records";
+  }
+
+  if (!resultsEl) return;
+  if (filteredList.length === 0) {
+    resultsEl.innerHTML = `
+      <div class="phase-card">
+        <h4>VERIFIED DATA UNAVAILABLE</h4>
+        <p>${escapeHtml(data.unavailableReason || "No verified entries matched the current query or filter selection. Adjust filters or try another commodity/location.")}</p>
+      </div>
+    `;
+    earthGlobeController.setData([], {});
+    renderEarthLocationPopup(null);
+    return;
+  }
+
+  resultsEl.innerHTML = filteredList
+    .map(entry => {
+      const tone = classifyEarthMarkerTone(entry, highlights);
+      const isSelected = entry.id === earthState.selectedEntryId;
+      const convertedStr =
+        entry.convertedPriceNumeric !== null && entry.convertedCurrency
+          ? `${formatCurrencyAmount(entry.convertedPriceNumeric, entry.convertedCurrency)} ${entry.unit || ""}`.trim()
+          : entry.originalPriceNumeric !== null && entry.originalCurrency
+            ? `${formatCurrencyAmount(entry.originalPriceNumeric, entry.originalCurrency)} ${entry.unit || ""}`.trim()
+            : entry.productionVolume || "Volume/Details";
+      const localOrigStr =
+        entry.originalPriceNumeric !== null &&
+        entry.originalCurrency &&
+        entry.originalCurrency !== entry.convertedCurrency
+          ? `Orig: ${formatCurrencyAmount(entry.originalPriceNumeric, entry.originalCurrency)}`
+          : "";
+      const safeUrl = sanitizeExternalHref(entry.sourceUrl);
+      const freshnessChip = entry.isEstimate
+        ? "Estimate"
+        : entry.freshness === "live"
+          ? "Live"
+          : "Historical";
+
+      return `
+        <article class="earth-result-card ${isSelected ? "selected" : ""}" data-earth-entry="${escapeHtml(entry.id)}">
+          <div class="earth-card-top">
+            <div>
+              <div class="earth-card-place">${escapeHtml(entry.flag || "")} ${escapeHtml(entry.city)}, ${escapeHtml(entry.country)}</div>
+              <div class="earth-card-market">${escapeHtml(entry.marketName || "")}</div>
+            </div>
+            <span class="badge-chip ${tone === "cheapest" ? "teal" : tone === "expensive" ? "purple" : "cyan"}">${escapeHtml(String(entry.marketType || "market").toUpperCase())}</span>
+          </div>
+          <div class="earth-card-price-row">
+            <span class="earth-card-price-main">${escapeHtml(convertedStr)}</span>
+            ${localOrigStr ? `<span class="earth-card-price-orig">${escapeHtml(localOrigStr)}</span>` : ""}
+          </div>
+          ${entry.productionVolume && entry.convertedPriceNumeric !== null ? `<div class="earth-card-meta"><span>Output: ${escapeHtml(entry.productionVolume)}</span></div>` : ""}
+          <div class="earth-card-meta">
+            <span>${escapeHtml(freshnessChip)} &middot; ${escapeHtml(entry.dataDate || "")}</span>
+            <span>${escapeHtml(entry.availability || "")}</span>
+          </div>
+          ${entry.taxesOrNotes ? `<p class="earth-card-market">${escapeHtml(entry.taxesOrNotes)}</p>` : ""}
+          <div class="earth-card-actions">
+            ${
+              safeUrl
+                ? `<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" class="earth-source-link">${escapeHtml(entry.sourceTitle || "Source")} &#x2197;</a>`
+                : `<span class="earth-card-price-orig">${escapeHtml(entry.sourceTitle || "Verified query")}</span>`
+            }
+            <button type="button" class="outline-pill-btn" data-earth-focus="${escapeHtml(entry.id)}">Focus Globe</button>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+
+  resultsEl.querySelectorAll("[data-earth-focus]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.getAttribute("data-earth-focus");
+      if (id) selectEarthLocation(id, true);
+    });
+  });
+
+  const activeId =
+    filteredList.some(e => e.id === earthState.selectedEntryId)
+      ? earthState.selectedEntryId
+      : highlights.cheapestId || filteredList[0].id;
+  earthState.selectedEntryId = activeId;
+  earthGlobeController.setData(filteredList, highlights, activeId);
+  const firstEntry = filteredList.find(e => e.id === activeId) || filteredList[0];
+  renderEarthLocationPopup(firstEntry);
+}
+
+async function runEarthQuery(rawQuery, { isFollowUp = false } = {}) {
+  if (!currentUser) {
+    showToast("Please sign in to explore THE EARTH.");
+    return;
+  }
+  const query = String(rawQuery || "").trim();
+  if (query.length < 2) {
+    showToast("Enter a location, product, or price question to explore.");
+    return;
+  }
+
+  // Handle pure map-focus follow-ups instantly when data is already loaded
+  if (isFollowUp && earthState.displayedEntries.length > 0) {
+    const action = detectLocalMapAction(query);
+    if (action) {
+      const highlights = earthState.currentResult?.highlights || {};
+      let targetId = null;
+      if (action === "focus_cheapest") targetId = highlights.cheapestId || earthState.displayedEntries[0]?.id;
+      else if (action === "focus_expensive") targetId = highlights.mostExpensiveId || earthState.displayedEntries.at(-1)?.id;
+      else if (action === "focus_producer") targetId = highlights.topProducerId || earthState.displayedEntries[0]?.id;
+      if (targetId) {
+        if (earthState.viewMode === "list") setEarthDisplayMode("globe");
+        selectEarthLocation(targetId, true);
+        showToast("Focused on target market on THE EARTH");
+        return;
+      }
+    }
+  }
+
+  if (earthState.isLoading) return;
+  earthState.isLoading = true;
+  earthState.lastQuery = query;
+
+  const btn = document.getElementById("btnEarthSearch");
+  const followBtn = document.getElementById("btnEarthFollowUp");
+  const summaryEl = document.getElementById("earthSummaryText");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Scanning Globe…";
+  }
+  if (followBtn) followBtn.disabled = true;
+  if (summaryEl) summaryEl.textContent = "Querying global search grounding & live FX rates…";
+
+  const targetCurrency = document.getElementById("earthCurrencySelect")?.value || earthState.targetCurrency || "USD";
+  earthState.targetCurrency = targetCurrency;
+  const filters = getEarthFiltersFromUi();
+
+  try {
+    const idToken = await currentUser.getIdToken();
+    const res = await fetch(`${PUBLIC_PROXY_URL}/earth/query`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${idToken}`,
+      },
+      body: JSON.stringify({
+        query,
+        model: getSelectedModel(),
+        targetCurrency,
+        filters,
+        userLocation: earthState.userLocation,
+        followUpHistory: isFollowUp ? earthState.followUpHistory : [],
+      }),
+    });
+
+    const bodyText = await res.text();
+    let parsed = null;
+    try {
+      parsed = JSON.parse(bodyText);
+    } catch {
+      parsed = null;
+    }
+    if (!res.ok || !parsed) {
+      throw new Error(parsed?.error || `THE EARTH request failed (HTTP ${res.status})`);
+    }
+
+    earthState.currentResult = parsed;
+    earthState.allEntries = Array.isArray(parsed.entries) ? parsed.entries : [];
+    earthState.displayedEntries = filterAndSortEarthEntries(earthState.allEntries, filters);
+    earthState.selectedEntryId =
+      parsed.highlights?.cheapestId || earthState.displayedEntries[0]?.id || null;
+
+    const turnSnapshot = {
+      query,
+      commodity: parsed.commodity || "",
+      summary: parsed.summary || "",
+      topCountries: earthState.allEntries.slice(0, 5).map(e => e.country).filter(Boolean),
+    };
+    earthState.followUpHistory = isFollowUp
+      ? [...earthState.followUpHistory.slice(-5), turnSnapshot]
+      : [turnSnapshot];
+
+    renderEarthResultsView(parsed, earthState.displayedEntries);
+  } catch (err) {
+    if (summaryEl) {
+      summaryEl.textContent = redactSensitiveText(err?.message || "Unable to fetch verified global market data right now.");
+    }
+    showToast(redactSensitiveText(err?.message || "THE EARTH search failed"));
+  } finally {
+    earthState.isLoading = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "\uD83C\uDF0D Explore World";
+    }
+    if (followBtn) followBtn.disabled = false;
+  }
+}
+
+function applyLocalEarthFilters() {
+  if (!earthState.currentResult) return;
+  const filters = getEarthFiltersFromUi();
+  const narrowed = filterAndSortEarthEntries(earthState.allEntries, filters);
+  if (narrowed.length === 0 && (filters.country || filters.city || filters.category || filters.marketType !== "all") && earthState.lastQuery) {
+    runEarthQuery(earthState.lastQuery, { isFollowUp: true });
+    return;
+  }
+  earthState.displayedEntries = narrowed;
+  renderEarthResultsView(earthState.currentResult, earthState.displayedEntries);
+}
+
+function setEarthDisplayMode(mode) {
+  earthState.viewMode = mode;
+  const canvasWrap = document.getElementById("earthCanvasWrap");
+  const btnGlobe = document.getElementById("btnEarthViewGlobe");
+  const btnFlat = document.getElementById("btnEarthViewFlat");
+  const btnList = document.getElementById("btnEarthViewList");
+
+  btnGlobe?.classList.toggle("active", mode === "globe");
+  btnFlat?.classList.toggle("active", mode === "flat");
+  btnList?.classList.toggle("active", mode === "list");
+
+  if (canvasWrap) {
+    canvasWrap.classList.toggle("hidden", mode === "list");
+  }
+  if (mode !== "list") {
+    earthGlobeController.setMode(mode === "flat" ? "flat" : "globe");
+  }
+}
+
+function bindEarthEvents() {
+  renderEarthPopularSearches();
+  earthGlobeController.bindCanvasEvents();
+
+  document.getElementById("earthSearchForm")?.addEventListener("submit", e => {
+    e.preventDefault();
+    const val = document.getElementById("earthSearchInput")?.value || "";
+    runEarthQuery(val, { isFollowUp: false });
+  });
+
+  document.querySelectorAll("[data-earth-prompt]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const prompt = btn.getAttribute("data-earth-prompt") || "";
+      const input = document.getElementById("earthSearchInput");
+      if (input) input.value = prompt;
+      runEarthQuery(prompt, { isFollowUp: false });
+    });
+  });
+
+  document.getElementById("earthFollowUpForm")?.addEventListener("submit", e => {
+    e.preventDefault();
+    const input = document.getElementById("earthFollowUpInput");
+    const val = input?.value || "";
+    if (!val.trim()) return;
+    if (input) input.value = "";
+    runEarthQuery(val, { isFollowUp: true });
+  });
+
+  document.querySelectorAll("[data-earth-followup]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const prompt = btn.getAttribute("data-earth-followup") || "";
+      runEarthQuery(prompt, { isFollowUp: true });
+    });
+  });
+
+  document.getElementById("earthCurrencySelect")?.addEventListener("change", e => {
+    earthState.targetCurrency = e.target.value || "USD";
+    const fxBadge = document.getElementById("earthFxStatusBadge");
+    if (fxBadge && !earthState.currentResult) {
+      fxBadge.textContent = `FX: Ready (${earthState.targetCurrency})`;
+    }
+    if (earthState.lastQuery) {
+      runEarthQuery(earthState.lastQuery, { isFollowUp: false });
+    }
+  });
+
+  document.getElementById("btnEarthToggleFilters")?.addEventListener("click", () => {
+    document.getElementById("earthFiltersPanel")?.classList.toggle("hidden");
+  });
+  document.getElementById("btnEarthApplyFilters")?.addEventListener("click", applyLocalEarthFilters);
+  document.getElementById("btnEarthResetFilters")?.addEventListener("click", () => {
+    for (const id of ["earthFilterCountry", "earthFilterCity", "earthFilterMinPrice", "earthFilterMaxPrice"]) {
+      const el = document.getElementById(id);
+      if (el) el.value = "";
+    }
+    if (document.getElementById("earthFilterCategory")) document.getElementById("earthFilterCategory").value = "";
+    if (document.getElementById("earthFilterMarketType")) document.getElementById("earthFilterMarketType").value = "all";
+    if (document.getElementById("earthFilterSort")) document.getElementById("earthFilterSort").value = "relevance";
+    applyLocalEarthFilters();
+  });
+
+  document.getElementById("btnEarthViewGlobe")?.addEventListener("click", () => setEarthDisplayMode("globe"));
+  document.getElementById("btnEarthViewFlat")?.addEventListener("click", () => setEarthDisplayMode("flat"));
+  document.getElementById("btnEarthViewList")?.addEventListener("click", () => setEarthDisplayMode("list"));
+  document.getElementById("btnEarthZoomIn")?.addEventListener("click", () => earthGlobeController.adjustZoom(0.22));
+  document.getElementById("btnEarthZoomOut")?.addEventListener("click", () => earthGlobeController.adjustZoom(-0.22));
+  document.getElementById("btnEarthResetGlobe")?.addEventListener("click", () => earthGlobeController.resetView());
+
+  document.getElementById("btnEarthNearMe")?.addEventListener("click", () => {
+    const geo = globalThis.navigator?.geolocation;
+    if (!geo || typeof geo.getCurrentPosition !== "function") {
+      showToast("Location access is unavailable on this browser. Enter your city or country filter instead.");
+      return;
+    }
+    geo.getCurrentPosition(
+      pos => {
+        earthState.userLocation = {
+          lat: Number(pos.coords.latitude.toFixed(4)),
+          lng: Number(pos.coords.longitude.toFixed(4)),
+        };
+        earthGlobeController.focusCoordinates(earthState.userLocation.lat, earthState.userLocation.lng);
+        showToast("Local coordinates linked for nearby market insights!");
+        const q = document.getElementById("earthSearchInput")?.value?.trim();
+        if (q) runEarthQuery(q, { isFollowUp: false });
+      },
+      () => {
+        showToast("Location permission denied. You can search any city or country manually.");
+      },
+      { enableHighAccuracy: false, timeout: 7000 }
+    );
   });
 }
 
@@ -3912,6 +4539,7 @@ function boot() {
   renderInstagramLists();
   renderGlobalFooters();
   renderExplore();
+  introController.bindControls();
   bindEvents();
   attachInteractiveRipplesAndAudio();
   initParticleCanvas();

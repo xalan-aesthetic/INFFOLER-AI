@@ -16,6 +16,11 @@ import {
   MODEL_REGISTRY,
   REASONING_MODES,
   TASK_CATEGORIES,
+  sanitizeVerifiedUrl,
+  extractJsonObjectFromText,
+  fetchLiveExchangeRates,
+  validateEarthQueryRequest,
+  runEarthIntelligencePipeline,
 } from "./cloudflare-worker.js";
 import {
   validatePromptInput,
@@ -32,6 +37,21 @@ import {
   OtpRateLimiter,
   mapMultiProviderAuthError,
 } from "../docs/auth-providers.js";
+import {
+  INTRO_SESSION_KEY,
+  hasIntroPlayedThisSession,
+  markIntroPlayedThisSession,
+} from "../docs/intro-cinema.js";
+import {
+  EARTH_SUGGESTION_PROMPTS,
+  EARTH_POPULAR_SEARCHES,
+  sanitizeExternalHref,
+  formatCurrencyAmount,
+  classifyEarthMarkerTone,
+  filterAndSortEarthEntries,
+  detectLocalMapAction,
+  projectGlobePoint,
+} from "../docs/earth-intelligence.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -275,6 +295,9 @@ test("CORS preflight allows Authorization and /health reports authRequired witho
   assert.equal(healthJson.authRequired, true);
   assert.deepEqual(healthJson.authProviders, ["google.com", "microsoft.com", "apple.com", "phone", "password"]);
   assert.equal(healthJson.sessionEndpoint, "/auth/session");
+  assert.equal(healthJson.earthIntelligenceEnabled, true);
+  assert.equal(healthJson.earthEndpoint, "/earth/query");
+  assert.equal(healthJson.earthRatesEndpoint, "/earth/rates");
   assert.equal(healthJson.freeForAll, true);
   assert.equal(healthJson.version, "2.3.0");
   assert.equal(healthJson.reasoningEngineVersion, "1.0.0");
@@ -389,9 +412,24 @@ test("Frontend integrity: DOM IDs match, no unauthenticated guest storage, all 6
     "linkPhoneCountrySelect",
     "linkPhoneNumberInput",
     "linkPhoneOtpInput",
+    "cinematicIntroOverlay",
+    "introCinemaCanvas",
+    "btnSkipIntro",
+    "btnIntroSoundToggle",
+    "btnReplayIntro",
+    "view-earth",
+    "earthSearchForm",
+    "earthSearchInput",
+    "earthCurrencySelect",
+    "earthGlobeCanvas",
+    "earthLocationPopup",
+    "earthFilterCountry",
+    "earthFollowUpForm",
+    "earthResultsList",
   ]) {
     assert.ok(html.includes(`id="${id}"`), `Missing upgraded HTML element #${id}`);
   }
+  assert.ok(html.includes('name="google-site-verification"'), "Google Search Console verification tag must be preserved");
   assert.ok(html.includes('<option value="+91" selected>'), "India (+91) must be the default country code");
   assert.ok(
     css.includes("appearance: none;") &&
@@ -403,6 +441,8 @@ test("Frontend integrity: DOM IDs match, no unauthenticated guest storage, all 6
   assert.ok(!js.includes("FALLBACK_CHAINS"), "Silent model switching chains must not exist");
   assert.ok(js.includes("./reasoning-engine.js"), "app.js must import ./reasoning-engine.js");
   assert.ok(js.includes("./auth-providers.js"), "app.js must import ./auth-providers.js");
+  assert.ok(js.includes("./intro-cinema.js"), "app.js must import ./intro-cinema.js");
+  assert.ok(js.includes("./earth-intelligence.js"), "app.js must import ./earth-intelligence.js");
   assert.ok(!/PRIVATE KEY-----|client_secret/i.test(js + html), "Frontend must never expose OAuth secrets or Apple private keys");
 });
 
@@ -443,6 +483,8 @@ function createLightweightDomFromHtml(html) {
       style: {},
       scrollHeight: 40,
       scrollTop: 0,
+      clientWidth: 520,
+      clientHeight: 340,
       attrs: { ...attrs },
       children: [],
       classList: makeClassList(attrs.class || ""),
@@ -478,7 +520,7 @@ function createLightweightDomFromHtml(html) {
         }
       },
       click: async () => {
-        await el.dispatchEvent({ type: "click", target: el, currentTarget: el, preventDefault() {} });
+        await el.dispatchEvent({ type: "click", target: el, currentTarget: el, preventDefault() {}, stopPropagation() {} });
       },
       requestSubmit: async () => {
         await el.dispatchEvent({ type: "submit", target: el, currentTarget: el, preventDefault() {} });
@@ -488,16 +530,28 @@ function createLightweightDomFromHtml(html) {
       },
       focus: () => {},
       scrollIntoView: () => {},
-      getBoundingClientRect: () => ({ width: 0, height: 0 }),
+      getBoundingClientRect: () => ({ width: 520, height: 340, left: 0, top: 0 }),
       getContext: () => ({
         clearRect() {},
+        fillRect() {},
+        strokeRect() {},
         beginPath() {},
+        closePath() {},
         arc() {},
+        ellipse() {},
         fill() {},
         setTransform() {},
         moveTo() {},
         lineTo() {},
         stroke() {},
+        save() {},
+        restore() {},
+        clip() {},
+        translate() {},
+        rotate() {},
+        fillText() {},
+        setLineDash() {},
+        createRadialGradient: () => ({ addColorStop() {} }),
       }),
       querySelectorAll: sel => matchElements(el.children, sel),
       querySelector: sel => matchElements(el.children, sel)[0] || null,
@@ -518,8 +572,14 @@ function createLightweightDomFromHtml(html) {
       return el.classList.contains(sel.slice(1));
     }
     if (sel.startsWith("[") && sel.endsWith("]")) {
-      const attr = sel.slice(1, -1);
-      return el.hasAttribute(attr);
+      const inner = sel.slice(1, -1);
+      const eqIdx = inner.indexOf("=");
+      if (eqIdx > 0) {
+        const attr = inner.slice(0, eqIdx).trim();
+        const val = inner.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, "");
+        return el.attrs[attr] === val;
+      }
+      return el.hasAttribute(inner);
     }
     if (sel === 'meta[name="theme-color"]') {
       return el.tagName === "META" && el.attrs.name === "theme-color";
@@ -775,6 +835,14 @@ test("End-to-end login flow: UI screen, Google & Email Sign-In/Sign-Up, redirect
       path.resolve(__dirname, "../docs/auth-providers.js"),
       path.join(tmpDir, "auth-providers.js")
     );
+    fs.copyFileSync(
+      path.resolve(__dirname, "../docs/intro-cinema.js"),
+      path.join(tmpDir, "intro-cinema.js")
+    );
+    fs.copyFileSync(
+      path.resolve(__dirname, "../docs/earth-intelligence.js"),
+      path.join(tmpDir, "earth-intelligence.js")
+    );
 
     const { getApps } = await import(pathToFileURL(path.join(tmpDir, "firebase-app.js")).href);
     const { __state: authState } = await import(pathToFileURL(path.join(tmpDir, "firebase-auth.js")).href);
@@ -837,7 +905,10 @@ test("End-to-end login flow: UI screen, Google & Email Sign-In/Sign-Up, redirect
     // 5. Authenticated chat message uses verified Worker with Bearer token
     document.getElementById("chatInput").value = "Hello INFFOLER AI";
     await document.getElementById("chatForm").submit();
-    await new Promise(r => setTimeout(r, 60));
+    for (let i = 0; i < 20; i++) {
+      if (document.getElementById("chatMessages").innerHTML.includes("Hello from verified INFFOLER Worker!")) break;
+      await new Promise(r => setTimeout(r, 25));
+    }
     assert.ok(
       document.getElementById("chatMessages").innerHTML.includes("Hello from verified INFFOLER Worker!"),
       "Authenticated user must receive real Worker response"
@@ -1065,6 +1136,14 @@ test("Audio SFX, ambient music, volume persistence, no autoplay, and AI thinking
     fs.copyFileSync(
       path.resolve(__dirname, "../docs/auth-providers.js"),
       path.join(tmpDir, "auth-providers.js")
+    );
+    fs.copyFileSync(
+      path.resolve(__dirname, "../docs/intro-cinema.js"),
+      path.join(tmpDir, "intro-cinema.js")
+    );
+    fs.copyFileSync(
+      path.resolve(__dirname, "../docs/earth-intelligence.js"),
+      path.join(tmpDir, "earth-intelligence.js")
     );
 
     await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
@@ -1381,6 +1460,14 @@ test("Frontend quota/5xx handling: safe backoff, bounded retries, Retry button, 
     fs.copyFileSync(
       path.resolve(__dirname, "../docs/auth-providers.js"),
       path.join(tmpDir, "auth-providers.js")
+    );
+    fs.copyFileSync(
+      path.resolve(__dirname, "../docs/intro-cinema.js"),
+      path.join(tmpDir, "intro-cinema.js")
+    );
+    fs.copyFileSync(
+      path.resolve(__dirname, "../docs/earth-intelligence.js"),
+      path.join(tmpDir, "earth-intelligence.js")
     );
 
     await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
@@ -1979,6 +2066,14 @@ test("Reasoning Engine Scenario 10 & E2E: Reasoning mode switcher, status bar, e
       path.resolve(__dirname, "../docs/auth-providers.js"),
       path.join(tmpDir, "auth-providers.js")
     );
+    fs.copyFileSync(
+      path.resolve(__dirname, "../docs/intro-cinema.js"),
+      path.join(tmpDir, "intro-cinema.js")
+    );
+    fs.copyFileSync(
+      path.resolve(__dirname, "../docs/earth-intelligence.js"),
+      path.join(tmpDir, "earth-intelligence.js")
+    );
 
     await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
     await new Promise(r => setTimeout(r, 20));
@@ -2538,6 +2633,8 @@ test("E2E Multi-Provider Auth: Microsoft, Apple Private Relay, Phone OTP (+91), 
     fs.writeFileSync(path.join(tmpDir, "app.js"), patchedAppJs);
     fs.copyFileSync(path.resolve(__dirname, "../docs/reasoning-engine.js"), path.join(tmpDir, "reasoning-engine.js"));
     fs.copyFileSync(path.resolve(__dirname, "../docs/auth-providers.js"), path.join(tmpDir, "auth-providers.js"));
+    fs.copyFileSync(path.resolve(__dirname, "../docs/intro-cinema.js"), path.join(tmpDir, "intro-cinema.js"));
+    fs.copyFileSync(path.resolve(__dirname, "../docs/earth-intelligence.js"), path.join(tmpDir, "earth-intelligence.js"));
 
     const { __state: authState } = await import(pathToFileURL(path.join(tmpDir, "firebase-auth.js")).href);
     const { __docs: firestoreDocs } = await import(pathToFileURL(path.join(tmpDir, "firebase-firestore.js")).href);
@@ -2653,6 +2750,683 @@ test("E2E Multi-Provider Auth: Microsoft, Apple Private Relay, Phone OTP (+91), 
     assert.equal(refreshedDom.document.getElementById("sidebarUserName").textContent, "Mobile 3210");
     assert.match(refreshedDom.document.getElementById("sidebarUserEmail").textContent, /\+91 ••••••3210/);
     assert.equal(backendSessionsChecked.at(-1)?.signInProvider, "phone");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+/* ==================== UPGRADE V2.0 TESTS: SIDEBAR FIX + CINEMATIC INTRO + THE EARTH ==================== */
+
+test("Part 1 — Mobile Sidebar Fix: stacking context above backdrop, zero dim/blur, scrolling & every nav item", async () => {
+  clearJwkCache();
+  const { jwt, publicJwk, now } = await generateTestKeyAndJwt(
+    { sub: "uid_sidebar_test", user_id: "uid_sidebar_test", email: "sidebar@example.com", email_verified: true },
+    { kid: "sidebar-kid-1" }
+  );
+  const html = fs.readFileSync(path.resolve(__dirname, "../docs/index.html"), "utf8");
+  const css = fs.readFileSync(path.resolve(__dirname, "../docs/styles.css"), "utf8");
+  const originalJs = fs.readFileSync(path.resolve(__dirname, "../docs/app.js"), "utf8");
+
+  // 1. Structural stacking checks in HTML & CSS
+  const shellIdx = html.indexOf('id="appShell"');
+  const backdropIdx = html.indexOf('id="sidebarBackdrop"');
+  const asideIdx = html.indexOf('<aside class="sidebar" id="appSidebar"');
+  assert.ok(shellIdx > 0 && backdropIdx > shellIdx && asideIdx > backdropIdx, "#sidebarBackdrop must be inside #appShell before #appSidebar");
+  assert.match(css, /\.app-shell\s*\{[\s\S]*?z-index:\s*auto;/);
+  assert.match(css, /\.sidebar-backdrop\s*\{[\s\S]*?z-index:\s*45;/);
+  assert.match(css, /\.sidebar\s*\{[\s\S]*?z-index:\s*60;[\s\S]*?opacity:\s*1;[\s\S]*?filter:\s*none;[\s\S]*?pointer-events:\s*auto;/);
+  assert.match(css, /\.sidebar-history-scroll\s*\{[\s\S]*?-webkit-overflow-scrolling:\s*touch;[\s\S]*?touch-action:\s*pan-y;/);
+
+  // 2. E2E interactive sidebar clicks on mobile viewport
+  const { document } = createLightweightDomFromHtml(html);
+  const docListeners = new Map();
+  document.addEventListener = (ev, fn) => {
+    if (!docListeners.has(ev)) docListeners.set(ev, []);
+    docListeners.get(ev).push(fn);
+  };
+  document.dispatchDocEvent = async (ev, payload) => {
+    for (const fn of docListeners.get(ev) || []) await fn(payload);
+  };
+
+  const store = new Map();
+  const sessStore = new Map([[INTRO_SESSION_KEY, "1"]]);
+  globalThis.document = document;
+  globalThis.localStorage = {
+    getItem: k => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: k => store.delete(k),
+  };
+  globalThis.sessionStorage = {
+    getItem: k => (sessStore.has(k) ? sessStore.get(k) : null),
+    setItem: (k, v) => sessStore.set(k, String(v)),
+    removeItem: k => sessStore.delete(k),
+  };
+  globalThis.window = {
+    innerWidth: 390,
+    innerHeight: 844,
+    devicePixelRatio: 2,
+    location: { hostname: "xalan-aesthetic.github.io" },
+    matchMedia: () => ({ matches: false }),
+    addEventListener: () => {},
+    confirm: () => true,
+  };
+  globalThis.requestAnimationFrame = cb => (cb?.name === "tick" || cb?.name === "frame" ? 1 : setTimeout(() => cb(Date.now()), 0));
+  globalThis.cancelAnimationFrame = id => clearTimeout(id);
+  Object.defineProperty(globalThis, "navigator", { value: { clipboard: { writeText: async () => {} } }, configurable: true });
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).startsWith("https://www.googleapis.com/identitytoolkit/v3/relyingparty/getProjectConfig")) {
+      return new Response(JSON.stringify({ authorizedDomains: ["xalan-aesthetic.github.io"] }), { status: 200 });
+    }
+    if (String(url).startsWith("https://inffoler-ai-proxy.xalanvetrnen.workers.dev")) {
+      return handleRequest(new Request(url, init), { GEMINI_API_KEY: "sec", FIREBASE_PROJECT_ID: PROJECT_ID }, {
+        nowSec: now,
+        fetchImpl: async () => new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 }),
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "inffoler-sidebar-e2e-"));
+  try {
+    fs.writeFileSync(path.join(tmpDir, "firebase-app.js"), `const apps=[]; export const getApps=()=>apps; export const getApp=()=>apps[0]; export function initializeApp(c){const a={cfg:c,options:c};apps.push(a);return a;}`);
+    fs.writeFileSync(
+      path.join(tmpDir, "firebase-auth.js"),
+      `export const __state={currentUser:null,listeners:[],signedOut:0};
+       export class GoogleAuthProvider{setCustomParameters(){}}
+       export class OAuthProvider{setCustomParameters(){}addScope(){}}
+       export class EmailAuthProvider{static credential(e,p){return{e,p};}}
+       export class RecaptchaVerifier{clear(){}}
+       export const browserLocalPersistence={};
+       export const getAuth=()=>__state;
+       export const setPersistence=async()=>{};
+       export function onAuthStateChanged(_a,cb){__state.listeners.push(cb);cb(__state.currentUser);return()=>{};}
+       export const getRedirectResult=async()=>null;
+       export async function signInWithEmailAndPassword(_a,email){
+         const u={uid:"uid_sidebar_test",email,displayName:"Sidebar Tester",providerData:[{providerId:"password"}],getIdToken:async()=>${JSON.stringify(jwt)},reload:async()=>{}};
+         __state.currentUser=u; await Promise.all(__state.listeners.map(f=>f(u))); return{user:u};
+       }
+       export async function createUserWithEmailAndPassword(){} export async function updateProfile(){}
+       export async function signInWithPopup(){} export async function signInWithRedirect(){}
+       export async function signInWithPhoneNumber(){return{async confirm(){return{user:null};}};}
+       export async function sendPasswordResetEmail(){} export async function linkWithPopup(){} export async function linkWithRedirect(){}
+       export async function linkWithCredential(){} export async function linkWithPhoneNumber(){return{async confirm(){return{user:null};}};}
+       export async function deleteUser(){}
+       export async function signOut(){__state.signedOut++; __state.currentUser=null; await Promise.all(__state.listeners.map(f=>f(null)));}`
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "firebase-firestore.js"),
+      `export const getFirestore=()=>({}); export const doc=(_d,...p)=>p.join("/"); export const collection=(_d,...p)=>p.join("/");
+       export const query=c=>c; export const orderBy=()=>null; export const limit=()=>null; export const serverTimestamp=()=>"now"; export const increment=n=>n;
+       export const getDoc=async()=>({exists:()=>false,data:()=>({})}); export const setDoc=async()=>{}; export const updateDoc=async()=>{}; export const deleteDoc=async()=>{};
+       export const getDocs=async()=>({docs:[]}); export const writeBatch=()=>({set(){},update(){},delete(){},async commit(){}}); export const onSnapshot=(_q,cb)=>{cb({docs:[]});return()=>{};};`
+    );
+    const patched = originalJs
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js", "./firebase-app.js")
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js", "./firebase-auth.js")
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js", "./firebase-firestore.js");
+    fs.writeFileSync(path.join(tmpDir, "app.js"), patched);
+    for (const f of ["reasoning-engine.js", "auth-providers.js", "intro-cinema.js", "earth-intelligence.js"]) {
+      fs.copyFileSync(path.resolve(__dirname, `../docs/${f}`), path.join(tmpDir, f));
+    }
+
+    const { __state: authState } = await import(pathToFileURL(path.join(tmpDir, "firebase-auth.js")).href);
+    await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
+    await new Promise(r => setTimeout(r, 20));
+
+    document.getElementById("loginEmail").value = "sidebar@example.com";
+    document.getElementById("loginPassword").value = "pass1234";
+    await document.getElementById("emailLoginForm").submit();
+    await new Promise(r => setTimeout(r, 25));
+
+    const sidebar = document.getElementById("appSidebar");
+    const backdrop = document.getElementById("sidebarBackdrop");
+    const openBtn = document.getElementById("btnOpenSidebar");
+
+    // Open mobile sidebar -> visible above backdrop
+    await openBtn.click();
+    assert.equal(sidebar.classList.contains("open"), true);
+    assert.equal(backdrop.classList.contains("hidden"), false);
+    assert.equal(sidebar.hasAttribute("inert"), false);
+
+    // Outside backdrop tap closes sidebar
+    await backdrop.click();
+    assert.equal(sidebar.classList.contains("open"), false);
+    assert.equal(backdrop.classList.contains("hidden"), true);
+
+    // Escape key closes sidebar
+    await openBtn.click();
+    assert.equal(sidebar.classList.contains("open"), true);
+    await document.dispatchDocEvent("keydown", { key: "Escape" });
+    assert.equal(sidebar.classList.contains("open"), false);
+
+    // Every sidebar nav view works & auto-closes mobile sidebar
+    for (const viewKey of ["home", "earth", "core", "whatif", "explore", "creator", "chat"]) {
+      await openBtn.click();
+      assert.equal(sidebar.classList.contains("open"), true);
+      const navBtn = document.querySelectorAll(`[data-nav="${viewKey}"]`)[0];
+      assert.ok(navBtn, `Missing nav button for ${viewKey}`);
+      await navBtn.click();
+      assert.equal(document.getElementById(`view-${viewKey}`).classList.contains("active"), true, `view-${viewKey} must become active`);
+      assert.equal(sidebar.classList.contains("open"), false, `Sidebar must close after clicking ${viewKey}`);
+    }
+
+    // Theme toggle button works from sidebar
+    const themeBefore = document.documentElement.attrs["data-theme"];
+    await openBtn.click();
+    await document.getElementById("btnThemeToggleSidebar").click();
+    assert.notEqual(document.documentElement.attrs["data-theme"], themeBefore);
+
+    // New Chat button works & closes sidebar
+    await document.getElementById("btnSidebarNewChat").click();
+    assert.equal(document.getElementById("view-chat").classList.contains("active"), true);
+    assert.equal(sidebar.classList.contains("open"), false);
+
+    // Settings button opens modal & closes sidebar
+    await document.getElementById("btnSidebarSettings").click();
+    assert.equal(document.getElementById("settingsModal").classList.contains("hidden"), false);
+    assert.equal(sidebar.classList.contains("open"), false);
+    await document.getElementById("closeSettingsModal").click();
+
+    // Logout button closes sidebar & signs out
+    await openBtn.click();
+    await document.getElementById("btnSidebarAuthAction").click();
+    await new Promise(r => setTimeout(r, 20));
+    assert.equal(authState.signedOut, 1);
+    assert.equal(sidebar.classList.contains("open"), false);
+    assert.equal(document.getElementById("authGateScreen").classList.contains("hidden"), false);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("Part 2 — Cinematic Intro ('THE AWAKENING OF INFFOLER AI 2.0'): once per session, Skip Intro, Replay Intro, zero pre-gesture audio, reduced-motion", async () => {
+  clearJwkCache();
+  const { jwt, publicJwk, now } = await generateTestKeyAndJwt(
+    { sub: "uid_intro_test", user_id: "uid_intro_test", email: "intro@example.com", email_verified: true },
+    { kid: "intro-kid-1" }
+  );
+  const html = fs.readFileSync(path.resolve(__dirname, "../docs/index.html"), "utf8");
+  const originalJs = fs.readFileSync(path.resolve(__dirname, "../docs/app.js"), "utf8");
+  const { document } = createLightweightDomFromHtml(html);
+
+  let audioInstances = 0;
+  let reducedMotionMatches = false;
+  class MockAudioContext {
+    constructor() { audioInstances += 1; this.currentTime = 1; this.state = "running"; this.destination = {}; }
+    async resume() {}
+    createGain() { return { gain: { value: 0.2, setValueAtTime() {}, setTargetAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} }; }
+    createBiquadFilter() { return { type: "lowpass", frequency: { setValueAtTime() {} }, connect() {} }; }
+    createOscillator() { return { type: "sine", frequency: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {}, start() {}, stop() {} }; }
+  }
+
+  const store = new Map();
+  const sessStore = new Map();
+  globalThis.document = document;
+  globalThis.localStorage = { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: k => store.delete(k) };
+  globalThis.sessionStorage = { getItem: k => (sessStore.has(k) ? sessStore.get(k) : null), setItem: (k, v) => sessStore.set(k, String(v)), removeItem: k => sessStore.delete(k) };
+  globalThis.window = {
+    innerWidth: 412,
+    innerHeight: 915,
+    devicePixelRatio: 2,
+    location: { hostname: "xalan-aesthetic.github.io" },
+    AudioContext: MockAudioContext,
+    matchMedia: q => ({ matches: String(q).includes("prefers-reduced-motion") ? reducedMotionMatches : false }),
+    addEventListener: () => {},
+    confirm: () => true,
+  };
+  globalThis.requestAnimationFrame = cb => (cb?.name === "tick" || cb?.name === "frame" ? 1 : setTimeout(() => cb(Date.now()), 0));
+  globalThis.cancelAnimationFrame = id => clearTimeout(id);
+  Object.defineProperty(globalThis, "navigator", { value: { clipboard: { writeText: async () => {} } }, configurable: true });
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).startsWith("https://www.googleapis.com/identitytoolkit/v3/relyingparty/getProjectConfig")) {
+      return new Response(JSON.stringify({ authorizedDomains: ["xalan-aesthetic.github.io"] }), { status: 200 });
+    }
+    if (String(url).startsWith("https://inffoler-ai-proxy.xalanvetrnen.workers.dev")) {
+      return handleRequest(new Request(url, init), { GEMINI_API_KEY: "sec", FIREBASE_PROJECT_ID: PROJECT_ID }, {
+        nowSec: now,
+        fetchImpl: async () => new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 }),
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  assert.equal(hasIntroPlayedThisSession(), false);
+  markIntroPlayedThisSession();
+  assert.equal(hasIntroPlayedThisSession(), true);
+  sessStore.clear();
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "inffoler-intro-e2e-"));
+  try {
+    fs.writeFileSync(path.join(tmpDir, "firebase-app.js"), `const apps=[]; export const getApps=()=>apps; export const getApp=()=>apps[0]; export function initializeApp(c){const a={cfg:c,options:c};apps.push(a);return a;}`);
+    fs.writeFileSync(
+      path.join(tmpDir, "firebase-auth.js"),
+      `export const __state={currentUser:null,listeners:[]};
+       export class GoogleAuthProvider{setCustomParameters(){}} export class OAuthProvider{setCustomParameters(){}addScope(){}}
+       export class EmailAuthProvider{static credential(e,p){return{e,p};}} export class RecaptchaVerifier{clear(){}}
+       export const browserLocalPersistence={}; export const getAuth=()=>__state; export const setPersistence=async()=>{};
+       export function onAuthStateChanged(_a,cb){__state.listeners.push(cb);cb(__state.currentUser);return()=>{};}
+       export const getRedirectResult=async()=>null;
+       export async function signInWithEmailAndPassword(_a,email){
+         const u={uid:"uid_intro_test",email,displayName:"Intro Hero",providerData:[{providerId:"password"}],getIdToken:async()=>${JSON.stringify(jwt)},reload:async()=>{}};
+         __state.currentUser=u; await Promise.all(__state.listeners.map(f=>f(u))); return{user:u};
+       }
+       export async function createUserWithEmailAndPassword(){} export async function updateProfile(){}
+       export async function signInWithPopup(){} export async function signInWithRedirect(){}
+       export async function signInWithPhoneNumber(){return{async confirm(){return{user:null};}};}
+       export async function sendPasswordResetEmail(){} export async function linkWithPopup(){} export async function linkWithRedirect(){}
+       export async function linkWithCredential(){} export async function linkWithPhoneNumber(){return{async confirm(){return{user:null};}};}
+       export async function deleteUser(){}
+       export async function signOut(){__state.currentUser=null; await Promise.all(__state.listeners.map(f=>f(null)));}`
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "firebase-firestore.js"),
+      `export const getFirestore=()=>({}); export const doc=(_d,...p)=>p.join("/"); export const collection=(_d,...p)=>p.join("/");
+       export const query=c=>c; export const orderBy=()=>null; export const limit=()=>null; export const serverTimestamp=()=>"now"; export const increment=n=>n;
+       export const getDoc=async()=>({exists:()=>false,data:()=>({})}); export const setDoc=async()=>{}; export const updateDoc=async()=>{}; export const deleteDoc=async()=>{};
+       export const getDocs=async()=>({docs:[]}); export const writeBatch=()=>({set(){},update(){},delete(){},async commit(){}}); export const onSnapshot=(_q,cb)=>{cb({docs:[]});return()=>{};};`
+    );
+    const patched = originalJs
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js", "./firebase-app.js")
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js", "./firebase-auth.js")
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js", "./firebase-firestore.js");
+    fs.writeFileSync(path.join(tmpDir, "app.js"), patched);
+    for (const f of ["reasoning-engine.js", "auth-providers.js", "intro-cinema.js", "earth-intelligence.js"]) {
+      fs.copyFileSync(path.resolve(__dirname, `../docs/${f}`), path.join(tmpDir, f));
+    }
+
+    await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
+    await new Promise(r => setTimeout(r, 20));
+    assert.equal(audioInstances, 0, "Zero AudioContext before user interaction");
+
+    // First sign-in triggers intro overlay automatically
+    document.getElementById("loginEmail").value = "intro@example.com";
+    document.getElementById("loginPassword").value = "pass1234";
+    await document.getElementById("emailLoginForm").submit();
+    await new Promise(r => setTimeout(r, 20));
+
+    const overlay = document.getElementById("cinematicIntroOverlay");
+    assert.equal(overlay.classList.contains("hidden"), false, "Intro must auto-play once per browser session");
+    assert.equal(overlay.classList.contains("scene-1"), true);
+    assert.match(document.getElementById("introPhaseTag").textContent, /SCENE 01/);
+    assert.equal(audioInstances, 0, "No AudioContext autoplay before user gesture");
+
+    // Skip Intro dismisses cleanly & records sessionStorage flag
+    await document.getElementById("btnSkipIntro").click();
+    assert.equal(overlay.classList.contains("hidden"), true);
+    assert.equal(sessStore.get(INTRO_SESSION_KEY), "1");
+
+    // Second login in same session does NOT auto-play intro again
+    await document.getElementById("btnSidebarAuthAction").click();
+    await new Promise(r => setTimeout(r, 15));
+    document.getElementById("loginPassword").value = "pass1234";
+    await document.getElementById("emailLoginForm").submit();
+    await new Promise(r => setTimeout(r, 20));
+    assert.equal(overlay.classList.contains("hidden"), true, "Intro must NOT repeat within the same browser session");
+
+    // Settings -> Replay Intro replays on demand & allows audio after user gesture
+    await document.getElementById("btnSidebarSettings").click();
+    assert.equal(document.getElementById("settingsModal").classList.contains("hidden"), false);
+    await document.getElementById("btnReplayIntro").click();
+    assert.equal(document.getElementById("settingsModal").classList.contains("hidden"), true);
+    assert.equal(overlay.classList.contains("hidden"), false, "Replay Intro must launch overlay on demand");
+    assert.ok(audioInstances >= 1, "Sound cue may initialize AudioContext after explicit Replay Intro tap");
+    await document.getElementById("btnSkipIntro").click();
+
+    // prefers-reduced-motion skips cleanly
+    reducedMotionMatches = true;
+    await document.getElementById("btnReplayIntro").click();
+    assert.equal(overlay.classList.contains("hidden"), true, "prefers-reduced-motion must skip intro cleanly");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("Part 3 & 4 — THE EARTH Backend & E2E: Auth guard, Live FX + Search Grounding, URL Sanitization, Zero Fabrication, Globe/Flat/List & Follow-ups", async () => {
+  clearJwkCache();
+  const { jwt, publicJwk, now } = await generateTestKeyAndJwt(
+    { sub: "uid_earth_test", user_id: "uid_earth_test", email: "earth@example.com", email_verified: true },
+    { kid: "earth-kid-1" }
+  );
+  const env = { GEMINI_API_KEY: "secret-earth-key", FIREBASE_PROJECT_ID: PROJECT_ID };
+
+  // 1. Unit checks for client Earth utilities & URL sanitizer
+  assert.equal(sanitizeVerifiedUrl("javascript:alert(1)"), null);
+  assert.equal(sanitizeVerifiedUrl("http://127.0.0.1/secret"), null);
+  assert.equal(sanitizeVerifiedUrl("https://www.globalpetrolprices.com/gasoline_prices/"), "https://www.globalpetrolprices.com/gasoline_prices/");
+  assert.equal(sanitizeExternalHref("data:text/html,evil"), null);
+  assert.equal(detectLocalMapAction("Show the cheapest one on the map"), "focus_cheapest");
+  assert.equal(detectLocalMapAction("Zoom to most expensive hub"), "focus_expensive");
+  assert.ok(EARTH_SUGGESTION_PROMPTS.length === 5 && EARTH_POPULAR_SEARCHES.length >= 6);
+  const projCenter = projectGlobePoint(20, 78, 78, 20, 120, 200, 150);
+  assert.equal(projCenter.visible, true);
+  assert.ok(Math.abs(projCenter.x - 200) < 0.01 && Math.abs(projCenter.y - 150) < 0.01);
+
+  // 2. Reject unauthenticated /earth/query & /earth/rates (401)
+  const unauthEarth = await handleRequest(
+    new Request("https://worker.example/earth/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "https://xalan-aesthetic.github.io" },
+      body: JSON.stringify({ query: "Cheapest clothes" }),
+    }),
+    env,
+    { nowSec: now, fetchImpl: async () => new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 }) }
+  );
+  assert.equal(unauthEarth.status, 401);
+
+  const unauthRates = await handleRequest(
+    new Request("https://worker.example/earth/rates?target=INR", {
+      method: "GET",
+      headers: { Origin: "https://xalan-aesthetic.github.io" },
+    }),
+    env,
+    { nowSec: now, fetchImpl: async () => new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 }) }
+  );
+  assert.equal(unauthRates.status, 401);
+
+  // 3. Authenticated /earth/query uses live FX (USD -> INR = 84.5), sends google_search tool, sanitizes links & highlights cheapest/expensive
+  let sawGoogleSearchTool = false;
+  const mockEntriesPayload = {
+    queryIntent: "price",
+    commodity: "Wholesale Cotton T-Shirts (Basic Apparel)",
+    unitSpec: "per piece",
+    dataUnavailable: false,
+    summary: "Apparel manufacturing hubs in South Asia and Southeast Asia report the lowest wholesale costs compared to Western retail capitals.",
+    insights: ["Dhaka & Surat offer low factory-gate garment pricing.", "London & Zurich retail prices reflect VAT and import margins."],
+    entries: [
+      {
+        id: "dhaka-bd",
+        country: "Bangladesh",
+        countryCode: "BD",
+        city: "Dhaka",
+        lat: 23.8103,
+        lng: 90.4125,
+        marketName: "Islampur Wholesale Market",
+        marketType: "wholesale",
+        originalPriceNumeric: 2.5,
+        originalCurrency: "USD",
+        unit: "per piece",
+        dataDate: "Nov 2026",
+        freshness: "live",
+        isEstimate: false,
+        availability: "High wholesale supply",
+        sourceTitle: "BGMEA Trade Benchmark",
+        sourceUrl: "javascript:alert(1)",
+      },
+      {
+        id: "surat-in",
+        country: "India",
+        countryCode: "IN",
+        city: "Surat",
+        lat: 21.1702,
+        lng: 72.8311,
+        marketName: "Surat Textile Hub",
+        marketType: "production",
+        originalPriceNumeric: 260,
+        originalCurrency: "INR",
+        unit: "per piece",
+        productionVolume: "Major regional fabric hub",
+        productionSharePct: 18,
+        dataDate: "Nov 2026",
+        freshness: "live",
+        isEstimate: false,
+        availability: "Year-round textile clusters",
+        sourceTitle: "Texprocil Report",
+        sourceUrl: "https://texprocil.org/cotton-markets",
+      },
+      {
+        id: "zurich-ch",
+        country: "Switzerland",
+        countryCode: "CH",
+        city: "Zurich",
+        lat: 47.3769,
+        lng: 8.5417,
+        marketName: "Bahnhofstrasse Retail",
+        marketType: "retail",
+        originalPriceNumeric: 32,
+        originalCurrency: "USD",
+        unit: "per piece",
+        dataDate: "Nov 2026",
+        freshness: "live",
+        isEstimate: false,
+        availability: "High-street retail",
+        sourceTitle: "Retail Price Index",
+        sourceUrl: "https://example.org/zurich-apparel",
+      },
+    ],
+  };
+
+  const earthFetch = async (url, init = {}) => {
+    const sUrl = String(url);
+    if (sUrl === GOOGLE_JWK_URL) {
+      return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 });
+    }
+    if (sUrl.startsWith("https://open.er-api.com/v6/latest/USD")) {
+      return new Response(
+        JSON.stringify({ result: "success", time_last_update_utc: "2026-11-25", rates: { USD: 1, INR: 84.5, EUR: 0.92 } }),
+        { status: 200 }
+      );
+    }
+    const body = JSON.parse(init.body);
+    sawGoogleSearchTool = Array.isArray(body.tools) && Boolean(body.tools[0]?.google_search);
+    return new Response(
+      JSON.stringify({
+        candidates: [
+          {
+            content: { parts: [{ text: JSON.stringify(mockEntriesPayload) }] },
+            groundingMetadata: {
+              groundingChunks: [
+                { web: { title: "Bangladesh Garment Index", uri: "https://bgmea.com.bd/apparel-index" } },
+                { web: { title: "Unsafe Loopback", uri: "http://localhost:8080/bad" } },
+              ],
+            },
+          },
+        ],
+      }),
+      { status: 200 }
+    );
+  };
+
+  const earthRes = await handleRequest(
+    new Request("https://worker.example/earth/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({
+        query: "Cheapest clothes in the world?",
+        model: "gemini-3.8-flash",
+        targetCurrency: "INR",
+        filters: { marketType: "all", sortBy: "price_asc" },
+      }),
+    }),
+    env,
+    { nowSec: now, fetchImpl: earthFetch }
+  );
+  assert.equal(earthRes.status, 200);
+  const earthJson = await earthRes.json();
+  assert.equal(sawGoogleSearchTool, true, "Worker /earth/query must attach google_search grounding tool");
+  assert.equal(earthJson.dataStatus, "verified");
+  assert.equal(earthJson.exchangeRates.isLiveFx, true);
+  assert.equal(earthJson.exchangeRates.rateToTarget, 84.5);
+  assert.equal(earthJson.entries[0].id, "dhaka-bd", "Cheapest item sorted first");
+  assert.equal(earthJson.entries[0].convertedPriceNumeric, 211.25, "2.5 USD * 84.5 INR/USD = 211.25 INR");
+  assert.equal(earthJson.highlights.cheapestId, "dhaka-bd");
+  assert.equal(earthJson.highlights.mostExpensiveId, "zurich-ch");
+  assert.equal(earthJson.highlights.topProducerId, "surat-in");
+  assert.ok(!earthJson.entries[0].sourceUrl.startsWith("javascript:"), "Malicious URLs must be replaced/stripped");
+  assert.ok(earthJson.verifiedSources.every(s => s.url.startsWith("https://")));
+
+  // 4. Anti-fabrication: when upstream reports dataUnavailable: true, returns empty entries & dataStatus: "unavailable"
+  const unavailRes = await handleRequest(
+    new Request("https://worker.example/earth/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({ query: "Exact price of unobtainium on Mars colony" }),
+    }),
+    env,
+    {
+      nowSec: now,
+      fetchImpl: async url => {
+        if (String(url) === GOOGLE_JWK_URL) return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 });
+        if (String(url).startsWith("https://open.er-api.com/")) {
+          return new Response(JSON.stringify({ result: "success", rates: { USD: 1 } }), { status: 200 });
+        }
+        return new Response(
+          JSON.stringify({
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    {
+                      text: JSON.stringify({
+                        dataUnavailable: true,
+                        unavailableReason: "No verified real-world commercial market exists for Mars unobtainium.",
+                        entries: [],
+                      }),
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      },
+    }
+  );
+  const unavailJson = await unavailRes.json();
+  assert.equal(unavailJson.dataStatus, "unavailable");
+  assert.equal(unavailJson.entries.length, 0);
+  assert.match(unavailJson.summary, /No verified real-world commercial market/);
+
+  // 5. Full Frontend E2E in THE EARTH view
+  const html = fs.readFileSync(path.resolve(__dirname, "../docs/index.html"), "utf8");
+  const originalJs = fs.readFileSync(path.resolve(__dirname, "../docs/app.js"), "utf8");
+  const { document } = createLightweightDomFromHtml(html);
+  const store = new Map();
+  const sessStore = new Map([[INTRO_SESSION_KEY, "1"]]);
+  globalThis.document = document;
+  globalThis.localStorage = { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: k => store.delete(k) };
+  globalThis.sessionStorage = { getItem: k => (sessStore.has(k) ? sessStore.get(k) : null), setItem: (k, v) => sessStore.set(k, String(v)), removeItem: k => sessStore.delete(k) };
+  globalThis.window = {
+    innerWidth: 412,
+    innerHeight: 915,
+    devicePixelRatio: 2,
+    location: { hostname: "xalan-aesthetic.github.io" },
+    matchMedia: () => ({ matches: false }),
+    addEventListener: () => {},
+    confirm: () => true,
+  };
+  globalThis.requestAnimationFrame = cb => (cb?.name === "tick" || cb?.name === "frame" ? 1 : setTimeout(() => cb(Date.now()), 0));
+  globalThis.cancelAnimationFrame = id => clearTimeout(id);
+  Object.defineProperty(globalThis, "navigator", { value: { clipboard: { writeText: async () => {} } }, configurable: true });
+
+  const capturedEarthRequests = [];
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url).startsWith("https://www.googleapis.com/identitytoolkit/v3/relyingparty/getProjectConfig")) {
+      return new Response(JSON.stringify({ authorizedDomains: ["xalan-aesthetic.github.io"] }), { status: 200 });
+    }
+    if (String(url).startsWith("https://inffoler-ai-proxy.xalanvetrnen.workers.dev")) {
+      if (String(url).endsWith("/earth/query") && init.body) {
+        capturedEarthRequests.push(JSON.parse(init.body));
+      }
+      return handleRequest(new Request(url, init), env, { nowSec: now, fetchImpl: earthFetch });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "inffoler-earth-e2e-"));
+  try {
+    fs.writeFileSync(path.join(tmpDir, "firebase-app.js"), `const apps=[]; export const getApps=()=>apps; export const getApp=()=>apps[0]; export function initializeApp(c){const a={cfg:c,options:c};apps.push(a);return a;}`);
+    fs.writeFileSync(
+      path.join(tmpDir, "firebase-auth.js"),
+      `export const __state={currentUser:null,listeners:[]};
+       export class GoogleAuthProvider{setCustomParameters(){}} export class OAuthProvider{setCustomParameters(){}addScope(){}}
+       export class EmailAuthProvider{static credential(e,p){return{e,p};}} export class RecaptchaVerifier{clear(){}}
+       export const browserLocalPersistence={}; export const getAuth=()=>__state; export const setPersistence=async()=>{};
+       export function onAuthStateChanged(_a,cb){__state.listeners.push(cb);cb(__state.currentUser);return()=>{};}
+       export const getRedirectResult=async()=>null;
+       export async function signInWithEmailAndPassword(_a,email){
+         const u={uid:"uid_earth_test",email,displayName:"Earth Explorer",providerData:[{providerId:"password"}],getIdToken:async()=>${JSON.stringify(jwt)},reload:async()=>{}};
+         __state.currentUser=u; await Promise.all(__state.listeners.map(f=>f(u))); return{user:u};
+       }
+       export async function createUserWithEmailAndPassword(){} export async function updateProfile(){}
+       export async function signInWithPopup(){} export async function signInWithRedirect(){}
+       export async function signInWithPhoneNumber(){return{async confirm(){return{user:null};}};}
+       export async function sendPasswordResetEmail(){} export async function linkWithPopup(){} export async function linkWithRedirect(){}
+       export async function linkWithCredential(){} export async function linkWithPhoneNumber(){return{async confirm(){return{user:null};}};}
+       export async function deleteUser(){} export async function signOut(){}`
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "firebase-firestore.js"),
+      `export const getFirestore=()=>({}); export const doc=(_d,...p)=>p.join("/"); export const collection=(_d,...p)=>p.join("/");
+       export const query=c=>c; export const orderBy=()=>null; export const limit=()=>null; export const serverTimestamp=()=>"now"; export const increment=n=>n;
+       export const getDoc=async()=>({exists:()=>false,data:()=>({})}); export const setDoc=async()=>{}; export const updateDoc=async()=>{}; export const deleteDoc=async()=>{};
+       export const getDocs=async()=>({docs:[]}); export const writeBatch=()=>({set(){},update(){},delete(){},async commit(){}}); export const onSnapshot=(_q,cb)=>{cb({docs:[]});return()=>{};};`
+    );
+    const patched = originalJs
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js", "./firebase-app.js")
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js", "./firebase-auth.js")
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js", "./firebase-firestore.js");
+    fs.writeFileSync(path.join(tmpDir, "app.js"), patched);
+    for (const f of ["reasoning-engine.js", "auth-providers.js", "intro-cinema.js", "earth-intelligence.js"]) {
+      fs.copyFileSync(path.resolve(__dirname, `../docs/${f}`), path.join(tmpDir, f));
+    }
+
+    await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
+    await new Promise(r => setTimeout(r, 20));
+    document.getElementById("loginEmail").value = "earth@example.com";
+    document.getElementById("loginPassword").value = "pass1234";
+    await document.getElementById("emailLoginForm").submit();
+    await new Promise(r => setTimeout(r, 20));
+
+    // Navigate to THE EARTH via sidebar
+    await document.querySelectorAll('[data-nav="earth"]')[0].click();
+    assert.equal(document.getElementById("view-earth").classList.contains("active"), true);
+
+    // Switch currency to INR and click first suggestion chip
+    document.getElementById("earthCurrencySelect").value = "INR";
+    const chip = document.querySelectorAll('[data-earth-prompt]')[0];
+    await chip.click();
+    await new Promise(r => setTimeout(r, 35));
+
+    assert.equal(capturedEarthRequests.length, 1);
+    assert.equal(capturedEarthRequests[0].targetCurrency, "INR");
+    assert.match(document.getElementById("earthFxStatusBadge").textContent, /Live FX \(INR/);
+    assert.equal(document.getElementById("earthSourceStatusBadge").textContent, "Live Web Grounded");
+    assert.ok(document.getElementById("earthResultsList").innerHTML.includes("Dhaka"));
+    assert.ok(document.getElementById("earthResultsList").innerHTML.includes("Surat"));
+    assert.ok(document.getElementById("earthResultsList").innerHTML.includes("Zurich"));
+    assert.equal(document.getElementById("earthLocationPopup").classList.contains("hidden"), false);
+
+    // Switch map views: Flat -> List -> Globe
+    await document.getElementById("btnEarthViewFlat").click();
+    assert.equal(document.getElementById("btnEarthViewFlat").classList.contains("active"), true);
+    await document.getElementById("btnEarthViewList").click();
+    assert.equal(document.getElementById("earthCanvasWrap").classList.contains("hidden"), true);
+    await document.getElementById("btnEarthViewGlobe").click();
+    assert.equal(document.getElementById("earthCanvasWrap").classList.contains("hidden"), false);
+
+    // Local Filter (Country = India) narrows cards cleanly
+    document.getElementById("earthFilterCountry").value = "India";
+    await document.getElementById("btnEarthApplyFilters").click();
+    assert.ok(document.getElementById("earthResultsList").innerHTML.includes("Surat"));
+    assert.ok(!document.getElementById("earthResultsList").innerHTML.includes("Zurich"));
+
+    await document.getElementById("btnEarthResetFilters").click();
+    assert.ok(document.getElementById("earthResultsList").innerHTML.includes("Dhaka"));
+
+    // Follow-up command "Show the cheapest one on the map" focuses Dhaka locally without extra backend call
+    const reqsBeforeLocalFollowUp = capturedEarthRequests.length;
+    document.getElementById("earthFollowUpInput").value = "Show the cheapest one on the map";
+    await document.getElementById("earthFollowUpForm").submit();
+    assert.equal(capturedEarthRequests.length, reqsBeforeLocalFollowUp);
+    assert.match(document.getElementById("earthLocationPopup").innerHTML, /Dhaka/);
+
+    // Conversational follow-up "What about India?" sends followUpHistory to backend
+    document.getElementById("earthFollowUpInput").value = "What about India?";
+    await document.getElementById("earthFollowUpForm").submit();
+    await new Promise(r => setTimeout(r, 30));
+    assert.equal(capturedEarthRequests.length, reqsBeforeLocalFollowUp + 1);
+    assert.ok(capturedEarthRequests.at(-1).followUpHistory.length >= 1);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css?v=20261124a" />
+  <link rel="stylesheet" href="./styles.css?v=20261125a" />
   <meta name="google-site-verification" content="Om7GhGfftaHC09g1tFhgVwqzQMmgXFK7NEo_Lw-V-LI" />
 </head>
 <body>
@@ -18,9 +18,6 @@
   <div class="bg-nebula" aria-hidden="true"></div>
   <div class="bg-grid" aria-hidden="true"></div>
   <canvas id="particleCanvas" class="bg-particles" aria-hidden="true"></canvas>
-
-  <!-- Mobile Sidebar Backdrop -->
-  <div class="sidebar-backdrop hidden" id="sidebarBackdrop"></div>
 
   <!-- MANDATORY WELCOME & AUTHENTICATION GATE (VISIBLE IMMEDIATELY BEFORE LOGIN) -->
   <section class="auth-gate-screen" id="authGateScreen" aria-label="INFFOLER AI Sign In and Create Account">
@@ -246,8 +243,35 @@
     </div>
   </section>
 
+  <!-- CINEMATIC MOTION GRAPHICS INTRO: THE AWAKENING OF INFFOLER AI 2.0 -->
+  <div class="cinematic-intro-overlay hidden" id="cinematicIntroOverlay" role="dialog" aria-modal="true" aria-label="THE AWAKENING OF INFFOLER AI 2.0" aria-hidden="true">
+    <canvas id="introCinemaCanvas" class="intro-cinema-canvas" aria-hidden="true"></canvas>
+    <div class="intro-hud-top">
+      <div class="intro-phase-pill" id="introPhaseTag">SCENE 01 &middot; THE DARK VOID</div>
+      <div class="intro-hud-actions">
+        <button type="button" class="intro-hud-btn" id="btnIntroSoundToggle" aria-pressed="false">&#x1F507; Sound: OFF</button>
+        <button type="button" class="intro-hud-btn skip" id="btnSkipIntro">Skip Intro &rarr;</button>
+      </div>
+    </div>
+    <div class="intro-stage-core" id="introStageCore">
+      <div class="intro-logo-emblem" id="introLogoEmblem" aria-hidden="true">
+        <div class="intro-emblem-ring ring-a"></div>
+        <div class="intro-emblem-ring ring-b"></div>
+        <img src="./assets/whatif_brain_icon.png" alt="INFFOLER AI 2.0 Core" class="intro-emblem-img" />
+      </div>
+      <div class="intro-logo-title" id="introLogoTitle">
+        <div class="intro-wordmark">INFFOLER <em>AI</em></div>
+        <span class="intro-version-tag">VERSION 2.0</span>
+      </div>
+      <p class="intro-wake-text" id="introWakeText">INTELLIGENCE AWAKENED</p>
+      <p class="intro-creator-sub">Created by Alankrit Pathak</p>
+    </div>
+  </div>
+
   <!-- AUTHENTICATED DASHBOARD SHELL (HIDDEN & INERT UNTIL LOGIN) -->
   <div class="app-shell hidden" id="appShell" inert aria-hidden="true">
+    <!-- Mobile Sidebar Backdrop (inside shell stacking context below sidebar) -->
+    <div class="sidebar-backdrop hidden" id="sidebarBackdrop" aria-hidden="true"></div>
     <!-- Animated Sidebar / Slide-Out Drawer -->
     <aside class="sidebar" id="appSidebar" aria-label="INFFOLER AI Sidebar">
       <div class="sidebar-head">
@@ -306,6 +330,21 @@
         </button>
         <button type="button" class="side-nav-item" data-nav="home">
           <span class="sni-ico">&#x2302;</span><span>Home Hub</span>
+        </button>
+        <button type="button" class="side-nav-item earth-nav-item" data-nav="earth">
+          <span class="animated-globe-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8">
+              <circle cx="12" cy="12" r="9.5" stroke="#00E5FF"/>
+              <ellipse cx="12" cy="12" rx="4.5" ry="9.5" stroke="#00F5D4" class="globe-meridian-spin"/>
+              <line x1="2.8" y1="12" x2="21.2" y2="12" stroke="#A855F7"/>
+              <path d="M4.5 7.5 Q12 9.5 19.5 7.5" stroke="#00E5FF" opacity="0.7"/>
+              <path d="M4.5 16.5 Q12 14.5 19.5 16.5" stroke="#00E5FF" opacity="0.7"/>
+            </svg>
+          </span>
+          <span class="earth-nav-copy">
+            <strong>THE EARTH &#x1F30D;</strong>
+            <small>Global Prices &amp; Locations</small>
+          </span>
         </button>
         <button type="button" class="side-nav-item" data-nav="core">
           <span class="sni-ico">&#x2728;</span><span>Core Brain</span>
@@ -596,6 +635,14 @@
                 </div>
                 <span class="tile-arrow blue-bg">&rarr;</span>
               </button>
+              <button type="button" class="glass-panel feature-tile" data-nav="earth">
+                <div class="tile-icon cyan">&#x1F30D;</div>
+                <div class="tile-copy">
+                  <strong>THE EARTH</strong>
+                  <span>Global Price &amp; Location Intel</span>
+                </div>
+                <span class="tile-arrow cyan-bg">&rarr;</span>
+              </button>
               <button type="button" class="glass-panel feature-tile" data-nav="explore">
                 <div class="tile-icon blue">&#x1F9ED;</div>
                 <div class="tile-copy">
@@ -772,6 +819,194 @@
             <div class="global-footer-slot"></div>
           </div>
         </section>
+
+        <!-- VIEW 7: THE EARTH — GLOBAL PRICE & LOCATION INTELLIGENCE -->
+        <section class="view" id="view-earth">
+          <div class="content-container earth-container">
+            <article class="glass-panel earth-hero-card">
+              <div class="earth-hero-head">
+                <div class="earth-hero-title-group">
+                  <span class="badge-chip cyan">GLOBAL PRICE &amp; LOCATION INTELLIGENCE</span>
+                  <h2>THE EARTH &#x1F30D;</h2>
+                  <p class="earth-tagline">Explore the World. Discover the Prices.</p>
+                </div>
+                <div class="earth-live-badges">
+                  <span class="earth-status-pill" id="earthFxStatusBadge">FX: Ready (USD)</span>
+                  <span class="earth-status-pill grounded" id="earthSourceStatusBadge">Grounded Search Active</span>
+                </div>
+              </div>
+
+              <form class="earth-search-form" id="earthSearchForm">
+                <div class="earth-search-row">
+                  <input
+                    type="search"
+                    id="earthSearchInput"
+                    class="earth-search-input"
+                    placeholder="Ask anything about global prices, products and locations..."
+                    aria-label="Ask anything about global prices, products and locations"
+                    maxlength="600"
+                  />
+                  <select id="earthCurrencySelect" class="earth-currency-select" aria-label="Display currency">
+                    <option value="USD" selected>USD ($)</option>
+                    <option value="INR">INR (&#x20B9;)</option>
+                    <option value="EUR">EUR (&euro;)</option>
+                    <option value="GBP">GBP (&pound;)</option>
+                    <option value="AED">AED</option>
+                    <option value="JPY">JPY (&yen;)</option>
+                    <option value="SGD">SGD (S$)</option>
+                    <option value="AUD">AUD (A$)</option>
+                    <option value="CAD">CAD (C$)</option>
+                    <option value="CNY">CNY (&yen;)</option>
+                  </select>
+                </div>
+                <div class="earth-search-actions">
+                  <button type="submit" class="gradient-cta-btn small" id="btnEarthSearch">&#x1F30D; Explore World</button>
+                  <button type="button" class="outline-pill-btn" id="btnEarthNearMe">&#x1F4CD; Near Me</button>
+                  <button type="button" class="icon-chip-btn" id="btnEarthToggleFilters">&#x2699;&#xFE0F; Filters &amp; Sort</button>
+                </div>
+              </form>
+
+              <div class="earth-suggestion-chips" id="earthSuggestionChips" aria-label="Suggested global queries">
+                <button type="button" class="suggestion-chip earth-chip" data-earth-prompt="Cheapest clothes in the world?">Cheapest clothes in the world?</button>
+                <button type="button" class="suggestion-chip earth-chip" data-earth-prompt="Where is sugar produced the most?">Where is sugar produced the most?</button>
+                <button type="button" class="suggestion-chip earth-chip" data-earth-prompt="Most expensive gold market?">Most expensive gold market?</button>
+                <button type="button" class="suggestion-chip earth-chip" data-earth-prompt="Cheapest electronics markets?">Cheapest electronics markets?</button>
+                <button type="button" class="suggestion-chip earth-chip" data-earth-prompt="Where is petrol cheapest?">Where is petrol cheapest?</button>
+              </div>
+
+              <!-- Advanced Filters & Sorting -->
+              <div class="earth-filters-panel hidden" id="earthFiltersPanel">
+                <div class="earth-filters-grid">
+                  <label class="earth-filter-field">
+                    <span>Country</span>
+                    <input type="text" id="earthFilterCountry" class="modal-input" placeholder="e.g. India, Japan" />
+                  </label>
+                  <label class="earth-filter-field">
+                    <span>City</span>
+                    <input type="text" id="earthFilterCity" class="modal-input" placeholder="e.g. Surat, Dubai" />
+                  </label>
+                  <label class="earth-filter-field">
+                    <span>Category</span>
+                    <select id="earthFilterCategory" class="modal-input">
+                      <option value="">All Categories</option>
+                      <option value="Apparel & Textiles">Apparel &amp; Textiles</option>
+                      <option value="Commodities & Food">Commodities &amp; Food</option>
+                      <option value="Gold & Precious Metals">Gold &amp; Precious Metals</option>
+                      <option value="Electronics & Tech">Electronics &amp; Tech</option>
+                      <option value="Fuel & Energy">Fuel &amp; Energy</option>
+                    </select>
+                  </label>
+                  <label class="earth-filter-field">
+                    <span>Market Type</span>
+                    <select id="earthFilterMarketType" class="modal-input">
+                      <option value="all">All Types</option>
+                      <option value="retail">Retail</option>
+                      <option value="wholesale">Wholesale</option>
+                      <option value="production">Production</option>
+                    </select>
+                  </label>
+                  <label class="earth-filter-field">
+                    <span>Min Price</span>
+                    <input type="number" id="earthFilterMinPrice" class="modal-input" min="0" step="any" placeholder="0" />
+                  </label>
+                  <label class="earth-filter-field">
+                    <span>Max Price</span>
+                    <input type="number" id="earthFilterMaxPrice" class="modal-input" min="0" step="any" placeholder="Any" />
+                  </label>
+                  <label class="earth-filter-field">
+                    <span>Sort Order</span>
+                    <select id="earthFilterSort" class="modal-input">
+                      <option value="relevance">Relevance</option>
+                      <option value="price_asc">Price: Low to High</option>
+                      <option value="price_desc">Price: High to Low</option>
+                      <option value="production_desc">Highest Production</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="earth-filters-actions">
+                  <button type="button" class="gradient-cta-btn small" id="btnEarthApplyFilters">Apply Filters</button>
+                  <button type="button" class="outline-pill-btn" id="btnEarthResetFilters">Reset</button>
+                </div>
+              </div>
+            </article>
+
+            <!-- Interactive 3D Globe / Flat World Map / List View -->
+            <div class="earth-stage-grid">
+              <article class="glass-panel earth-map-card" id="earthMapCard">
+                <div class="earth-map-toolbar">
+                  <div class="earth-view-switch" role="group" aria-label="Earth display mode">
+                    <button type="button" class="icon-chip-btn active" id="btnEarthViewGlobe">3D Globe</button>
+                    <button type="button" class="icon-chip-btn" id="btnEarthViewFlat">World Map</button>
+                    <button type="button" class="icon-chip-btn" id="btnEarthViewList">List Only</button>
+                  </div>
+                  <div class="earth-zoom-controls">
+                    <button type="button" class="circle-icon-btn small" id="btnEarthZoomIn" aria-label="Zoom in globe">+</button>
+                    <button type="button" class="circle-icon-btn small" id="btnEarthZoomOut" aria-label="Zoom out globe">&minus;</button>
+                    <button type="button" class="icon-chip-btn" id="btnEarthResetGlobe" aria-label="Reset globe rotation">Reset</button>
+                  </div>
+                </div>
+
+                <div class="earth-canvas-wrap" id="earthCanvasWrap">
+                  <canvas id="earthGlobeCanvas" aria-label="Interactive 3D Earth price intelligence map"></canvas>
+                  <div class="earth-legend">
+                    <span class="legend-item cheapest"><i></i> Lowest / Cheapest</span>
+                    <span class="legend-item producer"><i></i> Producer / Wholesale</span>
+                    <span class="legend-item expensive"><i></i> Highest / Expensive</span>
+                  </div>
+                </div>
+
+                <!-- Selected Location Detail Card -->
+                <div class="earth-location-popup hidden" id="earthLocationPopup"></div>
+              </article>
+
+              <!-- Global Price Insights & Highlights -->
+              <article class="glass-panel earth-insights-card">
+                <div class="section-head">
+                  <span class="badge-chip purple">GLOBAL PRICE INSIGHTS</span>
+                  <h3 id="earthResultsHeadline">Global Market Intelligence</h3>
+                </div>
+                <p class="body-copy" id="earthSummaryText">
+                  Ask any question about global prices, production hubs, fuel, gold, clothes, or electronics to compare real verified locations around the world.
+                </p>
+                <div class="earth-highlights-row" id="earthInsightsGrid"></div>
+                <ul class="bullet-list earth-insight-bullets" id="earthInsightBullets"></ul>
+                <div class="earth-sources-wrap hidden" id="earthSourcesWrap"></div>
+              </article>
+            </div>
+
+            <!-- Follow-Up Context Prompt Bar -->
+            <article class="glass-panel earth-followup-card hidden" id="earthFollowUpSection">
+              <form class="earth-followup-form" id="earthFollowUpForm">
+                <input
+                  type="text"
+                  id="earthFollowUpInput"
+                  class="earth-search-input"
+                  placeholder="Ask a follow-up (e.g. 'What about India?' or 'Show the cheapest one on the map')..."
+                  aria-label="Follow-up Earth query"
+                  maxlength="400"
+                />
+                <button type="submit" class="gradient-cta-btn small" id="btnEarthFollowUp">Ask Follow-Up</button>
+              </form>
+              <div class="earth-followup-chips">
+                <button type="button" class="suggestion-chip earth-followup-chip" data-earth-followup="What about India?">What about India?</button>
+                <button type="button" class="suggestion-chip earth-followup-chip" data-earth-followup="Show the cheapest one on the map">Show the cheapest one on the map</button>
+                <button type="button" class="suggestion-chip earth-followup-chip" data-earth-followup="Compare wholesale vs retail markets">Compare wholesale vs retail</button>
+              </div>
+            </article>
+
+            <!-- Results Cards Container -->
+            <article class="glass-panel section-card" id="earthResultsContainer">
+              <div class="section-head">
+                <span class="badge-chip teal">LOCATION BREAKDOWN</span>
+                <h3 id="earthListHeading">Popular Global Searches</h3>
+              </div>
+              <div id="earthResultsList" class="earth-results-list"></div>
+              <div id="earthPopularGrid" class="earth-popular-grid"></div>
+            </article>
+
+            <div class="global-footer-slot"></div>
+          </div>
+        </section>
       </main>
     </div>
   </div>
@@ -880,6 +1115,7 @@
         </p>
         <div class="modal-actions" style="margin-top:8px;">
           <button type="button" class="icon-chip-btn" id="btnThemeToggleModal">Switch Theme</button>
+          <button type="button" class="icon-chip-btn" id="btnReplayIntro">&#x2728; Replay Intro</button>
           <button type="button" class="icon-chip-btn" id="btnModalClearCache">Clear Web Cache</button>
           <a href="https://github.com/xalan-aesthetic/INFFOLER-AI" target="_blank" rel="noopener noreferrer" class="icon-chip-btn">GitHub Repo &#x2197;</a>
         </div>
@@ -927,6 +1163,6 @@
 
   <div class="toast hidden" id="toastBanner" role="status" aria-live="polite"></div>
 
-  <script type="module" src="./app.js?v=20261124a"></script>
+  <script type="module" src="./app.js?v=20261125a"></script>
 </body>
 </html>
