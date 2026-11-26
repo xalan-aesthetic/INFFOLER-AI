@@ -282,8 +282,14 @@ export function clearJwkCache() {
   cachedJwksFetchedAt = 0;
 }
 
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  if (ALLOWED_ORIGINS.has(origin)) return true;
+  return /^http:\/\/(localhost|127\.0\.0\.1)(:\d{1,5})?$/.test(origin);
+}
+
 function getCorsHeaders(origin) {
-  const allowedOrigin = ALLOWED_ORIGINS.has(origin)
+  const allowedOrigin = origin && isAllowedOrigin(origin)
     ? origin
     : "https://xalan-aesthetic.github.io";
 
@@ -628,6 +634,34 @@ function sanitizeErrorText(text) {
     .replace(/Bearer\s+[A-Za-z0-9\-_.]+/gi, "Bearer [REDACTED]");
 }
 
+export function logProviderDiagnostic({
+  provider = null,
+  model = null,
+  handler = "",
+  route = "",
+  endpointHost = "",
+  status = null,
+  errorMessage = "",
+} = {}) {
+  const entry = {
+    service: "inffoler-ai-proxy",
+    provider: provider || "unknown",
+    model: model || "unknown",
+    handler: String(handler || ""),
+    route: String(route || ""),
+    endpointHost: String(endpointHost || ""),
+    status: Number.isFinite(Number(status)) ? Number(status) : null,
+  };
+  if (errorMessage) {
+    entry.error = sanitizeErrorText(String(errorMessage)).slice(0, 300);
+  }
+  if (entry.status && entry.status >= 400) {
+    console.error("[INFFOLER_PROXY_DIAGNOSTIC]", JSON.stringify(entry));
+  } else {
+    console.log("[INFFOLER_PROXY_DIAGNOSTIC]", JSON.stringify(entry));
+  }
+}
+
 function parseRetryDelaySeconds(details, retryAfterHeader, rawMessage) {
   if (retryAfterHeader) {
     const asNum = Number(String(retryAfterHeader).trim());
@@ -669,6 +703,16 @@ export function classifyOpenAiUpstreamError(upstreamStatus, upstreamText, retryA
       retryable: false,
       retryAfterSec: null,
       message: "OpenAI API authentication failed on the backend. Verify that OPENAI_API_KEY is valid and active.",
+    };
+  }
+
+  if (upstreamStatus === 403) {
+    return {
+      code: "PERMISSION_DENIED",
+      quotaType: null,
+      retryable: false,
+      retryAfterSec: null,
+      message: rawMessage || "OpenAI API denied access for this key, organization, or selected model (HTTP 403).",
     };
   }
 
@@ -751,6 +795,26 @@ export function classifyGeminiUpstreamError(upstreamStatus, upstreamText, retryA
   }
 
   const inspectionBlob = `${rawMessage} ${rpcStatus} ${violationStrings.join(" ")}`;
+
+  if (upstreamStatus === 401 || rpcStatus === "UNAUTHENTICATED" || /api key not valid|invalid api key/i.test(rawMessage)) {
+    return {
+      code: "INVALID_API_KEY",
+      quotaType: null,
+      retryable: false,
+      retryAfterSec: null,
+      message: "Gemini API authentication failed on the backend. Verify that GEMINI_API_KEY is valid and active.",
+    };
+  }
+
+  if (upstreamStatus === 403 || rpcStatus === "PERMISSION_DENIED") {
+    return {
+      code: "PERMISSION_DENIED",
+      quotaType: null,
+      retryable: false,
+      retryAfterSec: null,
+      message: rawMessage || "Gemini API denied access for this key or model (HTTP 403).",
+    };
+  }
 
   if (upstreamStatus === 429 || rpcStatus === "RESOURCE_EXHAUSTED") {
     const isDailyExhausted =
@@ -1797,6 +1861,8 @@ async function streamOpenAiResponsesToSse({
   const sseStream = new ReadableStream({
     async start(streamCtrl) {
       let buffer = "";
+      let rawFallback = "";
+      let sawSsePrefix = false;
       let accumulatedText = "";
       let finishReason = "STOP";
       let doneEmitted = false;
@@ -1836,8 +1902,10 @@ async function streamOpenAiResponsesToSse({
         const dataLines = [];
         for (const line of lines) {
           if (line.startsWith("event:")) {
+            sawSsePrefix = true;
             eventType = line.slice(6).trim();
           } else if (line.startsWith("data:")) {
+            sawSsePrefix = true;
             dataLines.push(line.slice(5).trimStart());
           }
         }
@@ -1900,15 +1968,30 @@ async function streamOpenAiResponsesToSse({
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          buffer += decoder.decode(value, { stream: true });
+          const chunkStr = decoder.decode(value, { stream: true });
+          if (!sawSsePrefix && rawFallback.length < 262144) rawFallback += chunkStr;
+          buffer += chunkStr;
           const frames = buffer.split(/\r?\n\r?\n/);
           buffer = frames.pop() || "";
           for (const frame of frames) {
             if (frame.trim()) processSseFrame(frame);
           }
         }
-        buffer += decoder.decode();
+        const tailStr = decoder.decode();
+        if (!sawSsePrefix && rawFallback.length < 262144) rawFallback += tailStr;
+        buffer += tailStr;
         if (buffer.trim()) processSseFrame(buffer);
+        if (!doneEmitted && !accumulatedText && !sawSsePrefix && rawFallback.trim().startsWith("{")) {
+          try {
+            const parsedObj = JSON.parse(rawFallback.trim());
+            const extracted = extractOpenAiResponseText(parsedObj);
+            if (extracted.text) {
+              accumulatedText = extracted.text;
+              finishReason = extracted.finishReason || finishReason;
+              emit("delta", { delta: extracted.text });
+            }
+          } catch { /* ignore */ }
+        }
         if (!doneEmitted) {
           finalizeSuccess();
         }
@@ -2463,12 +2546,24 @@ export async function handleOpenAiProviderRequest({
   fetchImpl,
   timeoutMs = DEFAULT_UPSTREAM_TIMEOUT_MS,
   corsHeaders = {},
+  route = "/api/openai",
 }) {
   if (!openAiKey) {
+    const missingMsg =
+      "Server OPENAI_API_KEY secret is not configured. Set OPENAI_API_KEY in backend environment variables or Cloudflare Worker Secrets.";
+    logProviderDiagnostic({
+      provider: "openai",
+      model: validated.model,
+      handler: "handleOpenAiProviderRequest",
+      route,
+      endpointHost: "api.openai.com",
+      status: 503,
+      errorMessage: missingMsg,
+    });
     return jsonResponse(
       {
         provider: "openai",
-        error: "Server OPENAI_API_KEY secret is not configured. Set OPENAI_API_KEY in backend environment variables or Cloudflare Worker Secrets.",
+        error: missingMsg,
         code: "MISSING_API_KEY",
       },
       503,
@@ -2512,9 +2607,26 @@ export async function handleOpenAiProviderRequest({
     });
 
     if (streamOutcome.ok) {
+      logProviderDiagnostic({
+        provider: "openai",
+        model: validated.model,
+        handler: "handleOpenAiProviderRequest(stream)",
+        route,
+        endpointHost: "api.openai.com",
+        status: 200,
+      });
       return streamOutcome.response;
     }
     if (streamOutcome.customError) {
+      logProviderDiagnostic({
+        provider: "openai",
+        model: validated.model,
+        handler: "handleOpenAiProviderRequest(stream)",
+        route,
+        endpointHost: "api.openai.com",
+        status: streamOutcome.customError.status,
+        errorMessage: streamOutcome.customError.message,
+      });
       return jsonResponse(
         {
           provider: "openai",
@@ -2532,6 +2644,15 @@ export async function handleOpenAiProviderRequest({
       upstream.text,
       upstream.headers?.get?.("Retry-After") || null
     );
+    logProviderDiagnostic({
+      provider: "openai",
+      model: validated.model,
+      handler: "handleOpenAiProviderRequest(stream)",
+      route,
+      endpointHost: "api.openai.com",
+      status: upstream.status,
+      errorMessage: classified.message,
+    });
     const responseHeaders = { ...corsHeaders };
     if (classified.retryAfterSec) {
       responseHeaders["Retry-After"] = String(classified.retryAfterSec);
@@ -2564,6 +2685,15 @@ export async function handleOpenAiProviderRequest({
 
   if (!outcome.ok) {
     if (outcome.customError) {
+      logProviderDiagnostic({
+        provider: "openai",
+        model: validated.model,
+        handler: "handleOpenAiProviderRequest",
+        route,
+        endpointHost: "api.openai.com",
+        status: outcome.customError.status,
+        errorMessage: outcome.customError.message,
+      });
       return jsonResponse(
         {
           provider: "openai",
@@ -2581,6 +2711,15 @@ export async function handleOpenAiProviderRequest({
       upstream.text,
       upstream.headers?.get?.("Retry-After") || null
     );
+    logProviderDiagnostic({
+      provider: "openai",
+      model: validated.model,
+      handler: "handleOpenAiProviderRequest",
+      route,
+      endpointHost: "api.openai.com",
+      status: upstream.status,
+      errorMessage: classified.message,
+    });
     const responseHeaders = { ...corsHeaders };
     if (classified.retryAfterSec) {
       responseHeaders["Retry-After"] = String(classified.retryAfterSec);
@@ -2600,7 +2739,326 @@ export async function handleOpenAiProviderRequest({
     );
   }
 
+  logProviderDiagnostic({
+    provider: "openai",
+    model: validated.model,
+    handler: "handleOpenAiProviderRequest",
+    route,
+    endpointHost: "api.openai.com",
+    status: 200,
+  });
   return jsonResponse(outcome.data, 200, corsHeaders);
+}
+
+async function streamGeminiToSse({
+  fetchImpl,
+  apiKey,
+  modelId,
+  upstreamPayload,
+  plan,
+  timeoutMs,
+  corsHeaders,
+}) {
+  const startedAt = Date.now();
+  const buildStreamUrl = () =>
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
+
+  const sendStreamFetch = async payloadToSend => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.max(timeoutMs, 42000));
+    try {
+      const res = await fetchImpl(buildStreamUrl(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        body: JSON.stringify(payloadToSend),
+        signal: controller.signal,
+      });
+      return { res, controller, timer };
+    } catch (err) {
+      clearTimeout(timer);
+      if (err?.name === "AbortError") {
+        const timeoutErr = new Error("Upstream Gemini API timed out while connecting.");
+        timeoutErr.isTimeout = true;
+        throw timeoutErr;
+      }
+      throw err;
+    }
+  };
+
+  let payloadCopy = {
+    ...upstreamPayload,
+    generationConfig: { ...(upstreamPayload.generationConfig || {}) },
+  };
+  let thinkingConfigUsed = Boolean(payloadCopy.generationConfig.thinkingConfig);
+  let { res: upstreamRes, controller, timer } = await sendStreamFetch(payloadCopy);
+
+  if (!upstreamRes.ok) {
+    const firstErrText = await upstreamRes.text();
+    clearTimeout(timer);
+    if (thinkingConfigUsed && isThinkingConfigRejection(upstreamRes.status, firstErrText)) {
+      delete payloadCopy.generationConfig.thinkingConfig;
+      thinkingConfigUsed = false;
+      ({ res: upstreamRes, controller, timer } = await sendStreamFetch(payloadCopy));
+      if (!upstreamRes.ok) {
+        const secondErrText = await upstreamRes.text();
+        clearTimeout(timer);
+        return {
+          ok: false,
+          upstreamRes: {
+            ok: false,
+            status: upstreamRes.status,
+            headers: upstreamRes.headers,
+            text: secondErrText,
+          },
+        };
+      }
+    } else {
+      return {
+        ok: false,
+        upstreamRes: {
+          ok: false,
+          status: upstreamRes.status,
+          headers: upstreamRes.headers,
+          text: firstErrText,
+        },
+      };
+    }
+  }
+
+  const upstreamCt = String(upstreamRes.headers?.get?.("Content-Type") || "").toLowerCase();
+  if (!upstreamRes.body || (upstreamCt.includes("application/json") && !upstreamCt.includes("text/event-stream"))) {
+    clearTimeout(timer);
+    const jsonText = await upstreamRes.text();
+    let parsedJson;
+    try {
+      parsedJson = JSON.parse(jsonText);
+    } catch {
+      return {
+        ok: false,
+        customError: {
+          status: 502,
+          code: "INVALID_UPSTREAM_JSON",
+          retryable: true,
+          message: "Received malformed response from Gemini service. Please tap Retry.",
+        },
+      };
+    }
+    const extracted = extractGeminiCandidateText(parsedJson);
+    const verification = verifyGeneratedAnswer(extracted.text, plan, extracted.finishReason);
+    const ssePayload = buildReasoningEnvelope(
+      "gemini",
+      modelId,
+      plan,
+      verification,
+      false,
+      startedAt,
+      thinkingConfigUsed
+    );
+    const encoder = new TextEncoder();
+    const oneShotStream = new ReadableStream({
+      start(ctrl) {
+        ctrl.enqueue(
+          encoder.encode(
+            formatSseEvent("meta", {
+              providerUsed: "gemini",
+              modelUsed: modelId,
+              category: plan.category,
+              mode: plan.mode,
+              modeLabel: plan.modeLabel,
+              effort: plan.effort,
+              subtasks: plan.subtasks,
+            })
+          )
+        );
+        if (extracted.text) {
+          ctrl.enqueue(encoder.encode(formatSseEvent("delta", { delta: extracted.text })));
+        }
+        ctrl.enqueue(
+          encoder.encode(
+            formatSseEvent("done", {
+              text: extracted.text,
+              modelUsed: modelId,
+              providerUsed: "gemini",
+              inffolerReasoning: ssePayload,
+            })
+          )
+        );
+        ctrl.close();
+      },
+    });
+    return {
+      ok: true,
+      response: new Response(oneShotStream, {
+        status: 200,
+        headers: {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-store",
+          ...corsHeaders,
+        },
+      }),
+    };
+  }
+
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder("utf-8");
+  const reader = upstreamRes.body.getReader();
+
+  const sseStream = new ReadableStream({
+    async start(streamCtrl) {
+      let buffer = "";
+      let rawFallback = "";
+      let sawSsePrefix = false;
+      let accumulatedText = "";
+      let finishReason = "STOP";
+      let doneEmitted = false;
+      let streamUsage = null;
+
+      const emit = (eventName, data) => {
+        streamCtrl.enqueue(encoder.encode(formatSseEvent(eventName, data)));
+      };
+
+      const finalizeSuccess = () => {
+        if (doneEmitted) return;
+        doneEmitted = true;
+        const verification = verifyGeneratedAnswer(accumulatedText, plan, finishReason);
+        const reasoningMeta = buildReasoningEnvelope(
+          "gemini",
+          modelId,
+          plan,
+          verification,
+          false,
+          startedAt,
+          thinkingConfigUsed
+        );
+        emit("done", {
+          text: accumulatedText.trim(),
+          modelUsed: modelId,
+          providerUsed: "gemini",
+          usage: streamUsage || undefined,
+          inffolerReasoning: reasoningMeta,
+        });
+      };
+
+      emit("meta", {
+        providerUsed: "gemini",
+        modelUsed: modelId,
+        category: plan.category,
+        mode: plan.mode,
+        modeLabel: plan.modeLabel,
+        effort: plan.effort,
+        subtasks: plan.subtasks,
+      });
+
+      const processFrame = frameText => {
+        const lines = frameText.split(/\r?\n/);
+        const dataLines = [];
+        for (const line of lines) {
+          if (line.startsWith("data:")) {
+            sawSsePrefix = true;
+            dataLines.push(line.slice(5).trimStart());
+          }
+        }
+        if (dataLines.length === 0) return;
+        const rawData = dataLines.join("\n").trim();
+        if (!rawData || rawData === "[DONE]") {
+          finalizeSuccess();
+          return;
+        }
+        let evt;
+        try {
+          evt = JSON.parse(rawData);
+        } catch {
+          return;
+        }
+        if (evt?.error) {
+          const classified = classifyGeminiUpstreamError(
+            evt.error.code || 502,
+            JSON.stringify({ error: evt.error }),
+            null
+          );
+          doneEmitted = true;
+          emit("error", {
+            error: classified.message,
+            code: classified.code,
+            quotaType: classified.quotaType,
+            retryable: classified.retryable,
+            retryAfterSec: classified.retryAfterSec,
+          });
+          return;
+        }
+        const cand = evt?.candidates?.[0];
+        if (cand?.finishReason) finishReason = cand.finishReason;
+        if (evt?.usageMetadata) streamUsage = evt.usageMetadata;
+        const chunkText = (cand?.content?.parts || []).map(p => p.text || "").join("");
+        if (chunkText) {
+          accumulatedText += chunkText;
+          emit("delta", { delta: chunkText });
+        }
+      };
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunkStr = decoder.decode(value, { stream: true });
+          if (!sawSsePrefix && rawFallback.length < 262144) rawFallback += chunkStr;
+          buffer += chunkStr;
+          const frames = buffer.split(/\r?\n\r?\n/);
+          buffer = frames.pop() || "";
+          for (const frame of frames) {
+            if (frame.trim()) processFrame(frame);
+          }
+        }
+        const tailStr = decoder.decode();
+        if (!sawSsePrefix && rawFallback.length < 262144) rawFallback += tailStr;
+        buffer += tailStr;
+        if (buffer.trim()) processFrame(buffer);
+        if (!doneEmitted && !accumulatedText && !sawSsePrefix && rawFallback.trim().startsWith("{")) {
+          try {
+            const parsedObj = JSON.parse(rawFallback.trim());
+            const extracted = extractGeminiCandidateText(parsedObj);
+            if (extracted.text) {
+              accumulatedText = extracted.text;
+              finishReason = extracted.finishReason || finishReason;
+              emit("delta", { delta: extracted.text });
+            }
+          } catch { /* ignore */ }
+        }
+        if (!doneEmitted) finalizeSuccess();
+      } catch (err) {
+        if (!doneEmitted) {
+          emit("error", {
+            error: err?.name === "AbortError"
+              ? "Gemini stream timed out before finishing."
+              : "Gemini response stream interrupted.",
+            code: err?.name === "AbortError" ? "UPSTREAM_TIMEOUT" : "STREAM_ERROR",
+            retryable: true,
+          });
+        }
+      } finally {
+        clearTimeout(timer);
+        try { reader.releaseLock?.(); } catch { /* ignore */ }
+        try { streamCtrl.close(); } catch { /* ignore */ }
+      }
+    },
+    cancel() {
+      clearTimeout(timer);
+      controller.abort();
+      reader.cancel().catch(() => {});
+    },
+  });
+
+  return {
+    ok: true,
+    response: new Response(sseStream, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-store",
+        ...corsHeaders,
+      },
+    }),
+  };
 }
 
 export async function handleGeminiProviderRequest({
@@ -2609,12 +3067,24 @@ export async function handleGeminiProviderRequest({
   fetchImpl,
   timeoutMs = DEFAULT_UPSTREAM_TIMEOUT_MS,
   corsHeaders = {},
+  route = "/api/gemini",
 }) {
   if (!geminiKey) {
+    const missingMsg =
+      "Server GEMINI_API_KEY secret is not configured. Set GEMINI_API_KEY in backend environment variables or Cloudflare Worker Secrets.";
+    logProviderDiagnostic({
+      provider: "gemini",
+      model: validated.model,
+      handler: "handleGeminiProviderRequest",
+      route,
+      endpointHost: "generativelanguage.googleapis.com",
+      status: 503,
+      errorMessage: missingMsg,
+    });
     return jsonResponse(
       {
         provider: "gemini",
-        error: "Server GEMINI_API_KEY secret is not configured. Set GEMINI_API_KEY in backend environment variables or Cloudflare Worker Secrets.",
+        error: missingMsg,
         code: "MISSING_API_KEY",
       },
       503,
@@ -2637,36 +3107,72 @@ export async function handleGeminiProviderRequest({
     ? baseSys
     : buildEngineSystemInstruction(baseSys, plan);
 
-  const outcome = await runGeminiReasoningPipeline({
-    validated,
-    apiKey: geminiKey,
-    fetchImpl,
-    timeoutMs,
-    plan,
-    effectiveSystemInstruction,
-    isJsonStructuredMode,
-    startMs,
-  });
+  if (validated.stream && !isJsonStructuredMode) {
+    const upstreamPayload = {
+      contents: validated.payload.contents,
+      generationConfig: { ...plan.generationConfig },
+    };
+    if (effectiveSystemInstruction) {
+      upstreamPayload.systemInstruction = { parts: [{ text: effectiveSystemInstruction }] };
+    }
 
-  if (!outcome.ok) {
-    if (outcome.customError) {
+    const streamOutcome = await streamGeminiToSse({
+      fetchImpl,
+      apiKey: geminiKey,
+      modelId: validated.model,
+      upstreamPayload,
+      plan,
+      timeoutMs,
+      corsHeaders,
+    });
+
+    if (streamOutcome.ok) {
+      logProviderDiagnostic({
+        provider: "gemini",
+        model: validated.model,
+        handler: "handleGeminiProviderRequest(stream)",
+        route,
+        endpointHost: "generativelanguage.googleapis.com",
+        status: 200,
+      });
+      return streamOutcome.response;
+    }
+    if (streamOutcome.customError) {
+      logProviderDiagnostic({
+        provider: "gemini",
+        model: validated.model,
+        handler: "handleGeminiProviderRequest(stream)",
+        route,
+        endpointHost: "generativelanguage.googleapis.com",
+        status: streamOutcome.customError.status,
+        errorMessage: streamOutcome.customError.message,
+      });
       return jsonResponse(
         {
           provider: "gemini",
-          error: outcome.customError.message,
-          code: outcome.customError.code,
-          retryable: outcome.customError.retryable,
+          error: streamOutcome.customError.message,
+          code: streamOutcome.customError.code,
+          retryable: streamOutcome.customError.retryable,
         },
-        outcome.customError.status,
+        streamOutcome.customError.status,
         corsHeaders
       );
     }
-    const upstream = outcome.upstreamRes;
+    const upstream = streamOutcome.upstreamRes;
     const classified = classifyGeminiUpstreamError(
       upstream.status,
       upstream.text,
       upstream.headers?.get?.("Retry-After") || null
     );
+    logProviderDiagnostic({
+      provider: "gemini",
+      model: validated.model,
+      handler: "handleGeminiProviderRequest(stream)",
+      route,
+      endpointHost: "generativelanguage.googleapis.com",
+      status: upstream.status,
+      errorMessage: classified.message,
+    });
     const responseHeaders = { ...corsHeaders };
     if (classified.retryAfterSec) {
       responseHeaders["Retry-After"] = String(classified.retryAfterSec);
@@ -2686,6 +3192,81 @@ export async function handleGeminiProviderRequest({
     );
   }
 
+  const outcome = await runGeminiReasoningPipeline({
+    validated,
+    apiKey: geminiKey,
+    fetchImpl,
+    timeoutMs,
+    plan,
+    effectiveSystemInstruction,
+    isJsonStructuredMode,
+    startMs,
+  });
+
+  if (!outcome.ok) {
+    if (outcome.customError) {
+      logProviderDiagnostic({
+        provider: "gemini",
+        model: validated.model,
+        handler: "handleGeminiProviderRequest",
+        route,
+        endpointHost: "generativelanguage.googleapis.com",
+        status: outcome.customError.status,
+        errorMessage: outcome.customError.message,
+      });
+      return jsonResponse(
+        {
+          provider: "gemini",
+          error: outcome.customError.message,
+          code: outcome.customError.code,
+          retryable: outcome.customError.retryable,
+        },
+        outcome.customError.status,
+        corsHeaders
+      );
+    }
+    const upstream = outcome.upstreamRes;
+    const classified = classifyGeminiUpstreamError(
+      upstream.status,
+      upstream.text,
+      upstream.headers?.get?.("Retry-After") || null
+    );
+    logProviderDiagnostic({
+      provider: "gemini",
+      model: validated.model,
+      handler: "handleGeminiProviderRequest",
+      route,
+      endpointHost: "generativelanguage.googleapis.com",
+      status: upstream.status,
+      errorMessage: classified.message,
+    });
+    const responseHeaders = { ...corsHeaders };
+    if (classified.retryAfterSec) {
+      responseHeaders["Retry-After"] = String(classified.retryAfterSec);
+    }
+    return jsonResponse(
+      {
+        provider: "gemini",
+        error: classified.message,
+        code: classified.code,
+        quotaType: classified.quotaType,
+        retryable: classified.retryable,
+        retryAfterSec: classified.retryAfterSec,
+        modelRequested: validated.model,
+      },
+      upstream.status,
+      responseHeaders
+    );
+  }
+
+  logProviderDiagnostic({
+    provider: "gemini",
+    model: validated.model,
+    handler: "handleGeminiProviderRequest",
+    route,
+    endpointHost: "generativelanguage.googleapis.com",
+    status: 200,
+  });
   return jsonResponse(outcome.data, 200, corsHeaders);
 }
 
@@ -3488,7 +4069,7 @@ export async function handleRequest(request, env = {}, deps = {}) {
   const origin = request.headers.get("Origin") || "";
   const corsHeaders = getCorsHeaders(origin);
 
-  if (origin && !ALLOWED_ORIGINS.has(origin)) {
+  if (origin && !isAllowedOrigin(origin)) {
     return jsonResponse({ error: "Origin not allowed." }, 403, corsHeaders);
   }
 
@@ -3517,6 +4098,15 @@ export async function handleRequest(request, env = {}, deps = {}) {
         defaultProvider: DEFAULT_PROVIDER,
         defaultModel: DEFAULT_MODEL,
         supportedProviders: ["openai", "gemini"],
+        providerEndpoints: {
+          openai: "/api/openai",
+          gemini: "/api/gemini",
+          chat: "/",
+        },
+        providerModels: {
+          openai: Array.from(OPENAI_MODELS),
+          gemini: Array.from(GEMINI_MODELS),
+        },
         openaiConfigured: openAiConfigured,
         geminiConfigured,
         streamingSupported: true,
@@ -3625,6 +4215,15 @@ export async function handleRequest(request, env = {}, deps = {}) {
     if (pathname === "/earth/query") {
       const validatedEarth = validateEarthQueryRequest(parsedBody);
       if (validatedEarth.error) {
+        logProviderDiagnostic({
+          provider: validatedEarth.provider || null,
+          model: validatedEarth.requestedModel || null,
+          handler: "validateEarthQueryRequest(/earth/query)",
+          route: pathname,
+          endpointHost: validatedEarth.provider === "gemini" ? "generativelanguage.googleapis.com" : "api.openai.com",
+          status: 400,
+          errorMessage: validatedEarth.error,
+        });
         return jsonResponse(
           {
             error: validatedEarth.error,
@@ -3637,12 +4236,23 @@ export async function handleRequest(request, env = {}, deps = {}) {
         );
       }
 
+      const earthEndpointHost = validatedEarth.provider === "openai" ? "api.openai.com" : "generativelanguage.googleapis.com";
       const earthApiKey = validatedEarth.provider === "openai" ? openAiKey : geminiKey;
       if (!earthApiKey) {
         const missingName = validatedEarth.provider === "openai" ? "OPENAI_API_KEY" : "GEMINI_API_KEY";
+        const missingMsg = `Server ${missingName} secret is not configured. Set ${missingName} in backend environment variables or Cloudflare Worker Secrets.`;
+        logProviderDiagnostic({
+          provider: validatedEarth.provider,
+          model: validatedEarth.model,
+          handler: "runEarthIntelligencePipeline",
+          route: pathname,
+          endpointHost: earthEndpointHost,
+          status: 503,
+          errorMessage: missingMsg,
+        });
         return jsonResponse(
           {
-            error: `Server ${missingName} secret is not configured. Set ${missingName} in backend environment variables or Cloudflare Worker Secrets.`,
+            error: missingMsg,
             code: "MISSING_API_KEY",
           },
           503,
@@ -3659,6 +4269,15 @@ export async function handleRequest(request, env = {}, deps = {}) {
 
       if (!earthOutcome.ok) {
         if (earthOutcome.customError) {
+          logProviderDiagnostic({
+            provider: earthOutcome.provider,
+            model: validatedEarth.model,
+            handler: "runEarthIntelligencePipeline",
+            route: pathname,
+            endpointHost: earthOutcome.provider === "openai" ? "api.openai.com" : "generativelanguage.googleapis.com",
+            status: earthOutcome.customError.status,
+            errorMessage: earthOutcome.customError.message,
+          });
           return jsonResponse(
             {
               error: earthOutcome.customError.message,
@@ -3682,6 +4301,15 @@ export async function handleRequest(request, env = {}, deps = {}) {
                 upstream.text,
                 upstream.headers?.get?.("Retry-After") || null
               );
+        logProviderDiagnostic({
+          provider: earthOutcome.provider,
+          model: validatedEarth.model,
+          handler: "runEarthIntelligencePipeline",
+          route: pathname,
+          endpointHost: earthOutcome.provider === "openai" ? "api.openai.com" : "generativelanguage.googleapis.com",
+          status: upstream.status,
+          errorMessage: classified.message,
+        });
         const responseHeaders = { ...corsHeaders };
         if (classified.retryAfterSec) {
           responseHeaders["Retry-After"] = String(classified.retryAfterSec);
@@ -3701,11 +4329,158 @@ export async function handleRequest(request, env = {}, deps = {}) {
         );
       }
 
+      logProviderDiagnostic({
+        provider: validatedEarth.provider,
+        model: validatedEarth.model,
+        handler: "runEarthIntelligencePipeline",
+        route: pathname,
+        endpointHost: earthEndpointHost,
+        status: 200,
+      });
       return jsonResponse(earthOutcome.data, 200, corsHeaders);
+    }
+
+    if (pathname === "/api/openai" || pathname === "/openai/chat") {
+      if (
+        parsedBody &&
+        typeof parsedBody === "object" &&
+        typeof parsedBody.provider === "string" &&
+        parsedBody.provider.trim().length > 0 &&
+        parsedBody.provider.trim().toLowerCase() !== "openai"
+      ) {
+        const errMsg = `Route '${pathname}' is dedicated to OpenAI and cannot process provider '${parsedBody.provider}'.`;
+        logProviderDiagnostic({
+          provider: parsedBody.provider,
+          model: parsedBody.model || null,
+          handler: "routeGuard(/api/openai)",
+          route: pathname,
+          endpointHost: "api.openai.com",
+          status: 400,
+          errorMessage: errMsg,
+        });
+        return jsonResponse(
+          {
+            provider: "openai",
+            error: errMsg,
+            code: "UNSUPPORTED_PROVIDER",
+            allowedModels: Array.from(OPENAI_MODELS),
+          },
+          400,
+          corsHeaders
+        );
+      }
+      const validatedOpenAi = validateAndSanitizeRequest({
+        ...(parsedBody && typeof parsedBody === "object" ? parsedBody : {}),
+        provider: "openai",
+      });
+      if (validatedOpenAi.error) {
+        logProviderDiagnostic({
+          provider: "openai",
+          model: validatedOpenAi.requestedModel || null,
+          handler: "validateAndSanitizeRequest(/api/openai)",
+          route: pathname,
+          endpointHost: "api.openai.com",
+          status: 400,
+          errorMessage: validatedOpenAi.error,
+        });
+        return jsonResponse(
+          {
+            provider: "openai",
+            error: validatedOpenAi.error,
+            code: validatedOpenAi.code || "INVALID_PAYLOAD",
+            requestedModel: validatedOpenAi.requestedModel || null,
+            allowedModels: validatedOpenAi.allowedModels || Array.from(OPENAI_MODELS),
+          },
+          400,
+          corsHeaders
+        );
+      }
+      return await handleOpenAiProviderRequest({
+        validated: validatedOpenAi,
+        openAiKey,
+        fetchImpl,
+        timeoutMs,
+        corsHeaders,
+        route: pathname,
+      });
+    }
+
+    if (pathname === "/api/gemini" || pathname === "/gemini/chat") {
+      if (
+        parsedBody &&
+        typeof parsedBody === "object" &&
+        typeof parsedBody.provider === "string" &&
+        parsedBody.provider.trim().length > 0 &&
+        parsedBody.provider.trim().toLowerCase() !== "gemini"
+      ) {
+        const errMsg = `Route '${pathname}' is dedicated to Gemini and cannot process provider '${parsedBody.provider}'.`;
+        logProviderDiagnostic({
+          provider: parsedBody.provider,
+          model: parsedBody.model || null,
+          handler: "routeGuard(/api/gemini)",
+          route: pathname,
+          endpointHost: "generativelanguage.googleapis.com",
+          status: 400,
+          errorMessage: errMsg,
+        });
+        return jsonResponse(
+          {
+            provider: "gemini",
+            error: errMsg,
+            code: "UNSUPPORTED_PROVIDER",
+            allowedModels: Array.from(GEMINI_MODELS),
+          },
+          400,
+          corsHeaders
+        );
+      }
+      const validatedGemini = validateAndSanitizeRequest({
+        ...(parsedBody && typeof parsedBody === "object" ? parsedBody : {}),
+        provider: "gemini",
+      });
+      if (validatedGemini.error) {
+        logProviderDiagnostic({
+          provider: "gemini",
+          model: validatedGemini.requestedModel || null,
+          handler: "validateAndSanitizeRequest(/api/gemini)",
+          route: pathname,
+          endpointHost: "generativelanguage.googleapis.com",
+          status: 400,
+          errorMessage: validatedGemini.error,
+        });
+        return jsonResponse(
+          {
+            provider: "gemini",
+            error: validatedGemini.error,
+            code: validatedGemini.code || "INVALID_PAYLOAD",
+            requestedModel: validatedGemini.requestedModel || null,
+            allowedModels: validatedGemini.allowedModels || Array.from(GEMINI_MODELS),
+          },
+          400,
+          corsHeaders
+        );
+      }
+      return await handleGeminiProviderRequest({
+        validated: validatedGemini,
+        geminiKey,
+        fetchImpl,
+        timeoutMs,
+        corsHeaders,
+        route: pathname,
+      });
     }
 
     const validated = validateAndSanitizeRequest(parsedBody);
     if (validated.error) {
+      logProviderDiagnostic({
+        provider: validated.provider || null,
+        model: validated.requestedModel || null,
+        handler: "validateAndSanitizeRequest(/)",
+        route: pathname,
+        endpointHost: validated.provider === "gemini" ? "generativelanguage.googleapis.com" : "api.openai.com",
+        status: 400,
+        errorMessage: validated.error,
+      });
       return jsonResponse(
         {
           provider: validated.provider || null,
@@ -3726,6 +4501,7 @@ export async function handleRequest(request, env = {}, deps = {}) {
         fetchImpl,
         timeoutMs,
         corsHeaders,
+        route: pathname,
       });
     }
 
@@ -3736,6 +4512,7 @@ export async function handleRequest(request, env = {}, deps = {}) {
         fetchImpl,
         timeoutMs,
         corsHeaders,
+        route: pathname,
       });
     }
 

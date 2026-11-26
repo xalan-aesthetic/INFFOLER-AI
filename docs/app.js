@@ -58,10 +58,14 @@ import {
   DEFAULT_PROVIDER,
   DEFAULT_OPENAI_MODEL,
   MODEL_CATALOG,
+  PROVIDER_MODEL_MAP,
   REASONING_MODES,
   normalizeProvider,
   getProviderForModel,
   getDefaultModelForProvider,
+  getModelsForProvider,
+  isModelSupportedForProvider,
+  migrateLegacySavedModelId,
   getProviderDisplayLabel,
   normalizeReasoningMode,
   getModelDisplayLabel,
@@ -69,7 +73,7 @@ import {
   classifyTaskPreview,
   normalizeReasoningMetadata,
   formatVerificationBadge,
-} from "./reasoning-engine.js?v=20261125c";
+} from "./reasoning-engine.js?v=20261126b";
 import {
   normalizePhoneInput,
   validateOtpCode,
@@ -95,12 +99,15 @@ import {
   buildEarthFallbackRequestPayload,
   normalizeEarthClientResponse,
   createEarthGlobeController,
-} from "./earth-intelligence.js?v=20261125b";
+} from "./earth-intelligence.js?v=20261126a";
 
 /* =========================================================================
- * PUBLIC CLOUDFLARE WORKER PROXY (GEMINI_API_KEY LIVES ONLY IN CLOUDFLARE SECRETS)
+ * PUBLIC CLOUDFLARE WORKER PROXY (API KEYS LIVE ONLY IN BACKEND SECRETS)
  * ========================================================================= */
-const PUBLIC_PROXY_URL = "https://inffoler-ai-proxy.xalanvetrnen.workers.dev";
+const PUBLIC_PROXY_URL =
+  (typeof globalThis !== "undefined" &&
+    (globalThis.__INFFOLER_PROXY_URL__ || globalThis.window?.__INFFOLER_PROXY_URL__)) ||
+  "https://inffoler-ai-proxy.xalanvetrnen.workers.dev";
 const GITHUB_REPO_URL = "https://github.com/xalan-aesthetic/INFFOLER-AI";
 
 const FIREBASE_PROJECT_ID = "gen-lang-client-0028400465";
@@ -271,8 +278,9 @@ const STARTER_PROMPTS = [
 let selectedReasoningMode = normalizeReasoningMode(loadPrefSafe(STORAGE_REASONING_MODE, "balanced"));
 let selectedModelId = (() => {
   const savedModel = loadPrefSafe(STORAGE_MODEL, "");
-  if (savedModel && Object.prototype.hasOwnProperty.call(MODEL_CATALOG, savedModel)) {
-    return savedModel;
+  const migratedModel = migrateLegacySavedModelId(savedModel);
+  if (migratedModel) {
+    return migratedModel;
   }
   const savedProvider = loadPrefSafe(STORAGE_PROVIDER, "");
   if (savedProvider) {
@@ -1331,22 +1339,46 @@ function getSelectedModel() {
 }
 
 function getSelectedProvider() {
+  const domProv = document.getElementById("providerSelect")?.value;
+  if (domProv && Object.prototype.hasOwnProperty.call(PROVIDER_MODEL_MAP, String(domProv).toLowerCase())) {
+    return normalizeProvider(domProv);
+  }
   return getProviderForModel(getSelectedModel());
 }
 
+function renderModelOptionsForProvider(providerId, selectedModel = null) {
+  const modelSelect = document.getElementById("modelSelect");
+  if (!modelSelect) return;
+  const normProvider = normalizeProvider(providerId);
+  const models = getModelsForProvider(normProvider);
+  const targetModel =
+    selectedModel && isModelSupportedForProvider(normProvider, selectedModel)
+      ? selectedModel
+      : getDefaultModelForProvider(normProvider);
+
+  modelSelect.innerHTML = models
+    .map(
+      m =>
+        `<option value="${escapeHtml(m.id)}"${m.id === targetModel ? " selected" : ""}>${escapeHtml(m.label)}</option>`
+    )
+    .join("");
+  modelSelect.value = targetModel;
+}
+
 function setActiveProviderAndModel(providerId, modelId = null, { persistCloud = false, markExplicit = false } = {}) {
+  const normalizedTargetProvider = providerId ? normalizeProvider(providerId) : null;
+  const hasCatalogModel = modelId && Object.prototype.hasOwnProperty.call(MODEL_CATALOG, modelId);
   const resolvedModel =
-    modelId && Object.prototype.hasOwnProperty.call(MODEL_CATALOG, modelId)
+    hasCatalogModel && (!normalizedTargetProvider || isModelSupportedForProvider(normalizedTargetProvider, modelId))
       ? modelId
-      : getDefaultModelForProvider(providerId || DEFAULT_PROVIDER);
+      : getDefaultModelForProvider(normalizedTargetProvider || DEFAULT_PROVIDER);
   const resolvedProvider = getProviderForModel(resolvedModel);
   selectedProvider = resolvedProvider;
   selectedModelId = resolvedModel;
 
   const provSelect = document.getElementById("providerSelect");
   if (provSelect) provSelect.value = resolvedProvider;
-  const modelSelect = document.getElementById("modelSelect");
-  if (modelSelect) modelSelect.value = resolvedModel;
+  renderModelOptionsForProvider(resolvedProvider, resolvedModel);
 
   savePrefSafe(STORAGE_PROVIDER, resolvedProvider);
   savePrefSafe(STORAGE_MODEL, resolvedModel);
@@ -1793,12 +1825,12 @@ async function onAuthChange(user) {
       const profile = await loadUserProfile(currentUser.uid);
       if (profile?.theme) setTheme(profile.theme, false);
       const hasExplicitEnginePref = loadPref(STORAGE_ENGINE_EXPLICIT, "") === "1";
+      const migratedProfileModel = migrateLegacySavedModelId(profile?.preferredModel);
       if (
-        profile?.preferredModel &&
-        Object.prototype.hasOwnProperty.call(MODEL_CATALOG, profile.preferredModel) &&
-        (hasExplicitEnginePref || getProviderForModel(profile.preferredModel) === DEFAULT_PROVIDER)
+        migratedProfileModel &&
+        (hasExplicitEnginePref || getProviderForModel(migratedProfileModel) === DEFAULT_PROVIDER)
       ) {
-        setActiveProviderAndModel(getProviderForModel(profile.preferredModel), profile.preferredModel, {
+        setActiveProviderAndModel(getProviderForModel(migratedProfileModel), migratedProfileModel, {
           persistCloud: false,
         });
       }
@@ -2228,9 +2260,8 @@ function classifyClientAiError(status, errJson = null, retryAfterHeader = null, 
 
   if (serverCode === "UNSUPPORTED_MODEL" || serverCode === "UNSUPPORTED_PROVIDER" || status === 404) {
     const isStaleGeminiOnlyWorker =
-      activeProvider === "openai" &&
-      /unsupported model\s*['"]?(gpt-|o4-)/i.test(rawMessage) &&
-      /gemini-/i.test(rawMessage);
+      /gemini-3\.8-flash|gemini-4-argon/i.test(rawMessage) &&
+      (/unsupported model\s*['"]?(gpt-|o4-|gemini-2\.5-)/i.test(rawMessage) || activeProvider === "openai");
     return {
       kind: "unsupported_model",
       code: serverCode || "UNSUPPORTED_MODEL",
@@ -2239,9 +2270,9 @@ function classifyClientAiError(status, errJson = null, retryAfterHeader = null, 
       retryAfterSec: null,
       badgeLabel: isStaleGeminiOnlyWorker ? "BACKEND DEPLOYMENT OUTDATED (400)" : "UNSUPPORTED MODEL",
       userMessage: isStaleGeminiOnlyWorker
-        ? `${rawMessage} The live Cloudflare Worker proxy has not been redeployed with the OpenAI Responses API update yet. Deploy web-proxy/cloudflare-worker.js with OPENAI_API_KEY configured in Worker Secrets.`
+        ? `${rawMessage} The live Cloudflare Worker proxy is still on an older v2.1.0 deployment. Redeploy web-proxy/cloudflare-worker.js with OPENAI_API_KEY and GEMINI_API_KEY configured in Worker Secrets.`
         : rawMessage ||
-          "The selected AI model is unavailable or unsupported. Please choose GPT-4.1 Mini, GPT-4.1, GPT-4o Mini, o4-mini, or a Gemini model.",
+          "The selected AI model is unavailable or unsupported. Please choose GPT-4.1 Mini, GPT-4.1, GPT-4o Mini, o4-mini, or a Gemini 2.5 model.",
     };
   }
 
@@ -2292,6 +2323,25 @@ function classifyClientAiError(status, errJson = null, retryAfterHeader = null, 
   }
 
   if (status === 401 || status === 403) {
+    const isProviderKeyOrPermissionError =
+      serverCode === "INVALID_API_KEY" ||
+      serverCode === "PERMISSION_DENIED" ||
+      Boolean(errJson?.provider && /api key|openai|gemini|permission|billing|model|access/i.test(rawMessage));
+
+    if (isProviderKeyOrPermissionError || (status === 403 && errJson?.provider)) {
+      return {
+        kind: "auth",
+        code: serverCode || (status === 403 ? "PERMISSION_DENIED" : "INVALID_API_KEY"),
+        quotaType: null,
+        retryable: false,
+        retryAfterSec: null,
+        badgeLabel: status === 403 ? "API ACCESS DENIED (403)" : "API KEY ERROR (401)",
+        userMessage:
+          rawMessage ||
+          `${providerLabel} rejected the API request (HTTP ${status}). Verify backend API key and permissions.`,
+      };
+    }
+
     return {
       kind: "auth",
       code: serverCode || "AUTH_ERROR",
@@ -2496,15 +2546,35 @@ async function callProxyOnce(
   responseMimeType,
   signal,
   reasoningMode = "balanced",
-  onStreamDelta = null
+  onStreamDelta = null,
+  explicitProvider = null
 ) {
   if (!auth.currentUser) {
     throw new Error("Authentication required. Please log in to access INFFOLER AI.");
   }
 
-  const resolvedModelId = normalizeModel(modelId);
-  const providerId = getProviderForModel(resolvedModelId);
+  const rawModelInput = String(modelId || "").trim();
+  const resolvedModelId = Object.prototype.hasOwnProperty.call(MODEL_CATALOG, rawModelInput)
+    ? rawModelInput
+    : normalizeModel(rawModelInput);
+  const providerId = explicitProvider
+    ? normalizeProvider(explicitProvider)
+    : getProviderForModel(resolvedModelId);
+  if (!isModelSupportedForProvider(providerId, resolvedModelId)) {
+    throw buildClassifiedClientError(
+      400,
+      {
+        code: "UNSUPPORTED_MODEL",
+        provider: providerId,
+        error: `Unsupported model '${rawModelInput || resolvedModelId}' for provider '${getProviderDisplayLabel(providerId)}'.`,
+      },
+      null,
+      "",
+      providerId
+    );
+  }
   const wantsStream = Boolean(onStreamDelta && !responseMimeType);
+  const providerEndpoint = providerId === "openai" ? `${PUBLIC_PROXY_URL}/api/openai` : `${PUBLIC_PROXY_URL}/api/gemini`;
 
   const payload = {
     systemInstruction: { parts: [{ text: systemInstruction }] },
@@ -2526,7 +2596,7 @@ async function callProxyOnce(
 
   const sendAuthorizedRequest = async forceRefreshToken => {
     const idToken = await auth.currentUser.getIdToken(forceRefreshToken);
-    return fetch(PUBLIC_PROXY_URL, {
+    return fetch(providerEndpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -2629,7 +2699,8 @@ async function executeSelectedModelRequest(
   signal,
   reasoningMode = "balanced",
   onStatus = null,
-  onStreamDelta = null
+  onStreamDelta = null,
+  selectedProviderOverride = null
 ) {
   // Never silently switch provider or model: strictly respect the user's selection.
   const MAX_TEMPORARY_RETRIES = 2; // Strictly bounded: max 2 retries (never retries indefinitely)
@@ -2646,7 +2717,8 @@ async function executeSelectedModelRequest(
         responseMimeType,
         signal,
         reasoningMode,
-        onStreamDelta
+        onStreamDelta,
+        selectedProviderOverride
       );
       return {
         modelId: rawResponse?.inffolerReasoning?.modelUsed || selectedModel,
@@ -3139,7 +3211,11 @@ async function dispatchAiCompletion(priorTurns, promptText, imagesToSend) {
   userParts.push({ text: promptText });
 
   const contents = [...priorTurns, { role: "user", parts: userParts }];
-  const selectedModel = getSelectedModel();
+  const activeProviderNow = getSelectedProvider();
+  const activeModelNow = getSelectedModel();
+  const selectedModel = isModelSupportedForProvider(activeProviderNow, activeModelNow)
+    ? activeModelNow
+    : activeModelNow;
   const reasoningMode = getSelectedReasoningMode();
   const previewCategory = classifyTaskPreview(promptText, reasoningMode);
   const startedAt = Date.now();
@@ -3150,7 +3226,7 @@ async function dispatchAiCompletion(priorTurns, promptText, imagesToSend) {
   activeMessages.push({ role: "model", isTypingPlaceholder: true, text: "" });
   setGeneratingUi(true);
   syncEngineStatusBar(
-    `${getProviderDisplayLabel(getProviderForModel(selectedModel))} · ${previewCategory} (${REASONING_MODES[reasoningMode]?.shortLabel || "Balanced"})…`,
+    `${getProviderDisplayLabel(activeProviderNow)} · ${previewCategory} (${REASONING_MODES[reasoningMode]?.shortLabel || "Balanced"})…`,
     "active"
   );
   renderChatMessages();
@@ -3213,7 +3289,8 @@ async function dispatchAiCompletion(priorTurns, promptText, imagesToSend) {
       activeAbortController.signal,
       reasoningMode,
       statusMsg => syncEngineStatusBar(statusMsg, "active"),
-      handleStreamDelta
+      handleStreamDelta,
+      activeProviderNow
     );
 
     if (streamRenderTimer) {
@@ -4725,8 +4802,8 @@ async function executeEarthRootProxyFallback({
     throw new Error(sanitizeEarthErrorMessage(classified.userMessage));
   }
 
-  const geminiData = JSON.parse(bodyText);
-  const rawText = geminiData?.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("")?.trim() || "";
+  const earthApiData = JSON.parse(bodyText);
+  const rawText = extractTextFromJsonResponse(earthApiData);
   if (!rawText) {
     throw new Error("Global market intelligence returned an empty response. Please tap Retry.");
   }

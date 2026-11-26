@@ -38,6 +38,7 @@ import {
   DEFAULT_PROVIDER as CLIENT_DEFAULT_PROVIDER,
   DEFAULT_OPENAI_MODEL as CLIENT_DEFAULT_OPENAI_MODEL,
   getProviderForModel,
+  migrateLegacySavedModelId,
   validatePromptInput,
   classifyTaskPreview,
   formatVerificationBadge,
@@ -1760,9 +1761,9 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
   assert.equal(dataLite.inffolerReasoning.effort, "high");
 
   // B) If gemini-2.5-pro rejects thinkingConfig with 400, retry SAME model without thinkingConfig (never switch models)
-  let argonUrls = [];
-  let argonPayloads = [];
-  const resArgon = await handleRequest(
+  let proUrls = [];
+  let proPayloads = [];
+  const resPro = await handleRequest(
     new Request("https://worker.example/", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
@@ -1779,9 +1780,9 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
         if (String(url) === GOOGLE_JWK_URL) {
           return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 });
         }
-        argonUrls.push(String(url));
-        argonPayloads.push(JSON.parse(init.body));
-        if (argonUrls.length === 1) {
+        proUrls.push(String(url));
+        proPayloads.push(JSON.parse(init.body));
+        if (proUrls.length === 1) {
           return new Response(
             JSON.stringify({ error: { code: 400, message: "Unknown name \"thinkingConfig\" at generation_config" } }),
             { status: 400 }
@@ -1794,14 +1795,14 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
       },
     }
   );
-  assert.equal(resArgon.status, 200);
-  const dataArgon = await resArgon.json();
-  assert.equal(argonUrls.length, 2);
-  assert.ok(argonUrls.every(u => u.includes("/models/gemini-2.5-pro:")), "Must NEVER silently switch away from gemini-2.5-pro");
-  assert.ok(argonPayloads[0].generationConfig.thinkingConfig !== undefined);
-  assert.equal(argonPayloads[1].generationConfig.thinkingConfig, undefined);
-  assert.equal(dataArgon.inffolerReasoning.modelUsed, "gemini-2.5-pro");
-  assert.equal(dataArgon.inffolerReasoning.parametersApplied.thinkingConfigUsed, false);
+  assert.equal(resPro.status, 200);
+  const dataPro = await resPro.json();
+  assert.equal(proUrls.length, 2);
+  assert.ok(proUrls.every(u => u.includes("/models/gemini-2.5-pro:")), "Must NEVER silently switch away from gemini-2.5-pro");
+  assert.ok(proPayloads[0].generationConfig.thinkingConfig !== undefined);
+  assert.equal(proPayloads[1].generationConfig.thinkingConfig, undefined);
+  assert.equal(dataPro.inffolerReasoning.modelUsed, "gemini-2.5-pro");
+  assert.equal(dataPro.inffolerReasoning.parametersApplied.thinkingConfigUsed, false);
 });
 
 test("Reasoning Engine Scenarios 5, 7, 8, 9: Unsupported model, Network timeout, Empty message, Very long message", async () => {
@@ -3772,6 +3773,9 @@ test("OpenAI Responses API Default Provider: SSE streaming, multi-turn history, 
   assert.equal(getProviderForModel("gpt-4.1-mini"), "openai");
   assert.equal(getProviderForModel("o4-mini"), "openai");
   assert.equal(getProviderForModel("gemini-2.5-flash"), "gemini");
+  assert.equal(migrateLegacySavedModelId("gemini-3.8-flash"), "gemini-2.5-flash");
+  assert.equal(migrateLegacySavedModelId("gemini-3.5-flash-lite"), "gemini-2.5-flash-lite");
+  assert.equal(migrateLegacySavedModelId("gemini-4-argon"), "gemini-2.5-pro");
 
   assert.equal(resolveServerSecret({ OPENAI_API_KEY: "sk-proj-worker-secret" }, "OPENAI_API_KEY"), "sk-proj-worker-secret");
   const prevNodeKey = process.env.OPENAI_API_KEY;
@@ -3941,7 +3945,12 @@ test("OpenAI Responses API Default Provider: SSE streaming, multi-turn history, 
       return new Response(JSON.stringify({ authorizedDomains: ["xalan-aesthetic.github.io"] }), { status: 200 });
     }
     if (sUrl.startsWith("https://inffoler-ai-proxy.xalanvetrnen.workers.dev")) {
-      if (init.body) capturedProxyRequests.push(JSON.parse(init.body));
+      if (init.body) {
+        capturedProxyRequests.push({
+          pathname: new URL(sUrl).pathname,
+          ...JSON.parse(init.body),
+        });
+      }
       return handleRequest(
         new Request(url, init),
         { OPENAI_API_KEY: "sk-proj-E2E-Worker-Key", GEMINI_API_KEY: "gemini-e2e-key", FIREBASE_PROJECT_ID: PROJECT_ID },
@@ -4009,7 +4018,7 @@ test("OpenAI Responses API Default Provider: SSE streaming, multi-turn history, 
       path.join(tmpDir, "firebase-firestore.js"),
       `export const getFirestore=()=>({}); export const doc=(_d,...p)=>p.join("/"); export const collection=(_d,...p)=>p.join("/");
        export const query=c=>c; export const orderBy=()=>null; export const limit=()=>null; export const serverTimestamp=()=>"now"; export const increment=n=>n;
-       export const getDoc=async()=>({exists:()=>true,data:()=>({theme:"dark",preferredModel:"gemini-2.5-flash"})}); export const setDoc=async()=>{}; export const updateDoc=async()=>{}; export const deleteDoc=async()=>{};
+       export const getDoc=async()=>({exists:()=>true,data:()=>({theme:"dark",preferredModel:"gemini-3.8-flash"})}); export const setDoc=async()=>{}; export const updateDoc=async()=>{}; export const deleteDoc=async()=>{};
        export const getDocs=async()=>({docs:[]}); export const writeBatch=()=>({set(){},update(){},delete(){},async commit(){}}); export const onSnapshot=(_q,cb)=>{cb({docs:[]});return()=>{};};`
     );
     const patched = originalJs
@@ -4024,9 +4033,12 @@ test("OpenAI Responses API Default Provider: SSE streaming, multi-turn history, 
     await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
     await new Promise(r => setTimeout(r, 20));
 
-    // A) Even before login and even if an old cloud profile stored gemini-2.5-flash, first launch selects OpenAI by default!
+    // A) Even before login and even if an old cloud profile stored gemini-3.8-flash, first launch selects OpenAI by default!
+    const modelSelectEl = document.getElementById("modelSelect");
+    const initialOptionVals = modelSelectEl.children.map(c => c.attrs?.value).filter(Boolean);
+    assert.deepEqual(initialOptionVals, ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "o4-mini"], "OpenAI must show ONLY OpenAI models");
     assert.equal(document.getElementById("providerSelect").value, "openai");
-    assert.equal(document.getElementById("modelSelect").value, "gpt-4.1-mini");
+    assert.equal(modelSelectEl.value, "gpt-4.1-mini");
     assert.equal(document.getElementById("engineActiveProvider").textContent, "Provider: OpenAI");
 
     document.getElementById("loginEmail").value = "openai@example.com";
@@ -4035,10 +4047,10 @@ test("OpenAI Responses API Default Provider: SSE streaming, multi-turn history, 
     await new Promise(r => setTimeout(r, 25));
 
     assert.equal(document.getElementById("providerSelect").value, "openai", "First launch keeps OpenAI default after login");
-    assert.equal(document.getElementById("modelSelect").value, "gpt-4.1-mini");
+    assert.equal(modelSelectEl.value, "gpt-4.1-mini");
     assert.equal(document.getElementById("engineActiveProvider").textContent, "Provider: OpenAI");
 
-    // B) First chat message uses OpenAI Responses API + streaming cleanly without manual provider selection
+    // B) First chat message uses /api/openai -> OpenAI Responses API + streaming cleanly without manual provider selection
     document.getElementById("chatInput").value = "Hello OpenAI default";
     await document.getElementById("chatForm").submit();
     await new Promise(r => setTimeout(r, 60));
@@ -4046,6 +4058,7 @@ test("OpenAI Responses API Default Provider: SSE streaming, multi-turn history, 
     assert.equal(capturedOpenAiUpstreams.length, 1);
     assert.equal(capturedOpenAiUpstreams[0].body.model, "gpt-4.1-mini");
     assert.equal(capturedOpenAiUpstreams[0].body.stream, true);
+    assert.equal(capturedProxyRequests[0].pathname, "/api/openai");
     assert.equal(capturedProxyRequests[0].provider, "openai");
     assert.equal(capturedProxyRequests[0].stream, true);
     assert.ok(document.getElementById("chatMessages").innerHTML.includes("OpenAI Responses API Streamed!"));
@@ -4059,22 +4072,38 @@ test("OpenAI Responses API Default Provider: SSE streaming, multi-turn history, 
     assert.equal(capturedOpenAiUpstreams[1].body.input.length, 3, "Must carry user -> assistant -> user context");
     assert.equal(capturedOpenAiUpstreams[1].body.input[1].role, "assistant");
 
-    // D) Switch to Gemini via providerSelect -> updates modelSelect & calls Gemini cleanly
+    // D) Switch to Gemini via providerSelect -> updates modelSelect to ONLY Gemini models & calls /api/gemini cleanly
     const provSelect = document.getElementById("providerSelect");
     provSelect.value = "gemini";
     await provSelect.dispatchEvent({ type: "change", target: provSelect });
-    assert.equal(document.getElementById("modelSelect").value, "gemini-2.5-flash");
+    const geminiOptionVals = modelSelectEl.children.map(c => c.attrs?.value).filter(Boolean);
+    assert.deepEqual(
+      geminiOptionVals,
+      ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"],
+      "Gemini provider must show ONLY Gemini models"
+    );
+    assert.equal(modelSelectEl.value, "gemini-2.5-flash");
     assert.equal(document.getElementById("engineActiveProvider").textContent, "Provider: Gemini");
 
     document.getElementById("chatInput").value = "Hello Gemini alternative";
     await document.getElementById("chatForm").submit();
     await new Promise(r => setTimeout(r, 60));
     assert.equal(capturedGeminiUpstreams.length, 1, "Switching to Gemini routes to Gemini API cleanly");
+    assert.equal(capturedProxyRequests[2].pathname, "/api/gemini");
+    assert.equal(capturedProxyRequests[2].provider, "gemini");
+    assert.equal(capturedGeminiUpstreams[0].contents.length, 5, "Switching provider mid-session preserves full history");
     assert.ok(document.getElementById("chatMessages").innerHTML.includes("Gemini switch works!"));
 
-    // E) Verify firestore.rules permits OpenAI and Gemini models
+    // E) Switch back to OpenAI without refresh -> restores ONLY OpenAI models
+    provSelect.value = "openai";
+    await provSelect.dispatchEvent({ type: "change", target: provSelect });
+    const restoredOpenAiOpts = modelSelectEl.children.map(c => c.attrs?.value).filter(Boolean);
+    assert.deepEqual(restoredOpenAiOpts, ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "o4-mini"]);
+    assert.equal(modelSelectEl.value, "gpt-4.1-mini");
+
+    // F) Verify firestore.rules permits OpenAI and Gemini models
     const rulesText = fs.readFileSync(path.resolve(__dirname, "../firestore.rules"), "utf8");
-    for (const mid of ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "o4-mini", "gemini-2.5-flash"]) {
+    for (const mid of ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "o4-mini", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"]) {
       assert.ok(rulesText.includes(`'${mid}'`), `firestore.rules must permit model '${mid}'`);
     }
   } finally {
@@ -4103,7 +4132,7 @@ test("Independent OpenAI vs Gemini Routing, Provider-Scoped Validation, Error Co
   const geminiBad = resolveRequestedProviderAndModel({ provider: "gemini", model: "gpt-4.1-mini" });
   assert.equal(geminiBad.code, "UNSUPPORTED_MODEL");
   assert.equal(geminiBad.provider, "gemini");
-  assert.ok(!geminiBad.error.includes("gpt-4.1-mini\"."), "Gemini validation must list Gemini models");
+  assert.ok(!geminiBad.error.includes('gpt-4.1-mini".'), "Gemini validation must list Gemini models");
   assert.ok(geminiBad.allowedModels.includes("gemini-2.5-flash"));
 
   const badProvider = resolveRequestedProviderAndModel({ provider: "unknown-ai", model: "gpt-4.1-mini" });
@@ -4171,7 +4200,7 @@ test("Independent OpenAI vs Gemini Routing, Provider-Scoped Validation, Error Co
     fetchImpl: async url => {
       assert.ok(String(url).includes("generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"));
       return new Response(
-        JSON.stringify({ candidates: [{ content: { parts: [{ text: "I am INFFOLER AI running on Gemini 3.8 Flash." }] } }] }),
+        JSON.stringify({ candidates: [{ content: { parts: [{ text: "I am INFFOLER AI running on Gemini 2.5 Flash." }] } }] }),
         { status: 200, headers: { "Content-Type": "application/json" } }
       );
     },
@@ -4206,15 +4235,396 @@ test("Independent OpenAI vs Gemini Routing, Provider-Scoped Validation, Error Co
   assert.equal(openAi429.status, 429);
   assert.equal((await openAi429.json()).quotaType, "rate_limit");
 
-  // 4. Mobile header CSS & HTML optimization check (no excessive wrapping, compact grid, zero blur)
+  const openAi403 = await handleOpenAiProviderRequest({
+    validated: openAiValidated,
+    openAiKey: "sk-proj-denied",
+    fetchImpl: async () =>
+      new Response(JSON.stringify({ error: { message: "Model access denied for project" } }), { status: 403 }),
+  });
+  assert.equal(openAi403.status, 403);
+  assert.equal((await openAi403.json()).code, "PERMISSION_DENIED");
+
+  // 4. Dedicated /api/openai & /api/gemini routes reject mismatched providers/models strictly
+  const dedicatedBadProvider = await handleRequest(
+    new Request("https://worker.example/api/openai", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({
+        provider: "gemini",
+        model: "gemini-2.5-flash",
+        payload: { contents: [{ role: "user", parts: [{ text: "Test" }] }] },
+      }),
+    }),
+    { OPENAI_API_KEY: "sk-proj-test", GEMINI_API_KEY: "gem-test", FIREBASE_PROJECT_ID: PROJECT_ID },
+    { nowSec: now, fetchImpl: async () => new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 }) }
+  );
+  assert.equal(dedicatedBadProvider.status, 400);
+  assert.equal((await dedicatedBadProvider.json()).code, "UNSUPPORTED_PROVIDER");
+
+  const dedicatedBadGeminiModel = await handleRequest(
+    new Request("https://worker.example/api/gemini", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({
+        provider: "gemini",
+        model: "gpt-4.1-mini",
+        payload: { contents: [{ role: "user", parts: [{ text: "Test" }] }] },
+      }),
+    }),
+    { OPENAI_API_KEY: "sk-proj-test", GEMINI_API_KEY: "gem-test", FIREBASE_PROJECT_ID: PROJECT_ID },
+    { nowSec: now, fetchImpl: async () => new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 }) }
+  );
+  assert.equal(dedicatedBadGeminiModel.status, 400);
+  assert.equal((await dedicatedBadGeminiModel.json()).code, "UNSUPPORTED_MODEL");
+
+  // 5. Mobile header CSS & HTML optimization check (no excessive wrapping, compact grid, zero blur)
   const html = fs.readFileSync(path.resolve(__dirname, "../docs/index.html"), "utf8");
   const css = fs.readFileSync(path.resolve(__dirname, "../docs/styles.css"), "utf8");
   assert.ok(html.includes('class="topbar-utility-actions"'), "Mobile utility controls grouped cleanly for Row 1");
   assert.ok(html.includes('id="providerSelect"') && html.includes('id="modelSelect"') && html.includes('id="reasoningModeSelect"'));
+  assert.ok(!html.includes("optgroup") || !html.includes("gemini-2.5-flash"), "Initial HTML #modelSelect renders OpenAI options only");
   assert.ok(!/backdrop-filter|filter\s*:\s*blur/i.test(css), "Must keep zero backdrop-filter/blur");
   assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.topbar\s*\{[\s\S]*?display:\s*grid;/);
   assert.match(css, /\.engine-selectors-group\s*\{[\s\S]*?grid-template-columns:/);
   assert.match(css, /min-height:\s*36px/);
+});
+
+test("Complete End-to-End Integration over real Node HTTP server: Tests A-F (OpenAI, Gemini SSE/JSON, Switch, Multi-Turn, Images, Sanitized Diagnostics)", async () => {
+  clearJwkCache();
+  const { jwt, publicJwk } = await generateTestKeyAndJwt(
+    { sub: "uid_e2e_http", user_id: "uid_e2e_http", email: "e2e-http@example.com", email_verified: true },
+    { kid: "http-e2e-kid" }
+  );
+
+  const upstreamHits = [];
+  const diagnosticLines = [];
+  const origConsoleLog = console.log;
+  const origConsoleError = console.error;
+  console.log = (...args) => {
+    const line = args.map(a => String(a)).join(" ");
+    if (line.includes("[INFFOLER_PROXY_DIAGNOSTIC]")) diagnosticLines.push(line);
+    else origConsoleLog(...args);
+  };
+  console.error = (...args) => {
+    const line = args.map(a => String(a)).join(" ");
+    if (line.includes("[INFFOLER_PROXY_DIAGNOSTIC]")) diagnosticLines.push(line);
+    else origConsoleError(...args);
+  };
+
+  const server = createNodeProxyServer({
+    envOverrides: {
+      OPENAI_API_KEY: "sk-proj-e2e-http-secret-do-not-leak",
+      GEMINI_API_KEY: "AIzaSyE2EHttpSecretDoNotLeak12345",
+      FIREBASE_PROJECT_ID: PROJECT_ID,
+    },
+    fetchImpl: async (url, init = {}) => {
+      const sUrl = String(url);
+      if (sUrl === GOOGLE_JWK_URL) {
+        return new Response(JSON.stringify({ keys: [publicJwk] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json", "Cache-Control": "max-age=300" },
+        });
+      }
+      if (sUrl === "https://api.openai.com/v1/responses") {
+        assert.equal(init.headers.Authorization, "Bearer sk-proj-e2e-http-secret-do-not-leak");
+        const body = JSON.parse(init.body);
+        upstreamHits.push({ provider: "openai", url: sUrl, body });
+        if (body.stream) {
+          const enc = new TextEncoder();
+          const stream = new ReadableStream({
+            start(controller) {
+              controller.enqueue(enc.encode('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"OpenAI "}\n\n'));
+              controller.enqueue(enc.encode('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"HTTP OK"}\n\n'));
+              controller.enqueue(enc.encode('event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_http_1","status":"completed"}}\n\n'));
+              controller.close();
+            },
+          });
+          return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+        }
+        return new Response(
+          JSON.stringify({ id: "resp_http_json", status: "completed", output_text: "OpenAI image & history inspected." }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      if (sUrl.startsWith("https://generativelanguage.googleapis.com/v1beta/models/")) {
+        assert.ok(sUrl.includes("key=AIzaSyE2EHttpSecretDoNotLeak12345"));
+        const body = JSON.parse(init.body);
+        upstreamHits.push({ provider: "gemini", url: sUrl, body });
+        if (sUrl.includes(":streamGenerateContent")) {
+          const enc = new TextEncoder();
+          const stream = new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                enc.encode('data: {"candidates":[{"content":{"parts":[{"text":"Gemini "}]}}]}\n\n')
+              );
+              controller.enqueue(
+                enc.encode('data: {"candidates":[{"content":{"parts":[{"text":"SSE OK"}]}}]}\n\n')
+              );
+              controller.close();
+            },
+          });
+          return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+        }
+        return new Response(
+          JSON.stringify({ candidates: [{ content: { parts: [{ text: "Gemini image inspected." }] } }] }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      throw new Error(`Unexpected upstream URL: ${sUrl}`);
+    },
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  const proxyOrigin = `http://127.0.0.1:${server.address().port}`;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "inffoler-http-e2e-"));
+
+  try {
+    // Test A (Direct HTTP): OpenAI + gpt-4.1-mini SSE via POST /api/openai
+    const openAiSseRes = await REAL_NODE_FETCH(`${proxyOrigin}/api/openai`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${jwt}`,
+        Origin: proxyOrigin,
+      },
+      body: JSON.stringify({
+        provider: "openai",
+        model: "gpt-4.1-mini",
+        reasoningMode: "balanced",
+        stream: true,
+        payload: { contents: [{ role: "user", parts: [{ text: "Test A ping" }] }] },
+      }),
+    });
+    assert.equal(openAiSseRes.status, 200);
+    assert.equal(openAiSseRes.headers.get("access-control-allow-origin"), proxyOrigin);
+    const openAiSseText = await openAiSseRes.text();
+    assert.ok(openAiSseText.includes('"delta":"OpenAI "') && openAiSseText.includes('"text":"OpenAI HTTP OK"'));
+
+    // Test B (Direct HTTP): Gemini + gemini-2.5-flash SSE via POST /api/gemini (:streamGenerateContent?alt=sse)
+    const geminiSseRes = await REAL_NODE_FETCH(`${proxyOrigin}/api/gemini`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${jwt}`,
+        Origin: proxyOrigin,
+      },
+      body: JSON.stringify({
+        provider: "gemini",
+        model: "gemini-2.5-flash",
+        reasoningMode: "balanced",
+        stream: true,
+        payload: { contents: [{ role: "user", parts: [{ text: "Test B ping" }] }] },
+      }),
+    });
+    assert.equal(geminiSseRes.status, 200);
+    const geminiSseText = await geminiSseRes.text();
+    assert.ok(geminiSseText.includes('"delta":"Gemini "') && geminiSseText.includes('"text":"Gemini SSE OK"'));
+    assert.ok(
+      upstreamHits.some(h => h.provider === "gemini" && h.url.includes("gemini-2.5-flash:streamGenerateContent?alt=sse")),
+      "Gemini streaming must call :streamGenerateContent?alt=sse"
+    );
+
+    // Legacy deleted Gemini model IDs must strictly return 400 UNSUPPORTED_MODEL on API endpoints
+    const legacyRejectRes = await REAL_NODE_FETCH(`${proxyOrigin}/api/gemini`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({
+        provider: "gemini",
+        model: "gemini-3.8-flash",
+        payload: { contents: [{ role: "user", parts: [{ text: "Should reject legacy ID" }] }] },
+      }),
+    });
+    assert.equal(legacyRejectRes.status, 400);
+    assert.equal((await legacyRejectRes.json()).code, "UNSUPPORTED_MODEL");
+
+    // Tests C, D, E, F via real frontend docs/app.js wired to the real Node HTTP proxy server
+    const html = fs.readFileSync(path.resolve(__dirname, "../docs/index.html"), "utf8");
+    const originalJs = fs.readFileSync(path.resolve(__dirname, "../docs/app.js"), "utf8");
+    const { document } = createLightweightDomFromHtml(html);
+    const store = new Map();
+    const sessStore = new Map([[INTRO_SESSION_KEY, "1"]]);
+    globalThis.document = document;
+    globalThis.localStorage = {
+      getItem: k => (store.has(k) ? store.get(k) : null),
+      setItem: (k, v) => store.set(k, String(v)),
+      removeItem: k => store.delete(k),
+    };
+    globalThis.sessionStorage = {
+      getItem: k => (sessStore.has(k) ? sessStore.get(k) : null),
+      setItem: (k, v) => sessStore.set(k, String(v)),
+      removeItem: k => sessStore.delete(k),
+    };
+    globalThis.__INFFOLER_PROXY_URL__ = proxyOrigin;
+    globalThis.window = {
+      innerWidth: 1024,
+      innerHeight: 768,
+      devicePixelRatio: 1,
+      location: { hostname: "127.0.0.1" },
+      __INFFOLER_PROXY_URL__: proxyOrigin,
+      matchMedia: () => ({ matches: false }),
+      addEventListener: () => {},
+      confirm: () => true,
+    };
+    globalThis.requestAnimationFrame = cb => (cb?.name === "tick" || cb?.name === "frame" ? 1 : setTimeout(() => cb(Date.now()), 0));
+    globalThis.cancelAnimationFrame = id => clearTimeout(id);
+    Object.defineProperty(globalThis, "navigator", { value: { clipboard: { writeText: async () => {} } }, configurable: true });
+
+    globalThis.fetch = async (url, init = {}) => {
+      const sUrl = String(url);
+      if (sUrl.startsWith("https://www.googleapis.com/identitytoolkit/v3/relyingparty/getProjectConfig")) {
+        return new Response(JSON.stringify({ authorizedDomains: ["127.0.0.1", "xalan-aesthetic.github.io"] }), { status: 200 });
+      }
+      return REAL_NODE_FETCH(url, init);
+    };
+
+    fs.writeFileSync(path.join(tmpDir, "firebase-app.js"), `const apps=[]; export const getApps=()=>apps; export const getApp=()=>apps[0]; export function initializeApp(c){const a={cfg:c,options:c};apps.push(a);return a;}`);
+    fs.writeFileSync(
+      path.join(tmpDir, "firebase-auth.js"),
+      `export const __state={currentUser:null,listeners:[]};
+       export class GoogleAuthProvider{setCustomParameters(){}} export class OAuthProvider{setCustomParameters(){}addScope(){}}
+       export class EmailAuthProvider{static credential(e,p){return{e,p};}} export class RecaptchaVerifier{clear(){}}
+       export const browserLocalPersistence={}; export const getAuth=()=>__state; export const setPersistence=async()=>{};
+       export function onAuthStateChanged(_a,cb){__state.listeners.push(cb);cb(__state.currentUser);return()=>{};}
+       export const getRedirectResult=async()=>null;
+       export async function signInWithEmailAndPassword(_a,email){
+         const u={uid:"uid_e2e_http",email,displayName:"HTTP E2E",providerData:[{providerId:"password"}],getIdToken:async()=>${JSON.stringify(jwt)},reload:async()=>{}};
+         __state.currentUser=u; await Promise.all(__state.listeners.map(f=>f(u))); return{user:u};
+       }
+       export async function createUserWithEmailAndPassword(){} export async function updateProfile(){}
+       export async function signInWithPopup(){} export async function signInWithRedirect(){}
+       export async function signInWithPhoneNumber(){return{async confirm(){return{user:null};}};}
+       export async function sendPasswordResetEmail(){} export async function linkWithPopup(){} export async function linkWithRedirect(){}
+       export async function linkWithCredential(){} export async function linkWithPhoneNumber(){return{async confirm(){return{user:null};}};}
+       export async function deleteUser(){} export async function signOut(){}`
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "firebase-firestore.js"),
+      `export const getFirestore=()=>({}); export const doc=(_d,...p)=>p.join("/"); export const collection=(_d,...p)=>p.join("/");
+       export const query=c=>c; export const orderBy=()=>null; export const limit=()=>null; export const serverTimestamp=()=>"now"; export const increment=n=>n;
+       export const getDoc=async()=>({exists:()=>false,data:()=>({})}); export const setDoc=async()=>{}; export const updateDoc=async()=>{}; export const deleteDoc=async()=>{};
+       export const getDocs=async()=>({docs:[]}); export const writeBatch=()=>({set(){},update(){},delete(){},async commit(){}}); export const onSnapshot=(_q,cb)=>{cb({docs:[]});return()=>{};};`
+    );
+    const patched = originalJs
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js", "./firebase-app.js")
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-auth.js", "./firebase-auth.js")
+      .replace("https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js", "./firebase-firestore.js");
+    fs.writeFileSync(path.join(tmpDir, "app.js"), patched);
+    for (const f of ["reasoning-engine.js", "auth-providers.js", "intro-cinema.js", "earth-intelligence.js"]) {
+      fs.copyFileSync(path.resolve(__dirname, `../docs/${f}`), path.join(tmpDir, f));
+    }
+
+    await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
+    await new Promise(r => setTimeout(r, 25));
+
+    document.getElementById("loginEmail").value = "e2e-http@example.com";
+    document.getElementById("loginPassword").value = "pass1234";
+    await document.getElementById("emailLoginForm").submit();
+    await new Promise(r => setTimeout(r, 30));
+
+    // Turn 1: OpenAI + gpt-4.1-mini over HTTP
+    const provSelect = document.getElementById("providerSelect");
+    const modelSelect = document.getElementById("modelSelect");
+    assert.equal(provSelect.value, "openai");
+    assert.equal(modelSelect.value, "gpt-4.1-mini");
+
+    document.getElementById("chatInput").value = "Turn 1 on OpenAI";
+    await document.getElementById("chatForm").submit();
+    await new Promise(r => setTimeout(r, 80));
+    assert.ok(document.getElementById("chatMessages").innerHTML.includes("OpenAI HTTP OK"));
+
+    // Test C: Switch OpenAI -> Gemini dynamically updates models and routes over HTTP to Gemini SSE
+    provSelect.value = "gemini";
+    await provSelect.dispatchEvent({ type: "change", target: provSelect });
+    assert.deepEqual(
+      modelSelect.children.map(c => c.attrs?.value).filter(Boolean),
+      ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"]
+    );
+    assert.equal(modelSelect.value, "gemini-2.5-flash");
+
+    // Test F (Image on Gemini via multimodal payload) + Test E (Multi-turn history preserved)
+    const gemImgRes = await REAL_NODE_FETCH(`${proxyOrigin}/api/gemini`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({
+        provider: "gemini",
+        model: "gemini-2.5-flash",
+        stream: false,
+        payload: {
+          contents: [
+            { role: "user", parts: [{ text: "Turn 1 on OpenAI" }] },
+            { role: "model", parts: [{ text: "OpenAI HTTP OK" }] },
+            { role: "user", parts: [{ inlineData: { mimeType: "image/png", data: "QUJDRA==" } }, { text: "Describe image" }] },
+          ],
+        },
+      }),
+    });
+    assert.equal(gemImgRes.status, 200);
+    assert.equal((await gemImgRes.json()).candidates[0].content.parts[0].text, "Gemini image inspected.");
+
+    document.getElementById("chatInput").value = "Turn 2 on Gemini";
+    await document.getElementById("chatForm").submit();
+    await new Promise(r => setTimeout(r, 80));
+    assert.ok(document.getElementById("chatMessages").innerHTML.includes("Gemini SSE OK"));
+
+    // Test D: Switch Gemini -> OpenAI dynamically updates models + verify multi-turn + image upload payload to OpenAI Responses API
+    provSelect.value = "openai";
+    await provSelect.dispatchEvent({ type: "change", target: provSelect });
+    assert.deepEqual(
+      modelSelect.children.map(c => c.attrs?.value).filter(Boolean),
+      ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "o4-mini"]
+    );
+
+    const openAiImgRes = await REAL_NODE_FETCH(`${proxyOrigin}/api/openai`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({
+        provider: "openai",
+        model: "gpt-4.1-mini",
+        stream: false,
+        payload: {
+          contents: [
+            { role: "user", parts: [{ text: "Turn 1 on OpenAI" }] },
+            { role: "model", parts: [{ text: "OpenAI HTTP OK" }] },
+            { role: "user", parts: [{ inlineData: { mimeType: "image/png", data: "QUJDRA==" } }, { text: "Check image on OpenAI" }] },
+          ],
+        },
+      }),
+    });
+    assert.equal(openAiImgRes.status, 200);
+    assert.equal((await openAiImgRes.json()).output_text, "OpenAI image & history inspected.");
+
+    const openAiImageCall = upstreamHits.find(
+      h => h.provider === "openai" && h.body.input?.some(m => Array.isArray(m.content) && m.content.some(c => c.type === "input_image"))
+    );
+    assert.ok(openAiImageCall, "OpenAI upstream must receive formatted input_image data URL");
+    const gemImageCall = upstreamHits.find(
+      h => h.provider === "gemini" && h.body.contents?.some(m => Array.isArray(m.parts) && m.parts.some(p => p.inlineData?.data === "QUJDRA=="))
+    );
+    assert.ok(gemImageCall, "Gemini upstream must receive formatted inlineData image part");
+
+    // Verify sanitized server-side diagnostic logs emitted for both providers without leaking keys
+    assert.ok(diagnosticLines.length >= 5, "Diagnostic logs must record provider requests and errors");
+    const parsedDiags = diagnosticLines.map(line => JSON.parse(line.replace("[INFFOLER_PROXY_DIAGNOSTIC] ", "")));
+    assert.ok(
+      parsedDiags.some(d => d.provider === "openai" && d.model === "gpt-4.1-mini" && d.endpointHost === "api.openai.com" && d.status === 200)
+    );
+    assert.ok(
+      parsedDiags.some(d => d.provider === "gemini" && d.model === "gemini-2.5-flash" && d.endpointHost === "generativelanguage.googleapis.com" && d.status === 200)
+    );
+    assert.ok(
+      parsedDiags.some(d => d.provider === "gemini" && d.model === "gemini-3.8-flash" && d.status === 400)
+    );
+    const allLogsJoined = diagnosticLines.join("\n");
+    assert.ok(!allLogsJoined.includes("sk-proj-e2e-http-secret-do-not-leak"), "Diagnostic logs must NEVER expose OpenAI key");
+    assert.ok(!allLogsJoined.includes("AIzaSyE2EHttpSecretDoNotLeak12345"), "Diagnostic logs must NEVER expose Gemini key");
+  } finally {
+    delete globalThis.__INFFOLER_PROXY_URL__;
+    console.log = origConsoleLog;
+    console.error = origConsoleError;
+    globalThis.fetch = REAL_NODE_FETCH;
+    await new Promise(resolve => server.close(resolve));
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 

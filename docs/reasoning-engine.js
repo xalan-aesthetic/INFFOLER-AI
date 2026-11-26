@@ -135,6 +135,23 @@ export const REASONING_MODES = Object.freeze({
   },
 });
 
+export const PROVIDER_MODEL_MAP = Object.freeze({
+  openai: Object.freeze(["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "o4-mini"]),
+  gemini: Object.freeze(["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"]),
+});
+
+const LEGACY_GEMINI_MODEL_ALIASES = Object.freeze({
+  "gemini-3.8-flash": "gemini-2.5-flash",
+  "gemini-3.5-flash-lite": "gemini-2.5-flash-lite",
+  "gemini-4-argon": "gemini-2.5-pro",
+});
+
+export function migrateLegacySavedModelId(modelId) {
+  const key = String(modelId || "").trim();
+  if (Object.prototype.hasOwnProperty.call(MODEL_CATALOG, key)) return key;
+  return LEGACY_GEMINI_MODEL_ALIASES[key] || null;
+}
+
 export function normalizeProvider(providerId) {
   const key = String(providerId || "").trim().toLowerCase();
   return Object.prototype.hasOwnProperty.call(AI_PROVIDERS, key) ? key : DEFAULT_PROVIDER;
@@ -151,9 +168,16 @@ export function getDefaultModelForProvider(providerId) {
   return AI_PROVIDERS[normalizeProvider(providerId)]?.defaultModel || DEFAULT_OPENAI_MODEL;
 }
 
+export function isModelSupportedForProvider(providerId, modelId) {
+  const target = normalizeProvider(providerId);
+  const allowed = PROVIDER_MODEL_MAP[target] || [];
+  return allowed.includes(String(modelId || "").trim());
+}
+
 export function getModelsForProvider(providerId) {
   const target = normalizeProvider(providerId);
-  return Object.values(MODEL_CATALOG).filter(m => m.provider === target);
+  const ids = PROVIDER_MODEL_MAP[target] || [];
+  return ids.map(id => MODEL_CATALOG[id]).filter(Boolean);
 }
 
 export function getProviderDisplayLabel(providerId) {
