@@ -145,7 +145,7 @@ test("Rejects unauthenticated POST requests (missing, malformed, expired, wrong 
 
   const env = { GEMINI_API_KEY: "test-secret", FIREBASE_PROJECT_ID: PROJECT_ID };
   const body = JSON.stringify({
-    model: "gemini-3.8-flash",
+    model: "gemini-2.5-flash",
     payload: { contents: [{ role: "user", parts: [{ text: "Hello" }] }] },
   });
 
@@ -272,7 +272,7 @@ test("Allows valid Firebase ID token, ignores spoofed frontend userId, returns G
       },
       body: JSON.stringify({
         userId: "spoofed_victim_uid",
-        model: "gemini-3.8-flash",
+        model: "gemini-2.5-flash",
         payload: {
           contents: [{ role: "user", parts: [{ text: "Explain gravity" }] }],
         },
@@ -327,8 +327,8 @@ test("CORS preflight allows Authorization and /health reports authRequired witho
   assert.equal(healthJson.multimodalEnabled, true);
   assert.deepEqual(healthJson.reasoningModes, ["quick", "balanced", "deep_think", "coding", "math"]);
   assert.ok(healthJson.modelCapabilities?.["gpt-4.1-mini"]?.provider === "openai");
-  assert.ok(healthJson.modelCapabilities?.["gemini-4-argon"]?.supportsThinkingConfig === true);
-  assert.ok(healthJson.modelCapabilities?.["gemini-3.5-flash-lite"]?.supportsThinkingConfig === false);
+  assert.ok(healthJson.modelCapabilities?.["gemini-2.5-pro"]?.supportsThinkingConfig === true);
+  assert.ok(healthJson.modelCapabilities?.["gemini-2.5-flash-lite"]?.supportsThinkingConfig === false);
   assert.equal(healthJson.limits.requestsPerMinute, 20);
   assert.equal(healthJson.limits.requestsPerDay, 300);
 });
@@ -1586,7 +1586,7 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
-        model: "gemini-3.8-flash",
+        model: "gemini-2.5-flash",
         reasoningMode: "quick",
         payload: { contents: [{ role: "user", parts: [{ text: "What is the capital of France?" }] }] },
       }),
@@ -1611,7 +1611,7 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
   assert.equal(dataSimple.inffolerReasoning.category, "General knowledge");
   assert.equal(dataSimple.inffolerReasoning.mode, "quick");
   assert.equal(dataSimple.inffolerReasoning.effort, "low");
-  assert.equal(dataSimple.inffolerReasoning.modelUsed, "gemini-3.8-flash");
+  assert.equal(dataSimple.inffolerReasoning.modelUsed, "gemini-2.5-flash");
   assert.equal(dataSimple.inffolerReasoning.verification.status, "unverified", "Must never falsely claim verified when no independent check ran");
   assert.equal(capturedPayload.generationConfig.maxOutputTokens, 1536);
 
@@ -1624,7 +1624,7 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
-        model: "gemini-4-argon",
+        model: "gemini-2.5-pro",
         reasoningMode: "math",
         payload: { contents: [{ role: "user", parts: [{ text: "Calculate 15% of 2400 + 18 * 5" }] }] },
       }),
@@ -1637,7 +1637,7 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
           return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 });
         }
         mathCalls += 1;
-        assert.ok(String(url).includes("/models/gemini-4-argon:"), "Must stay on gemini-4-argon");
+        assert.ok(String(url).includes("/models/gemini-2.5-pro:"), "Must stay on gemini-2.5-pro");
         const body = JSON.parse(init.body);
         assert.equal(body.generationConfig.temperature, REASONING_MODES.math.temperature);
         if (mathCalls === 1) {
@@ -1672,7 +1672,7 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
-        model: "gemini-3.8-flash",
+        model: "gemini-2.5-flash",
         reasoningMode: "coding",
         payload: {
           contents: [
@@ -1718,14 +1718,14 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
   assert.equal(dataCode.inffolerReasoning.verification.status, "verified_independent");
 
   // Scenario 4: Multi-step reasoning & Model-aware behavior without silent switching
-  // A) gemini-3.5-flash-lite does NOT send thinkingConfig in Deep Think Mode
+  // A) gemini-2.5-flash-lite does NOT send thinkingConfig in Deep Think Mode
   let litePayload = null;
   const resLite = await handleRequest(
     new Request("https://worker.example/", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
-        model: "gemini-3.5-flash-lite",
+        model: "gemini-2.5-flash-lite",
         reasoningMode: "deep_think",
         payload: {
           contents: [
@@ -1744,7 +1744,7 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
         if (String(url) === GOOGLE_JWK_URL) {
           return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 });
         }
-        assert.ok(String(url).includes("/models/gemini-3.5-flash-lite:"), "Must stay on gemini-3.5-flash-lite");
+        assert.ok(String(url).includes("/models/gemini-2.5-flash-lite:"), "Must stay on gemini-2.5-flash-lite");
         litePayload = JSON.parse(init.body);
         return new Response(
           JSON.stringify({ candidates: [{ content: { parts: [{ text: "By contraposition, not-C implies not-A." }] } }] }),
@@ -1756,10 +1756,10 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
   assert.equal(resLite.status, 200);
   const dataLite = await resLite.json();
   assert.equal(litePayload.generationConfig.thinkingConfig, undefined, "Lite model must not receive thinkingConfig");
-  assert.equal(dataLite.inffolerReasoning.modelUsed, "gemini-3.5-flash-lite");
+  assert.equal(dataLite.inffolerReasoning.modelUsed, "gemini-2.5-flash-lite");
   assert.equal(dataLite.inffolerReasoning.effort, "high");
 
-  // B) If gemini-4-argon rejects thinkingConfig with 400, retry SAME model without thinkingConfig (never switch models)
+  // B) If gemini-2.5-pro rejects thinkingConfig with 400, retry SAME model without thinkingConfig (never switch models)
   let argonUrls = [];
   let argonPayloads = [];
   const resArgon = await handleRequest(
@@ -1767,7 +1767,7 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
-        model: "gemini-4-argon",
+        model: "gemini-2.5-pro",
         reasoningMode: "deep_think",
         payload: { contents: [{ role: "user", parts: [{ text: "Analyze logical deduction puzzle with 3 constraints." }] }] },
       }),
@@ -1797,10 +1797,10 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
   assert.equal(resArgon.status, 200);
   const dataArgon = await resArgon.json();
   assert.equal(argonUrls.length, 2);
-  assert.ok(argonUrls.every(u => u.includes("/models/gemini-4-argon:")), "Must NEVER silently switch away from gemini-4-argon");
+  assert.ok(argonUrls.every(u => u.includes("/models/gemini-2.5-pro:")), "Must NEVER silently switch away from gemini-2.5-pro");
   assert.ok(argonPayloads[0].generationConfig.thinkingConfig !== undefined);
   assert.equal(argonPayloads[1].generationConfig.thinkingConfig, undefined);
-  assert.equal(dataArgon.inffolerReasoning.modelUsed, "gemini-4-argon");
+  assert.equal(dataArgon.inffolerReasoning.modelUsed, "gemini-2.5-pro");
   assert.equal(dataArgon.inffolerReasoning.parametersApplied.thinkingConfigUsed, false);
 });
 
@@ -1847,7 +1847,7 @@ test("Reasoning Engine Scenarios 5, 7, 8, 9: Unsupported model, Network timeout,
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
-        model: "gemini-3.8-flash",
+        model: "gemini-2.5-flash",
         reasoningMode: "deep_think",
         payload: { contents: [{ role: "user", parts: [{ text: "Analyze complex multi-step problem." }] }] },
       }),
@@ -1881,7 +1881,7 @@ test("Reasoning Engine Scenarios 5, 7, 8, 9: Unsupported model, Network timeout,
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
-        model: "gemini-3.8-flash",
+        model: "gemini-2.5-flash",
         payload: { contents: [{ role: "user", parts: [{ text: "   " }] }] },
       }),
     }),
@@ -1909,7 +1909,7 @@ test("Reasoning Engine Scenarios 5, 7, 8, 9: Unsupported model, Network timeout,
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
-        model: "gemini-3.8-flash",
+        model: "gemini-2.5-flash",
         payload: { contents: [{ role: "user", parts: [{ text: veryLongPrompt }] }] },
       }),
     }),
@@ -1937,11 +1937,11 @@ test("Reasoning Engine Scenarios 5, 7, 8, 9: Unsupported model, Network timeout,
   assert.equal(classifyTaskPreview("Calculate 42 * 18", "math"), "Mathematics");
   assert.equal(formatVerificationBadge({ status: "unverified" }).cssClass, "unverified");
   assert.equal(formatVerificationBadge({ status: "verified_independent" }).cssClass, "verified");
-  assert.ok(MODEL_REGISTRY["gemini-3.8-flash"].maxOutputTokens === 6144);
+  assert.ok(MODEL_REGISTRY["gemini-2.5-flash"].maxOutputTokens === 65536);
   const planCheck = buildReasoningPlan({
     promptText: "First explain why async/await matters, then show a clean JavaScript retry loop?",
     requestedMode: "coding",
-    modelId: "gemini-3.8-flash",
+    modelId: "gemini-2.5-flash",
   });
   assert.equal(planCheck.category, "Programming");
   assert.equal(planCheck.hasMultiPart, true);
@@ -2123,7 +2123,7 @@ test("Reasoning Engine Scenario 10 & E2E: Reasoning mode switcher, status bar, e
     await document.getElementById("emailLoginForm").submit();
     await new Promise(r => setTimeout(r, 30));
 
-    // Switch reasoning mode -> math & model -> gemini-4-argon
+    // Switch reasoning mode -> math & model -> gemini-2.5-pro
     const modeEl = document.getElementById("reasoningModeSelect");
     modeEl.value = "math";
     await modeEl.dispatchEvent({ type: "change", target: modeEl });
@@ -2131,7 +2131,7 @@ test("Reasoning Engine Scenario 10 & E2E: Reasoning mode switcher, status bar, e
     assert.match(document.getElementById("engineActiveMode").textContent, /Math Mode/);
 
     const modelEl = document.getElementById("modelSelect");
-    modelEl.value = "gemini-4-argon";
+    modelEl.value = "gemini-2.5-pro";
     await modelEl.dispatchEvent({ type: "change", target: modelEl });
     assert.equal(document.getElementById("engineActiveModel").textContent, "Gemini 4 Argon");
 
@@ -2155,7 +2155,7 @@ test("Reasoning Engine Scenario 10 & E2E: Reasoning mode switcher, status bar, e
     await new Promise(r => setTimeout(r, 80));
 
     assert.equal(workerRequestCount, 1, "Repeated click while generating must send only 1 Worker request");
-    assert.equal(lastWorkerRequestBody.model, "gemini-4-argon");
+    assert.equal(lastWorkerRequestBody.model, "gemini-2.5-pro");
     assert.equal(lastWorkerRequestBody.reasoningMode, "math");
     const chatHtml = document.getElementById("chatMessages").innerHTML;
     assert.ok(chatHtml.includes("42 * 10 = 420."));
@@ -3297,7 +3297,7 @@ test("Part 3 & 4 — THE EARTH Backend & E2E: Auth guard, Live FX + Search Groun
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
         query: "Cheapest clothes in the world?",
-        model: "gemini-3.8-flash",
+        model: "gemini-2.5-flash",
         targetCurrency: "INR",
         filters: { marketType: "all", sortBy: "price_asc" },
       }),
@@ -3499,7 +3499,7 @@ test("THE EARTH API Diagnostic, Payload Compatibility Fallback (all 6 Popular Se
 
   // 1. Validate Worker handles trailing slash & payload-wrapped Earth queries
   const wrappedReq = validateEarthQueryRequest({
-    model: "gemini-3.8-flash",
+    model: "gemini-2.5-flash",
     targetCurrency: "INR",
     payload: { query: "Where is sugar produced the most globally?" },
   });
@@ -3771,7 +3771,7 @@ test("OpenAI Responses API Default Provider: SSE streaming, multi-turn history, 
   assert.equal(CLIENT_DEFAULT_OPENAI_MODEL, "gpt-4.1-mini");
   assert.equal(getProviderForModel("gpt-4.1-mini"), "openai");
   assert.equal(getProviderForModel("o4-mini"), "openai");
-  assert.equal(getProviderForModel("gemini-3.8-flash"), "gemini");
+  assert.equal(getProviderForModel("gemini-2.5-flash"), "gemini");
 
   assert.equal(resolveServerSecret({ OPENAI_API_KEY: "sk-proj-worker-secret" }, "OPENAI_API_KEY"), "sk-proj-worker-secret");
   const prevNodeKey = process.env.OPENAI_API_KEY;
@@ -4009,7 +4009,7 @@ test("OpenAI Responses API Default Provider: SSE streaming, multi-turn history, 
       path.join(tmpDir, "firebase-firestore.js"),
       `export const getFirestore=()=>({}); export const doc=(_d,...p)=>p.join("/"); export const collection=(_d,...p)=>p.join("/");
        export const query=c=>c; export const orderBy=()=>null; export const limit=()=>null; export const serverTimestamp=()=>"now"; export const increment=n=>n;
-       export const getDoc=async()=>({exists:()=>true,data:()=>({theme:"dark",preferredModel:"gemini-3.8-flash"})}); export const setDoc=async()=>{}; export const updateDoc=async()=>{}; export const deleteDoc=async()=>{};
+       export const getDoc=async()=>({exists:()=>true,data:()=>({theme:"dark",preferredModel:"gemini-2.5-flash"})}); export const setDoc=async()=>{}; export const updateDoc=async()=>{}; export const deleteDoc=async()=>{};
        export const getDocs=async()=>({docs:[]}); export const writeBatch=()=>({set(){},update(){},delete(){},async commit(){}}); export const onSnapshot=(_q,cb)=>{cb({docs:[]});return()=>{};};`
     );
     const patched = originalJs
@@ -4024,7 +4024,7 @@ test("OpenAI Responses API Default Provider: SSE streaming, multi-turn history, 
     await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
     await new Promise(r => setTimeout(r, 20));
 
-    // A) Even before login and even if an old cloud profile stored gemini-3.8-flash, first launch selects OpenAI by default!
+    // A) Even before login and even if an old cloud profile stored gemini-2.5-flash, first launch selects OpenAI by default!
     assert.equal(document.getElementById("providerSelect").value, "openai");
     assert.equal(document.getElementById("modelSelect").value, "gpt-4.1-mini");
     assert.equal(document.getElementById("engineActiveProvider").textContent, "Provider: OpenAI");
@@ -4063,7 +4063,7 @@ test("OpenAI Responses API Default Provider: SSE streaming, multi-turn history, 
     const provSelect = document.getElementById("providerSelect");
     provSelect.value = "gemini";
     await provSelect.dispatchEvent({ type: "change", target: provSelect });
-    assert.equal(document.getElementById("modelSelect").value, "gemini-3.8-flash");
+    assert.equal(document.getElementById("modelSelect").value, "gemini-2.5-flash");
     assert.equal(document.getElementById("engineActiveProvider").textContent, "Provider: Gemini");
 
     document.getElementById("chatInput").value = "Hello Gemini alternative";
@@ -4074,7 +4074,7 @@ test("OpenAI Responses API Default Provider: SSE streaming, multi-turn history, 
 
     // E) Verify firestore.rules permits OpenAI and Gemini models
     const rulesText = fs.readFileSync(path.resolve(__dirname, "../firestore.rules"), "utf8");
-    for (const mid of ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "o4-mini", "gemini-3.8-flash"]) {
+    for (const mid of ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "o4-mini", "gemini-2.5-flash"]) {
       assert.ok(rulesText.includes(`'${mid}'`), `firestore.rules must permit model '${mid}'`);
     }
   } finally {
@@ -4094,17 +4094,17 @@ test("Independent OpenAI vs Gemini Routing, Provider-Scoped Validation, Error Co
   assert.equal(OPENAI_MODELS.has("gpt-4.1-mini"), true);
   assert.equal(GEMINI_MODELS.has("gpt-4.1-mini"), false);
 
-  const openAiBad = resolveRequestedProviderAndModel({ provider: "openai", model: "gemini-3.8-flash" });
+  const openAiBad = resolveRequestedProviderAndModel({ provider: "openai", model: "gemini-2.5-flash" });
   assert.equal(openAiBad.code, "UNSUPPORTED_MODEL");
   assert.equal(openAiBad.provider, "openai");
-  assert.ok(!openAiBad.error.includes("gemini-4-argon"), "OpenAI validation must never list Gemini models");
+  assert.ok(!openAiBad.error.includes("gemini-2.5-pro"), "OpenAI validation must never list Gemini models");
   assert.ok(openAiBad.allowedModels.includes("gpt-4.1-mini"));
 
   const geminiBad = resolveRequestedProviderAndModel({ provider: "gemini", model: "gpt-4.1-mini" });
   assert.equal(geminiBad.code, "UNSUPPORTED_MODEL");
   assert.equal(geminiBad.provider, "gemini");
   assert.ok(!geminiBad.error.includes("gpt-4.1-mini\"."), "Gemini validation must list Gemini models");
-  assert.ok(geminiBad.allowedModels.includes("gemini-3.8-flash"));
+  assert.ok(geminiBad.allowedModels.includes("gemini-2.5-flash"));
 
   const badProvider = resolveRequestedProviderAndModel({ provider: "unknown-ai", model: "gpt-4.1-mini" });
   assert.equal(badProvider.code, "UNSUPPORTED_PROVIDER");
@@ -4116,7 +4116,7 @@ test("Independent OpenAI vs Gemini Routing, Provider-Scoped Validation, Error Co
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
         provider: "openai",
-        model: "gemini-3.8-flash",
+        model: "gemini-2.5-flash",
         payload: { contents: [{ role: "user", parts: [{ text: "Hello, who are you?" }] }] },
       }),
     }),
@@ -4127,7 +4127,7 @@ test("Independent OpenAI vs Gemini Routing, Provider-Scoped Validation, Error Co
   const crossBody = await crossMismatchRes.json();
   assert.equal(crossBody.provider, "openai");
   assert.equal(crossBody.code, "UNSUPPORTED_MODEL");
-  assert.ok(!crossBody.error.includes("gemini-4-argon"));
+  assert.ok(!crossBody.error.includes("gemini-2.5-pro"));
 
   // 3. Independent handlers: OpenAI "Hello, who are you?" + Gemini switch + error codes (401/429/503)
   const openAiValidated = validateAndSanitizeRequest({
@@ -4162,14 +4162,14 @@ test("Independent OpenAI vs Gemini Routing, Provider-Scoped Validation, Error Co
 
   const geminiValidated = validateAndSanitizeRequest({
     provider: "gemini",
-    model: "gemini-3.8-flash",
+    model: "gemini-2.5-flash",
     payload: { contents: [{ role: "user", parts: [{ text: "Hello, who are you?" }] }] },
   });
   const geminiDirectRes = await handleGeminiProviderRequest({
     validated: geminiValidated,
     geminiKey: "gem-direct-route-key",
     fetchImpl: async url => {
-      assert.ok(String(url).includes("generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"));
+      assert.ok(String(url).includes("generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"));
       return new Response(
         JSON.stringify({ candidates: [{ content: { parts: [{ text: "I am INFFOLER AI running on Gemini 3.8 Flash." }] } }] }),
         { status: 200, headers: { "Content-Type": "application/json" } }
@@ -4179,7 +4179,7 @@ test("Independent OpenAI vs Gemini Routing, Provider-Scoped Validation, Error Co
   assert.equal(geminiDirectRes.status, 200);
   const geminiDirectJson = await geminiDirectRes.json();
   assert.equal(geminiDirectJson.providerUsed, "gemini");
-  assert.equal(geminiDirectJson.inffolerReasoning.modelUsed, "gemini-3.8-flash");
+  assert.equal(geminiDirectJson.inffolerReasoning.modelUsed, "gemini-2.5-flash");
 
   // Missing API key -> 503 for selected provider only
   const neverFetch = async () => { throw new Error("Must not call upstream without API key"); };

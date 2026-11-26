@@ -11,7 +11,7 @@ export const MAX_PROMPT_CHARS = 12000;
 
 export const DEFAULT_PROVIDER = "openai";
 export const DEFAULT_OPENAI_MODEL = "gpt-4.1-mini";
-export const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
+export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 
 export const AI_PROVIDERS = Object.freeze({
   openai: {
@@ -68,32 +68,32 @@ export const MODEL_CATALOG = Object.freeze({
     supportsStreaming: true,
     maxOutputTokens: 8192,
   },
-  "gemini-3.8-flash": {
-    id: "gemini-3.8-flash",
+  "gemini-2.5-flash": {
+    id: "gemini-2.5-flash",
     provider: "gemini",
-    label: "Gemini 3.8 Flash",
-    shortLabel: "3.8 Flash",
+    label: "Gemini 2.5 Flash",
+    shortLabel: "2.5 Flash",
     supportsThinkingConfig: true,
     supportsStreaming: true,
-    maxOutputTokens: 6144,
+    maxOutputTokens: 65536,
   },
-  "gemini-3.5-flash-lite": {
-    id: "gemini-3.5-flash-lite",
+  "gemini-2.5-flash-lite": {
+    id: "gemini-2.5-flash-lite",
     provider: "gemini",
-    label: "Gemini 3.5 Flash-Lite",
-    shortLabel: "3.5 Lite",
+    label: "Gemini 2.5 Flash-Lite",
+    shortLabel: "2.5 Lite",
     supportsThinkingConfig: false,
     supportsStreaming: true,
-    maxOutputTokens: 4096,
+    maxOutputTokens: 65536,
   },
-  "gemini-4-argon": {
-    id: "gemini-4-argon",
+  "gemini-2.5-pro": {
+    id: "gemini-2.5-pro",
     provider: "gemini",
-    label: "Gemini 4 Argon",
-    shortLabel: "4 Argon",
+    label: "Gemini 2.5 Pro",
+    shortLabel: "2.5 Pro",
     supportsThinkingConfig: true,
     supportsStreaming: true,
-    maxOutputTokens: 8192,
+    maxOutputTokens: 65536,
   },
 });
 

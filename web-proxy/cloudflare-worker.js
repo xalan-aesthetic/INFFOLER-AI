@@ -88,38 +88,38 @@ export const MODEL_REGISTRY = Object.freeze({
     supportsStreaming: true,
     thinkingBudgetByEffort: null,
   },
-  "gemini-3.8-flash": {
-    id: "gemini-3.8-flash",
+  "gemini-2.5-flash": {
+    id: "gemini-2.5-flash",
     provider: "gemini",
-    label: "Gemini 3.8 Flash",
-    maxOutputTokens: 6144,
+    label: "Gemini 2.5 Flash",
+    maxOutputTokens: 65536,
     supportsMultimodal: true,
     supportsThinkingConfig: true,
     supportsTemperature: true,
-    supportsStreaming: false,
+    supportsStreaming: true,
     thinkingBudgetByEffort: { low: 0, medium: 1024, high: 4096 },
   },
-  "gemini-3.5-flash-lite": {
-    id: "gemini-3.5-flash-lite",
+  "gemini-2.5-flash-lite": {
+    id: "gemini-2.5-flash-lite",
     provider: "gemini",
-    label: "Gemini 3.5 Flash-Lite",
-    maxOutputTokens: 4096,
+    label: "Gemini 2.5 Flash-Lite",
+    maxOutputTokens: 65536,
     supportsMultimodal: true,
     supportsThinkingConfig: false,
     supportsTemperature: true,
-    supportsStreaming: false,
+    supportsStreaming: true,
     thinkingBudgetByEffort: null,
   },
-  "gemini-4-argon": {
-    id: "gemini-4-argon",
+  "gemini-2.5-pro": {
+    id: "gemini-2.5-pro",
     provider: "gemini",
-    label: "Gemini 4 Argon",
-    maxOutputTokens: 8192,
+    label: "Gemini 2.5 Pro",
+    maxOutputTokens: 65536,
     supportsMultimodal: true,
     supportsThinkingConfig: true,
     supportsTemperature: true,
-    supportsStreaming: false,
-    thinkingBudgetByEffort: { low: 512, medium: 2048, high: 6144 },
+    supportsStreaming: true,
+    thinkingBudgetByEffort: { low: 512, medium: 2048, high: 8192 },
   },
 });
 
@@ -162,7 +162,7 @@ export function resolveRequestedProviderAndModel(rawBody = {}) {
   }
 
   if (rawProvider === "gemini") {
-    const modelId = rawModel || "gemini-3.8-flash";
+    const modelId = rawModel || "gemini-2.5-flash";
     if (!GEMINI_MODELS.has(modelId)) {
       return {
         error: `Unsupported Gemini model '${modelId}'. Allowed Gemini models: ${Array.from(GEMINI_MODELS).join(", ")}.`,
