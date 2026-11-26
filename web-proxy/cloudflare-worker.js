@@ -5,9 +5,9 @@
  * Security & Architecture:
  * - Verifies Firebase Authentication ID Tokens (RS256 via Google Secure Token JWKs).
  * - Unauthenticated requests are rejected with HTTP 401; caller UID comes ONLY from verified JWT `sub`.
- * - Secrets (OPENAI_API_KEY, GEMINI_API_KEY) live strictly in backend env / Worker Secrets (never logged or exposed).
- * - OpenAI (Responses API) is the default provider (`gpt-4.1-mini`), with Google Gemini also supported.
- * - Respects user-selected provider & model strictly (never silently switches models).
+ * - Secret (`GEMINI_API_KEY`) lives strictly in backend env / Worker Secrets (never logged or exposed).
+ * - Google Gemini is the sole AI provider (`gemini-2.5-flash` default, `gemini-2.5-flash-lite`, `gemini-2.5-pro`).
+ * - Respects user-selected Gemini model strictly (never silently switches models).
  * - 7-Step Reasoning Pipeline:
  *   1) Understand request  2) Classify task category (7 domains)  3) Resolve reasoning effort
  *   4) Decompose subtasks  5) Generate via selected model  6) Independent verification & bounded check
@@ -17,10 +17,9 @@
 const DEFAULT_FIREBASE_PROJECT_ID = "gen-lang-client-0028400465";
 const GOOGLE_JWK_URL =
   "https://www.googleapis.com/robot/v1/metadata/jwk/securetoken@system.gserviceaccount.com";
-const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 
-export const DEFAULT_PROVIDER = "openai";
-export const DEFAULT_MODEL = "gpt-4.1-mini";
+export const DEFAULT_PROVIDER = "gemini";
+export const DEFAULT_MODEL = "gemini-2.5-flash";
 
 export function resolveServerSecret(env, keyName) {
   const fromWorkerEnv = env && typeof env[keyName] === "string" ? env[keyName].trim() : "";
@@ -43,51 +42,6 @@ const ALLOWED_ORIGINS = new Set([
 
 /* ==================== MODULE 1: MODEL CAPABILITY REGISTRY ==================== */
 export const MODEL_REGISTRY = Object.freeze({
-  "gpt-4.1-mini": {
-    id: "gpt-4.1-mini",
-    provider: "openai",
-    label: "GPT-4.1 Mini",
-    maxOutputTokens: 8192,
-    supportsMultimodal: true,
-    supportsThinkingConfig: false,
-    supportsTemperature: true,
-    supportsStreaming: true,
-    thinkingBudgetByEffort: null,
-  },
-  "gpt-4.1": {
-    id: "gpt-4.1",
-    provider: "openai",
-    label: "GPT-4.1 Flagship",
-    maxOutputTokens: 8192,
-    supportsMultimodal: true,
-    supportsThinkingConfig: false,
-    supportsTemperature: true,
-    supportsStreaming: true,
-    thinkingBudgetByEffort: null,
-  },
-  "gpt-4o-mini": {
-    id: "gpt-4o-mini",
-    provider: "openai",
-    label: "GPT-4o Mini",
-    maxOutputTokens: 6144,
-    supportsMultimodal: true,
-    supportsThinkingConfig: false,
-    supportsTemperature: true,
-    supportsStreaming: true,
-    thinkingBudgetByEffort: null,
-  },
-  "o4-mini": {
-    id: "o4-mini",
-    provider: "openai",
-    label: "OpenAI o4-mini",
-    maxOutputTokens: 8192,
-    supportsMultimodal: true,
-    supportsThinkingConfig: false,
-    supportsTemperature: false,
-    supportsReasoningEffort: true,
-    supportsStreaming: true,
-    thinkingBudgetByEffort: null,
-  },
   "gemini-2.5-flash": {
     id: "gemini-2.5-flash",
     provider: "gemini",
@@ -124,71 +78,38 @@ export const MODEL_REGISTRY = Object.freeze({
 });
 
 const ALLOWED_MODELS = new Set(Object.keys(MODEL_REGISTRY));
-export const OPENAI_MODELS = new Set(
-  Object.values(MODEL_REGISTRY).filter(m => m.provider === "openai").map(m => m.id)
-);
 export const GEMINI_MODELS = new Set(
   Object.values(MODEL_REGISTRY).filter(m => m.provider === "gemini").map(m => m.id)
 );
-export const SUPPORTED_PROVIDERS = new Set(["openai", "gemini"]);
+export const SUPPORTED_PROVIDERS = new Set(["gemini"]);
 
 export function resolveRequestedProviderAndModel(rawBody = {}) {
   const hasExplicitProvider = typeof rawBody.provider === "string" && rawBody.provider.trim().length > 0;
-  const rawProvider = hasExplicitProvider ? rawBody.provider.trim().toLowerCase() : "";
+  const rawProvider = hasExplicitProvider ? rawBody.provider.trim().toLowerCase() : "gemini";
   const rawModel = typeof rawBody.model === "string" ? rawBody.model.trim() : "";
 
   if (hasExplicitProvider && !SUPPORTED_PROVIDERS.has(rawProvider)) {
     return {
-      error: `Unsupported provider '${rawProvider}'. Supported providers: openai, gemini.`,
+      error: `Unsupported provider '${rawProvider}'. Only 'gemini' is supported.`,
       code: "UNSUPPORTED_PROVIDER",
       provider: rawProvider,
       requestedModel: rawModel || null,
-      allowedModels: Array.from(ALLOWED_MODELS),
+      allowedModels: Array.from(GEMINI_MODELS),
     };
   }
 
-  if (rawProvider === "openai") {
-    const modelId = rawModel || DEFAULT_MODEL;
-    if (!OPENAI_MODELS.has(modelId)) {
-      return {
-        error: `Unsupported OpenAI model '${modelId}'. Allowed OpenAI models: ${Array.from(OPENAI_MODELS).join(", ")}.`,
-        code: "UNSUPPORTED_MODEL",
-        provider: "openai",
-        requestedModel: modelId,
-        allowedModels: Array.from(OPENAI_MODELS),
-      };
-    }
-    return { provider: "openai", model: modelId };
-  }
-
-  if (rawProvider === "gemini") {
-    const modelId = rawModel || "gemini-2.5-flash";
-    if (!GEMINI_MODELS.has(modelId)) {
-      return {
-        error: `Unsupported Gemini model '${modelId}'. Allowed Gemini models: ${Array.from(GEMINI_MODELS).join(", ")}.`,
-        code: "UNSUPPORTED_MODEL",
-        provider: "gemini",
-        requestedModel: modelId,
-        allowedModels: Array.from(GEMINI_MODELS),
-      };
-    }
-    return { provider: "gemini", model: modelId };
-  }
-
-  const inferredModel = rawModel || DEFAULT_MODEL;
-  if (!ALLOWED_MODELS.has(inferredModel)) {
+  const modelId = rawModel || DEFAULT_MODEL;
+  if (!GEMINI_MODELS.has(modelId)) {
     return {
-      error: `Unsupported model '${inferredModel}'. Allowed models: ${Array.from(ALLOWED_MODELS).join(", ")}.`,
+      error: `Unsupported Gemini model '${modelId}'. Allowed Gemini models: ${Array.from(GEMINI_MODELS).join(", ")}.`,
       code: "UNSUPPORTED_MODEL",
-      provider: null,
-      requestedModel: inferredModel,
-      allowedModels: Array.from(ALLOWED_MODELS),
+      provider: "gemini",
+      requestedModel: modelId,
+      allowedModels: Array.from(GEMINI_MODELS),
     };
   }
-  return {
-    provider: MODEL_REGISTRY[inferredModel].provider,
-    model: inferredModel,
-  };
+
+  return { provider: "gemini", model: modelId };
 }
 
 export const REASONING_MODES = Object.freeze({
@@ -628,14 +549,13 @@ async function checkRateLimit(request, env, verifiedUid) {
 
 function sanitizeErrorText(text) {
   return String(text || "")
-    .replace(/sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{12,}/g, "[REDACTED_KEY]")
     .replace(/AIza[0-9A-Za-z\-_]{12,}/g, "[REDACTED_KEY]")
     .replace(/([?&]key=)[^&\s"']+/gi, "$1[REDACTED]")
     .replace(/Bearer\s+[A-Za-z0-9\-_.]+/gi, "Bearer [REDACTED]");
 }
 
 export function logProviderDiagnostic({
-  provider = null,
+  provider = "gemini",
   model = null,
   handler = "",
   route = "",
@@ -645,7 +565,7 @@ export function logProviderDiagnostic({
 } = {}) {
   const entry = {
     service: "inffoler-ai-proxy",
-    provider: provider || "unknown",
+    provider: provider || "gemini",
     model: model || "unknown",
     handler: String(handler || ""),
     route: String(route || ""),
@@ -684,90 +604,6 @@ function parseRetryDelaySeconds(details, retryAfterHeader, rawMessage) {
   return null;
 }
 
-export function classifyOpenAiUpstreamError(upstreamStatus, upstreamText, retryAfterHeader = null) {
-  let errJson = null;
-  try {
-    errJson = JSON.parse(upstreamText);
-  } catch { /* non-JSON upstream error */ }
-
-  const errObj = errJson?.error || {};
-  const rawMessage = sanitizeErrorText(errObj.message || "");
-  const errCode = String(errObj.code || "").toLowerCase();
-  const errType = String(errObj.type || "").toLowerCase();
-  const retryAfterSec = parseRetryDelaySeconds(null, retryAfterHeader, rawMessage);
-
-  if (upstreamStatus === 401 || errCode === "invalid_api_key" || /incorrect api key|invalid api key/i.test(rawMessage)) {
-    return {
-      code: "INVALID_API_KEY",
-      quotaType: null,
-      retryable: false,
-      retryAfterSec: null,
-      message: "OpenAI API authentication failed on the backend. Verify that OPENAI_API_KEY is valid and active.",
-    };
-  }
-
-  if (upstreamStatus === 403) {
-    return {
-      code: "PERMISSION_DENIED",
-      quotaType: null,
-      retryable: false,
-      retryAfterSec: null,
-      message: rawMessage || "OpenAI API denied access for this key, organization, or selected model (HTTP 403).",
-    };
-  }
-
-  if (upstreamStatus === 429 || errCode === "rate_limit_exceeded" || errCode === "insufficient_quota" || errType === "insufficient_quota") {
-    const isQuotaExhausted =
-      errCode === "insufficient_quota" ||
-      errType === "insufficient_quota" ||
-      /exceeded your current quota|insufficient_quota|billing details|hard limit/i.test(rawMessage);
-
-    if (isQuotaExhausted) {
-      return {
-        code: "DAILY_QUOTA_EXCEEDED",
-        quotaType: "daily",
-        retryable: false,
-        retryAfterSec,
-        message: "OpenAI API quota or billing limit has been reached. Check your OpenAI usage & billing limits.",
-      };
-    }
-
-    return {
-      code: "RATE_LIMIT_EXCEEDED",
-      quotaType: "rate_limit",
-      retryable: true,
-      retryAfterSec,
-      message: retryAfterSec
-        ? `OpenAI API rate limit reached. Please wait about ${retryAfterSec}s and tap Retry.`
-        : "OpenAI API rate limit reached due to high demand. Please wait a few seconds and tap Retry.",
-    };
-  }
-
-  if (
-    upstreamStatus === 500 ||
-    upstreamStatus === 502 ||
-    upstreamStatus === 503 ||
-    upstreamStatus === 504 ||
-    errType === "server_error"
-  ) {
-    return {
-      code: "TEMPORARY_SERVER_ERROR",
-      quotaType: null,
-      retryable: true,
-      retryAfterSec,
-      message: "OpenAI servers are temporarily busy or unavailable. Please try again in a moment.",
-    };
-  }
-
-  return {
-    code: "UPSTREAM_ERROR",
-    quotaType: null,
-    retryable: false,
-    retryAfterSec: null,
-    message: (rawMessage || `OpenAI API returned HTTP ${upstreamStatus}.`).slice(0, 260),
-  };
-}
-
 export function classifyGeminiUpstreamError(upstreamStatus, upstreamText, retryAfterHeader = null) {
   let errJson = null;
   try {
@@ -796,6 +632,26 @@ export function classifyGeminiUpstreamError(upstreamStatus, upstreamText, retryA
 
   const inspectionBlob = `${rawMessage} ${rpcStatus} ${violationStrings.join(" ")}`;
 
+  if (upstreamStatus === 400 || rpcStatus === "INVALID_ARGUMENT") {
+    const isApiKeyInvalid = /api key not valid|api_key_invalid|invalid api key/i.test(inspectionBlob);
+    if (isApiKeyInvalid) {
+      return {
+        code: "INVALID_API_KEY",
+        quotaType: null,
+        retryable: false,
+        retryAfterSec: null,
+        message: "Gemini API authentication failed on the backend. Verify that GEMINI_API_KEY is valid and active.",
+      };
+    }
+    return {
+      code: "INVALID_ARGUMENT",
+      quotaType: null,
+      retryable: false,
+      retryAfterSec: null,
+      message: rawMessage || "Gemini API rejected the request format or model parameter (HTTP 400).",
+    };
+  }
+
   if (upstreamStatus === 401 || rpcStatus === "UNAUTHENTICATED" || /api key not valid|invalid api key/i.test(rawMessage)) {
     return {
       code: "INVALID_API_KEY",
@@ -813,6 +669,16 @@ export function classifyGeminiUpstreamError(upstreamStatus, upstreamText, retryA
       retryable: false,
       retryAfterSec: null,
       message: rawMessage || "Gemini API denied access for this key or model (HTTP 403).",
+    };
+  }
+
+  if (upstreamStatus === 404 || rpcStatus === "NOT_FOUND" || /models\/.+ is not found/i.test(rawMessage)) {
+    return {
+      code: "MODEL_NOT_FOUND",
+      quotaType: null,
+      retryable: false,
+      retryAfterSec: null,
+      message: rawMessage || "The requested Gemini model is unavailable or not found (HTTP 404). Try switching to Gemini 2.5 Flash.",
     };
   }
 
@@ -868,7 +734,7 @@ export function classifyGeminiUpstreamError(upstreamStatus, upstreamText, retryA
     quotaType: null,
     retryable: false,
     retryAfterSec: null,
-    message: (rawMessage || `Upstream AI service returned HTTP ${upstreamStatus}.`).slice(0, 260),
+    message: (rawMessage || `Gemini API returned HTTP ${upstreamStatus}.`).slice(0, 260),
   };
 }
 
@@ -1583,457 +1449,7 @@ export function validateAndSanitizeRequest(rawBody) {
   };
 }
 
-/* ==================== MODULE 5: UPSTREAM CALLS (OPENAI RESPONSES + GEMINI) & PIPELINE ==================== */
-export function buildOpenAiResponsesPayload({
-  modelId,
-  contents,
-  systemInstruction = "",
-  plan,
-  isJsonStructuredMode = false,
-  stream = false,
-  tools = null,
-}) {
-  const modelCaps = MODEL_REGISTRY[modelId] || MODEL_REGISTRY[DEFAULT_MODEL];
-  const input = [];
-
-  for (const turn of contents || []) {
-    if (turn.role === "model") {
-      const assistantText = (turn.parts || []).map(p => p.text || "").join("\n").trim();
-      if (assistantText) {
-        input.push({
-          role: "assistant",
-          content: [{ type: "output_text", text: assistantText }],
-        });
-      }
-      continue;
-    }
-
-    const userContent = [];
-    for (const part of turn.parts || []) {
-      if (typeof part.text === "string" && part.text.trim()) {
-        userContent.push({ type: "input_text", text: part.text.trim() });
-      } else if (part.inlineData?.data && part.inlineData?.mimeType) {
-        userContent.push({
-          type: "input_image",
-          image_url: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`,
-        });
-      }
-    }
-    if (userContent.length > 0) {
-      input.push({ role: "user", content: userContent });
-    }
-  }
-
-  const body = {
-    model: modelId,
-    input,
-    max_output_tokens: isJsonStructuredMode ? 4096 : plan.generationConfig.maxOutputTokens,
-    stream: Boolean(stream),
-    store: false,
-  };
-
-  if (typeof systemInstruction === "string" && systemInstruction.trim()) {
-    body.instructions = systemInstruction.trim().slice(0, MAX_SYSTEM_CHARS);
-  }
-
-  if (modelCaps.supportsTemperature !== false && typeof plan?.generationConfig?.temperature === "number") {
-    body.temperature = plan.generationConfig.temperature;
-    if (typeof plan?.generationConfig?.topP === "number") {
-      body.top_p = plan.generationConfig.topP;
-    }
-  }
-
-  if (modelCaps.supportsReasoningEffort) {
-    body.reasoning = {
-      effort: plan?.effort === "low" ? "low" : plan?.effort === "high" ? "high" : "medium",
-    };
-  }
-
-  if (Array.isArray(tools) && tools.length > 0) {
-    body.tools = tools;
-  } else if (isJsonStructuredMode) {
-    body.text = { format: { type: "json_object" } };
-  }
-
-  return body;
-}
-
-export function extractOpenAiResponseText(openAiJson) {
-  if (!openAiJson || typeof openAiJson !== "object") {
-    return { text: "", finishReason: "STOP", citations: [] };
-  }
-  const chunks = [];
-  const citations = [];
-  const seenUrls = new Set();
-
-  if (typeof openAiJson.output_text === "string" && openAiJson.output_text.trim()) {
-    chunks.push(openAiJson.output_text.trim());
-  }
-
-  if (Array.isArray(openAiJson.output)) {
-    for (const item of openAiJson.output) {
-      if (item?.type === "message" && Array.isArray(item.content)) {
-        for (const part of item.content) {
-          if (part?.type === "output_text" && typeof part.text === "string" && !openAiJson.output_text) {
-            chunks.push(part.text);
-          } else if (part?.type === "refusal" && typeof part.refusal === "string") {
-            chunks.push(part.refusal);
-          }
-          if (Array.isArray(part?.annotations)) {
-            for (const ann of part.annotations) {
-              const url = sanitizeVerifiedUrl(ann?.url);
-              if (url && !seenUrls.has(url)) {
-                seenUrls.add(url);
-                citations.push({
-                  title: String(ann?.title || new URL(url).hostname).slice(0, 140),
-                  url,
-                });
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  const finishReason =
-    openAiJson.status === "incomplete" && openAiJson.incomplete_details?.reason === "max_output_tokens"
-      ? "MAX_TOKENS"
-      : "STOP";
-
-  return {
-    text: chunks.join("").trim(),
-    finishReason,
-    citations,
-  };
-}
-
-async function callOpenAiResponsesWithTimeout({
-  fetchImpl,
-  apiKey,
-  payload,
-  timeoutMs,
-}) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const res = await fetchImpl(OPENAI_RESPONSES_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-    const text = await res.text();
-    return {
-      ok: res.ok,
-      status: res.status,
-      headers: res.headers,
-      text,
-    };
-  } catch (err) {
-    if (err?.name === "AbortError") {
-      const timeoutErr = new Error("Upstream OpenAI API timed out while generating response.");
-      timeoutErr.isTimeout = true;
-      throw timeoutErr;
-    }
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function streamOpenAiResponsesToSse({
-  fetchImpl,
-  apiKey,
-  upstreamPayload,
-  plan,
-  modelId,
-  timeoutMs,
-  corsHeaders,
-}) {
-  const startedAt = Date.now();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Math.max(timeoutMs, 42000));
-
-  let upstreamRes;
-  try {
-    upstreamRes = await fetchImpl(OPENAI_RESPONSES_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "text/event-stream",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({ ...upstreamPayload, stream: true }),
-      signal: controller.signal,
-    });
-  } catch (err) {
-    clearTimeout(timer);
-    if (err?.name === "AbortError") {
-      const timeoutErr = new Error("Upstream OpenAI API timed out while connecting.");
-      timeoutErr.isTimeout = true;
-      throw timeoutErr;
-    }
-    throw err;
-  }
-
-  if (!upstreamRes.ok) {
-    clearTimeout(timer);
-    const errText = await upstreamRes.text();
-    return {
-      ok: false,
-      upstreamRes: {
-        ok: false,
-        status: upstreamRes.status,
-        headers: upstreamRes.headers,
-        text: errText,
-      },
-    };
-  }
-
-  // Fallback if mock or upstream responded with non-stream JSON despite stream:true
-  const upstreamCt = String(upstreamRes.headers?.get?.("Content-Type") || "").toLowerCase();
-  if (!upstreamRes.body || (upstreamCt.includes("application/json") && !upstreamCt.includes("text/event-stream"))) {
-    clearTimeout(timer);
-    const jsonText = await upstreamRes.text();
-    let parsedJson;
-    try {
-      parsedJson = JSON.parse(jsonText);
-    } catch {
-      return {
-        ok: false,
-        customError: {
-          status: 502,
-          code: "INVALID_UPSTREAM_JSON",
-          retryable: true,
-          message: "Received malformed response from OpenAI service. Please tap Retry.",
-        },
-      };
-    }
-    const extracted = extractOpenAiResponseText(parsedJson);
-    const verification = verifyGeneratedAnswer(extracted.text, plan, extracted.finishReason);
-    const ssePayload = buildReasoningEnvelope("openai", modelId, plan, verification, false, startedAt);
-    const encoder = new TextEncoder();
-    const oneShotStream = new ReadableStream({
-      start(ctrl) {
-        ctrl.enqueue(encoder.encode(formatSseEvent("meta", {
-          providerUsed: "openai",
-          modelUsed: modelId,
-          category: plan.category,
-          mode: plan.mode,
-          modeLabel: plan.modeLabel,
-          effort: plan.effort,
-          subtasks: plan.subtasks,
-        })));
-        if (extracted.text) {
-          ctrl.enqueue(encoder.encode(formatSseEvent("delta", { delta: extracted.text })));
-        }
-        ctrl.enqueue(encoder.encode(formatSseEvent("done", {
-          text: extracted.text,
-          modelUsed: modelId,
-          providerUsed: "openai",
-          inffolerReasoning: ssePayload,
-        })));
-        ctrl.close();
-      },
-    });
-    return {
-      ok: true,
-      response: new Response(oneShotStream, {
-        status: 200,
-        headers: {
-          "Content-Type": "text/event-stream; charset=utf-8",
-          "Cache-Control": "no-store",
-          ...corsHeaders,
-        },
-      }),
-    };
-  }
-
-  const encoder = new TextEncoder();
-  const decoder = new TextDecoder("utf-8");
-  const reader = upstreamRes.body.getReader();
-
-  const sseStream = new ReadableStream({
-    async start(streamCtrl) {
-      let buffer = "";
-      let rawFallback = "";
-      let sawSsePrefix = false;
-      let accumulatedText = "";
-      let finishReason = "STOP";
-      let doneEmitted = false;
-      let streamUsage = null;
-
-      const emit = (eventName, data) => {
-        streamCtrl.enqueue(encoder.encode(formatSseEvent(eventName, data)));
-      };
-
-      const finalizeSuccess = () => {
-        if (doneEmitted) return;
-        doneEmitted = true;
-        const verification = verifyGeneratedAnswer(accumulatedText, plan, finishReason);
-        const reasoningMeta = buildReasoningEnvelope("openai", modelId, plan, verification, false, startedAt);
-        emit("done", {
-          text: accumulatedText.trim(),
-          modelUsed: modelId,
-          providerUsed: "openai",
-          usage: streamUsage || undefined,
-          inffolerReasoning: reasoningMeta,
-        });
-      };
-
-      emit("meta", {
-        providerUsed: "openai",
-        modelUsed: modelId,
-        category: plan.category,
-        mode: plan.mode,
-        modeLabel: plan.modeLabel,
-        effort: plan.effort,
-        subtasks: plan.subtasks,
-      });
-
-      const processSseFrame = frameText => {
-        const lines = frameText.split(/\r?\n/);
-        let eventType = "";
-        const dataLines = [];
-        for (const line of lines) {
-          if (line.startsWith("event:")) {
-            sawSsePrefix = true;
-            eventType = line.slice(6).trim();
-          } else if (line.startsWith("data:")) {
-            sawSsePrefix = true;
-            dataLines.push(line.slice(5).trimStart());
-          }
-        }
-        if (dataLines.length === 0) return;
-        const rawData = dataLines.join("\n").trim();
-        if (!rawData || rawData === "[DONE]") {
-          finalizeSuccess();
-          return;
-        }
-        let evt;
-        try {
-          evt = JSON.parse(rawData);
-        } catch {
-          return;
-        }
-        const kind = evt?.type || eventType;
-        if (kind === "response.output_text.delta" && typeof evt.delta === "string") {
-          accumulatedText += evt.delta;
-          emit("delta", { delta: evt.delta });
-        } else if (kind === "response.output_text.done" && typeof evt.text === "string" && !accumulatedText) {
-          accumulatedText = evt.text;
-          if (evt.text) emit("delta", { delta: evt.text });
-        } else if (kind === "response.incomplete") {
-          if (evt?.response?.incomplete_details?.reason === "max_output_tokens") {
-            finishReason = "MAX_TOKENS";
-          }
-          if (!accumulatedText && evt?.response) {
-            accumulatedText = extractOpenAiResponseText(evt.response).text;
-          }
-          finalizeSuccess();
-        } else if (kind === "response.completed") {
-          streamUsage = evt?.response?.usage || null;
-          if (!accumulatedText && evt?.response) {
-            const extracted = extractOpenAiResponseText(evt.response);
-            if (extracted.text) {
-              accumulatedText = extracted.text;
-              emit("delta", { delta: extracted.text });
-            }
-          }
-          finalizeSuccess();
-        } else if (kind === "response.failed" || kind === "error") {
-          const errMsgObj = evt?.response?.error || evt?.error || {};
-          const classified = classifyOpenAiUpstreamError(
-            errMsgObj?.status || 502,
-            JSON.stringify({ error: errMsgObj }),
-            null
-          );
-          doneEmitted = true;
-          emit("error", {
-            error: classified.message,
-            code: classified.code,
-            quotaType: classified.quotaType,
-            retryable: classified.retryable,
-            retryAfterSec: classified.retryAfterSec,
-          });
-        }
-      };
-
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const chunkStr = decoder.decode(value, { stream: true });
-          if (!sawSsePrefix && rawFallback.length < 262144) rawFallback += chunkStr;
-          buffer += chunkStr;
-          const frames = buffer.split(/\r?\n\r?\n/);
-          buffer = frames.pop() || "";
-          for (const frame of frames) {
-            if (frame.trim()) processSseFrame(frame);
-          }
-        }
-        const tailStr = decoder.decode();
-        if (!sawSsePrefix && rawFallback.length < 262144) rawFallback += tailStr;
-        buffer += tailStr;
-        if (buffer.trim()) processSseFrame(buffer);
-        if (!doneEmitted && !accumulatedText && !sawSsePrefix && rawFallback.trim().startsWith("{")) {
-          try {
-            const parsedObj = JSON.parse(rawFallback.trim());
-            const extracted = extractOpenAiResponseText(parsedObj);
-            if (extracted.text) {
-              accumulatedText = extracted.text;
-              finishReason = extracted.finishReason || finishReason;
-              emit("delta", { delta: extracted.text });
-            }
-          } catch { /* ignore */ }
-        }
-        if (!doneEmitted) {
-          finalizeSuccess();
-        }
-      } catch (err) {
-        if (!doneEmitted) {
-          emit("error", {
-            error: err?.name === "AbortError"
-              ? "OpenAI stream timed out before finishing."
-              : "OpenAI response stream interrupted.",
-            code: err?.name === "AbortError" ? "UPSTREAM_TIMEOUT" : "STREAM_ERROR",
-            retryable: true,
-          });
-        }
-      } finally {
-        clearTimeout(timer);
-        try {
-          reader.releaseLock?.();
-        } catch { /* ignore */ }
-        try {
-          streamCtrl.close();
-        } catch { /* ignore */ }
-      }
-    },
-    cancel() {
-      clearTimeout(timer);
-      controller.abort();
-      reader.cancel().catch(() => {});
-    },
-  });
-
-  return {
-    ok: true,
-    response: new Response(sseStream, {
-      status: 200,
-      headers: {
-        "Content-Type": "text/event-stream; charset=utf-8",
-        "Cache-Control": "no-store",
-        ...corsHeaders,
-      },
-    }),
-  };
-}
+/* ==================== MODULE 5: UPSTREAM CALLS (GOOGLE GEMINI) & PIPELINE ==================== */
 
 function formatSseEvent(eventName, payload) {
   return `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
@@ -2131,165 +1547,6 @@ function extractGeminiCandidateText(geminiData) {
   return { text, finishReason };
 }
 
-async function runOpenAiReasoningPipeline({
-  validated,
-  apiKey,
-  fetchImpl,
-  timeoutMs = DEFAULT_UPSTREAM_TIMEOUT_MS,
-  plan,
-  effectiveSystemInstruction,
-  isJsonStructuredMode,
-  startMs,
-}) {
-  if (true) {
-    const openAiPayload = buildOpenAiResponsesPayload({
-      modelId: validated.model,
-      contents: validated.payload.contents,
-      systemInstruction: effectiveSystemInstruction,
-      plan,
-      isJsonStructuredMode,
-      stream: false,
-    });
-
-    const res = await callOpenAiResponsesWithTimeout({
-      fetchImpl,
-      apiKey,
-      payload: openAiPayload,
-      timeoutMs,
-    });
-
-    if (!res.ok) {
-      return { ok: false, provider: "openai", upstreamRes: res };
-    }
-
-    let openAiData;
-    try {
-      openAiData = JSON.parse(res.text);
-    } catch {
-      return {
-        ok: false,
-        provider: "openai",
-        customError: {
-          status: 502,
-          code: "INVALID_UPSTREAM_JSON",
-          retryable: true,
-          message: "Received malformed response from OpenAI service. Please tap Retry.",
-        },
-      };
-    }
-
-    const primary = extractOpenAiResponseText(openAiData);
-    if (isJsonStructuredMode) {
-      return {
-        ok: true,
-        provider: "openai",
-        data: {
-          id: openAiData.id || undefined,
-          providerUsed: "openai",
-          modelUsed: validated.model,
-          output_text: primary.text,
-          candidates: [{ content: { parts: [{ text: primary.text }] }, finishReason: primary.finishReason }],
-          usage: openAiData.usage || undefined,
-          inffolerReasoning: buildReasoningEnvelope(
-            "openai",
-            validated.model,
-            plan,
-            {
-              status: "unverified",
-              label: "Structured JSON Mode",
-              checksRun: ["JSON parse check"],
-              issues: [],
-              summary: "Structured JSON output parsed cleanly.",
-            },
-            false,
-            startMs,
-            false
-          ),
-        },
-      };
-    }
-
-    let finalText = primary.text;
-    let finalUsage = openAiData.usage || undefined;
-    let finalId = openAiData.id || undefined;
-    let verification = verifyGeneratedAnswer(primary.text, plan, primary.finishReason);
-    let regenerated = false;
-
-    if (verification.shouldRegenerate && Date.now() - startMs < timeoutMs * 0.65) {
-      const correctionPrompt = [
-        "Review and fix the draft response below for the user's request.",
-        `Detected verification issues: ${verification.issues.join(" ")}`,
-        "Produce a corrected, complete, concise final response directly answering the user without exposing raw scratchpads.",
-        "",
-        `Draft response:\n${primary.text.slice(0, 6000)}`,
-      ].join("\n");
-
-      const retryPayload = buildOpenAiResponsesPayload({
-        modelId: validated.model,
-        contents: [
-          ...validated.payload.contents,
-          { role: "model", parts: [{ text: primary.text }] },
-          { role: "user", parts: [{ text: correctionPrompt }] },
-        ],
-        systemInstruction: effectiveSystemInstruction,
-        plan,
-        isJsonStructuredMode: false,
-        stream: false,
-      });
-
-      try {
-        const retryRes = await callOpenAiResponsesWithTimeout({
-          fetchImpl,
-          apiKey,
-          payload: retryPayload,
-          timeoutMs: Math.max(8000, timeoutMs - (Date.now() - startMs)),
-        });
-        if (retryRes.ok) {
-          const retryJson = JSON.parse(retryRes.text);
-          const corrected = extractOpenAiResponseText(retryJson);
-          if (corrected.text) {
-            const recheck = verifyGeneratedAnswer(corrected.text, plan, corrected.finishReason);
-            finalText = corrected.text;
-            finalUsage = retryJson.usage || finalUsage;
-            finalId = retryJson.id || finalId;
-            regenerated = true;
-            verification = {
-              ...recheck,
-              status: recheck.issues.length === 0
-                ? (recheck.status === "verified_independent" ? "corrected" : recheck.status)
-                : "caution",
-              label:
-                recheck.issues.length === 0
-                  ? (recheck.status === "verified_independent" ? "Corrected & Checked" : "Refined")
-                  : "Needs Review",
-              summary:
-                recheck.issues.length === 0
-                  ? `Initial check flagged an issue (${verification.issues[0]}), which was corrected in a verification pass.`
-                  : recheck.summary,
-            };
-          }
-        }
-      } catch {
-        // Keep primary answer if refinement pass fails or times out
-      }
-    }
-
-    return {
-      ok: true,
-      provider: "openai",
-      data: {
-        id: finalId,
-        providerUsed: "openai",
-        modelUsed: validated.model,
-        output_text: finalText,
-        candidates: [{ content: { parts: [{ text: finalText }] }, finishReason: primary.finishReason }],
-        usage: finalUsage,
-        inffolerReasoning: buildReasoningEnvelope("openai", validated.model, plan, verification, regenerated, startMs, false),
-      },
-    };
-  }
-}
-
 async function runGeminiReasoningPipeline({
   validated,
   apiKey,
@@ -2300,7 +1557,7 @@ async function runGeminiReasoningPipeline({
   isJsonStructuredMode,
   startMs,
 }) {
-  // Gemini pipeline (independent of OpenAI)
+  // Google Gemini pipeline (sole AI provider)
   const upstreamPayload = {
     contents: validated.payload.contents,
     generationConfig: {
@@ -2498,7 +1755,6 @@ export async function runReasoningPipeline({
   timeoutMs = DEFAULT_UPSTREAM_TIMEOUT_MS,
 }) {
   const startMs = Date.now();
-  const provider = validated.provider || MODEL_REGISTRY[validated.model]?.provider || DEFAULT_PROVIDER;
   const isJsonStructuredMode = validated.payload.generationConfig?.responseMimeType === "application/json";
   const lastUserPrompt = extractLastUserText(validated.payload.contents);
 
@@ -2514,19 +1770,6 @@ export async function runReasoningPipeline({
   const effectiveSystemInstruction = isJsonStructuredMode
     ? baseSys
     : buildEngineSystemInstruction(baseSys, plan);
-
-  if (provider === "openai") {
-    return await runOpenAiReasoningPipeline({
-      validated,
-      apiKey,
-      fetchImpl,
-      timeoutMs,
-      plan,
-      effectiveSystemInstruction,
-      isJsonStructuredMode,
-      startMs,
-    });
-  }
 
   return await runGeminiReasoningPipeline({
     validated,
@@ -2538,216 +1781,6 @@ export async function runReasoningPipeline({
     isJsonStructuredMode,
     startMs,
   });
-}
-
-export async function handleOpenAiProviderRequest({
-  validated,
-  openAiKey,
-  fetchImpl,
-  timeoutMs = DEFAULT_UPSTREAM_TIMEOUT_MS,
-  corsHeaders = {},
-  route = "/api/openai",
-}) {
-  if (!openAiKey) {
-    const missingMsg =
-      "Server OPENAI_API_KEY secret is not configured. Set OPENAI_API_KEY in backend environment variables or Cloudflare Worker Secrets.";
-    logProviderDiagnostic({
-      provider: "openai",
-      model: validated.model,
-      handler: "handleOpenAiProviderRequest",
-      route,
-      endpointHost: "api.openai.com",
-      status: 503,
-      errorMessage: missingMsg,
-    });
-    return jsonResponse(
-      {
-        provider: "openai",
-        error: missingMsg,
-        code: "MISSING_API_KEY",
-      },
-      503,
-      corsHeaders
-    );
-  }
-
-  const startMs = Date.now();
-  const isJsonStructuredMode = validated.payload.generationConfig?.responseMimeType === "application/json";
-  const lastUserPrompt = extractLastUserText(validated.payload.contents);
-  const plan = buildReasoningPlan({
-    promptText: lastUserPrompt,
-    historyTurnsCount: validated.payload.contents.length,
-    hasImages: validated.hasImages,
-    requestedMode: validated.reasoningMode,
-    modelId: validated.model,
-  });
-  const baseSys = validated.payload.systemInstruction?.parts?.[0]?.text || "";
-  const effectiveSystemInstruction = isJsonStructuredMode
-    ? baseSys
-    : buildEngineSystemInstruction(baseSys, plan);
-
-  if (validated.stream && !isJsonStructuredMode) {
-    const upstreamPayload = buildOpenAiResponsesPayload({
-      modelId: validated.model,
-      contents: validated.payload.contents,
-      systemInstruction: effectiveSystemInstruction,
-      plan,
-      isJsonStructuredMode: false,
-      stream: true,
-    });
-
-    const streamOutcome = await streamOpenAiResponsesToSse({
-      fetchImpl,
-      apiKey: openAiKey,
-      upstreamPayload,
-      plan,
-      modelId: validated.model,
-      timeoutMs,
-      corsHeaders,
-    });
-
-    if (streamOutcome.ok) {
-      logProviderDiagnostic({
-        provider: "openai",
-        model: validated.model,
-        handler: "handleOpenAiProviderRequest(stream)",
-        route,
-        endpointHost: "api.openai.com",
-        status: 200,
-      });
-      return streamOutcome.response;
-    }
-    if (streamOutcome.customError) {
-      logProviderDiagnostic({
-        provider: "openai",
-        model: validated.model,
-        handler: "handleOpenAiProviderRequest(stream)",
-        route,
-        endpointHost: "api.openai.com",
-        status: streamOutcome.customError.status,
-        errorMessage: streamOutcome.customError.message,
-      });
-      return jsonResponse(
-        {
-          provider: "openai",
-          error: streamOutcome.customError.message,
-          code: streamOutcome.customError.code,
-          retryable: streamOutcome.customError.retryable,
-        },
-        streamOutcome.customError.status,
-        corsHeaders
-      );
-    }
-    const upstream = streamOutcome.upstreamRes;
-    const classified = classifyOpenAiUpstreamError(
-      upstream.status,
-      upstream.text,
-      upstream.headers?.get?.("Retry-After") || null
-    );
-    logProviderDiagnostic({
-      provider: "openai",
-      model: validated.model,
-      handler: "handleOpenAiProviderRequest(stream)",
-      route,
-      endpointHost: "api.openai.com",
-      status: upstream.status,
-      errorMessage: classified.message,
-    });
-    const responseHeaders = { ...corsHeaders };
-    if (classified.retryAfterSec) {
-      responseHeaders["Retry-After"] = String(classified.retryAfterSec);
-    }
-    return jsonResponse(
-      {
-        provider: "openai",
-        error: classified.message,
-        code: classified.code,
-        quotaType: classified.quotaType,
-        retryable: classified.retryable,
-        retryAfterSec: classified.retryAfterSec,
-        modelRequested: validated.model,
-      },
-      upstream.status,
-      responseHeaders
-    );
-  }
-
-  const outcome = await runOpenAiReasoningPipeline({
-    validated,
-    apiKey: openAiKey,
-    fetchImpl,
-    timeoutMs,
-    plan,
-    effectiveSystemInstruction,
-    isJsonStructuredMode,
-    startMs,
-  });
-
-  if (!outcome.ok) {
-    if (outcome.customError) {
-      logProviderDiagnostic({
-        provider: "openai",
-        model: validated.model,
-        handler: "handleOpenAiProviderRequest",
-        route,
-        endpointHost: "api.openai.com",
-        status: outcome.customError.status,
-        errorMessage: outcome.customError.message,
-      });
-      return jsonResponse(
-        {
-          provider: "openai",
-          error: outcome.customError.message,
-          code: outcome.customError.code,
-          retryable: outcome.customError.retryable,
-        },
-        outcome.customError.status,
-        corsHeaders
-      );
-    }
-    const upstream = outcome.upstreamRes;
-    const classified = classifyOpenAiUpstreamError(
-      upstream.status,
-      upstream.text,
-      upstream.headers?.get?.("Retry-After") || null
-    );
-    logProviderDiagnostic({
-      provider: "openai",
-      model: validated.model,
-      handler: "handleOpenAiProviderRequest",
-      route,
-      endpointHost: "api.openai.com",
-      status: upstream.status,
-      errorMessage: classified.message,
-    });
-    const responseHeaders = { ...corsHeaders };
-    if (classified.retryAfterSec) {
-      responseHeaders["Retry-After"] = String(classified.retryAfterSec);
-    }
-    return jsonResponse(
-      {
-        provider: "openai",
-        error: classified.message,
-        code: classified.code,
-        quotaType: classified.quotaType,
-        retryable: classified.retryable,
-        retryAfterSec: classified.retryAfterSec,
-        modelRequested: validated.model,
-      },
-      upstream.status,
-      responseHeaders
-    );
-  }
-
-  logProviderDiagnostic({
-    provider: "openai",
-    model: validated.model,
-    handler: "handleOpenAiProviderRequest",
-    route,
-    endpointHost: "api.openai.com",
-    status: 200,
-  });
-  return jsonResponse(outcome.data, 200, corsHeaders);
 }
 
 async function streamGeminiToSse({
@@ -3644,155 +2677,81 @@ export async function runEarthIntelligencePipeline({
     .filter(Boolean)
     .join("\n\n");
 
-  const provider = validated.provider || MODEL_REGISTRY[validated.model]?.provider || DEFAULT_PROVIDER;
   let searchGrounded = true;
   let rawModelText = "";
   const verifiedSources = [];
   const seenUrls = new Set();
 
-  if (provider === "openai") {
-    const openAiPlan = {
-      effort: "medium",
+  const basePayload = {
+    systemInstruction: { parts: [{ text: buildEarthSystemPrompt() }] },
+    contents: [{ role: "user", parts: [{ text: userPromptText }] }],
+    tools: [{ google_search: {} }],
+    generationConfig: {
+      temperature: 0.2,
+      topP: 0.88,
+      maxOutputTokens: 4096,
+    },
+  };
+
+  let res = await callGeminiModelWithTimeout({
+    fetchImpl,
+    apiKey,
+    modelId: validated.model,
+    payload: basePayload,
+    timeoutMs,
+  });
+
+  // Compatibility safeguard if a model alias rejects google_search tool syntax
+  if (!res.ok && res.status === 400 && /google_search|tool|search/i.test(String(res.text || ""))) {
+    const fallbackPayload = {
+      systemInstruction: basePayload.systemInstruction,
+      contents: basePayload.contents,
       generationConfig: {
-        temperature: 0.2,
-        topP: 0.88,
-        maxOutputTokens: 4096,
+        ...basePayload.generationConfig,
+        responseMimeType: "application/json",
       },
     };
-    const webPayload = buildOpenAiResponsesPayload({
-      modelId: validated.model,
-      contents: [{ role: "user", parts: [{ text: userPromptText }] }],
-      systemInstruction: buildEarthSystemPrompt(),
-      plan: openAiPlan,
-      isJsonStructuredMode: false,
-      stream: false,
-      tools: [{ type: "web_search" }],
-    });
-
-    let res = await callOpenAiResponsesWithTimeout({
-      fetchImpl,
-      apiKey,
-      payload: webPayload,
-      timeoutMs,
-    });
-
-    if (!res.ok && res.status === 400 && /web_search|tool|hosted_tool/i.test(String(res.text || ""))) {
-      searchGrounded = false;
-      const jsonFallbackPayload = buildOpenAiResponsesPayload({
-        modelId: validated.model,
-        contents: [{ role: "user", parts: [{ text: userPromptText }] }],
-        systemInstruction: buildEarthSystemPrompt(),
-        plan: openAiPlan,
-        isJsonStructuredMode: true,
-        stream: false,
-      });
-      res = await callOpenAiResponsesWithTimeout({
-        fetchImpl,
-        apiKey,
-        payload: jsonFallbackPayload,
-        timeoutMs,
-      });
-    }
-
-    if (!res.ok) {
-      return { ok: false, provider: "openai", upstreamRes: res };
-    }
-
-    let openAiJson;
-    try {
-      openAiJson = JSON.parse(res.text);
-    } catch {
-      return {
-        ok: false,
-        provider: "openai",
-        customError: {
-          status: 502,
-          code: "INVALID_UPSTREAM_JSON",
-          retryable: true,
-          message: "Received malformed intelligence response. Please try again.",
-        },
-      };
-    }
-    const extracted = extractOpenAiResponseText(openAiJson);
-    rawModelText = extracted.text;
-    for (const c of extracted.citations) {
-      if (!seenUrls.has(c.url)) {
-        seenUrls.add(c.url);
-        verifiedSources.push(c);
-      }
-    }
-  } else {
-    const basePayload = {
-      systemInstruction: { parts: [{ text: buildEarthSystemPrompt() }] },
-      contents: [{ role: "user", parts: [{ text: userPromptText }] }],
-      tools: [{ google_search: {} }],
-      generationConfig: {
-        temperature: 0.2,
-        topP: 0.88,
-        maxOutputTokens: 4096,
-      },
-    };
-
-    let res = await callGeminiModelWithTimeout({
+    searchGrounded = false;
+    res = await callGeminiModelWithTimeout({
       fetchImpl,
       apiKey,
       modelId: validated.model,
-      payload: basePayload,
+      payload: fallbackPayload,
       timeoutMs,
     });
+  }
 
-    // Compatibility safeguard if a model alias rejects google_search tool syntax
-    if (!res.ok && res.status === 400 && /google_search|tool|search/i.test(String(res.text || ""))) {
-      const fallbackPayload = {
-        systemInstruction: basePayload.systemInstruction,
-        contents: basePayload.contents,
-        generationConfig: {
-          ...basePayload.generationConfig,
-          responseMimeType: "application/json",
-        },
-      };
-      searchGrounded = false;
-      res = await callGeminiModelWithTimeout({
-        fetchImpl,
-        apiKey,
-        modelId: validated.model,
-        payload: fallbackPayload,
-        timeoutMs,
+  if (!res.ok) {
+    return { ok: false, provider: "gemini", upstreamRes: res };
+  }
+
+  let geminiJson;
+  try {
+    geminiJson = JSON.parse(res.text);
+  } catch {
+    return {
+      ok: false,
+      provider: "gemini",
+      customError: {
+        status: 502,
+        code: "INVALID_UPSTREAM_JSON",
+        retryable: true,
+        message: "Received malformed intelligence response. Please try again.",
+      },
+    };
+  }
+
+  const candidate = geminiJson?.candidates?.[0];
+  rawModelText = candidate?.content?.parts?.map(p => p.text || "").join("")?.trim() || "";
+  const groundingChunks = candidate?.groundingMetadata?.groundingChunks || [];
+  for (const chunk of groundingChunks) {
+    const cleanUrl = sanitizeVerifiedUrl(chunk?.web?.uri);
+    if (cleanUrl && !seenUrls.has(cleanUrl)) {
+      seenUrls.add(cleanUrl);
+      verifiedSources.push({
+        title: String(chunk?.web?.title || new URL(cleanUrl).hostname).slice(0, 140),
+        url: cleanUrl,
       });
-    }
-
-    if (!res.ok) {
-      return { ok: false, provider: "gemini", upstreamRes: res };
-    }
-
-    let geminiJson;
-    try {
-      geminiJson = JSON.parse(res.text);
-    } catch {
-      return {
-        ok: false,
-        provider: "gemini",
-        customError: {
-          status: 502,
-          code: "INVALID_UPSTREAM_JSON",
-          retryable: true,
-          message: "Received malformed intelligence response. Please try again.",
-        },
-      };
-    }
-
-    const candidate = geminiJson?.candidates?.[0];
-    rawModelText = candidate?.content?.parts?.map(p => p.text || "").join("")?.trim() || "";
-    const groundingChunks = candidate?.groundingMetadata?.groundingChunks || [];
-    for (const chunk of groundingChunks) {
-      const cleanUrl = sanitizeVerifiedUrl(chunk?.web?.uri);
-      if (cleanUrl && !seenUrls.has(cleanUrl)) {
-        seenUrls.add(cleanUrl);
-        verifiedSources.push({
-          title: String(chunk?.web?.title || new URL(cleanUrl).hostname).slice(0, 140),
-          url: cleanUrl,
-        });
-      }
     }
   }
 
@@ -4078,13 +3037,12 @@ export async function handleRequest(request, env = {}, deps = {}) {
   }
 
   if (request.method === "GET" && (pathname === "/" || pathname === "/health")) {
-    const openAiConfigured = Boolean(resolveServerSecret(env, "OPENAI_API_KEY"));
     const geminiConfigured = Boolean(resolveServerSecret(env, "GEMINI_API_KEY"));
     return jsonResponse(
       {
         ok: true,
         service: "inffoler-ai-proxy",
-        version: "2.3.0",
+        version: "2.4.0",
         reasoningEngineVersion: "1.0.0",
         creator: "Alankrit Pathak",
         freeForAll: true,
@@ -4097,20 +3055,23 @@ export async function handleRequest(request, env = {}, deps = {}) {
         firebaseProjectId: String(env.FIREBASE_PROJECT_ID || DEFAULT_FIREBASE_PROJECT_ID),
         defaultProvider: DEFAULT_PROVIDER,
         defaultModel: DEFAULT_MODEL,
-        supportedProviders: ["openai", "gemini"],
+        supportedProviders: ["gemini"],
         providerEndpoints: {
-          openai: "/api/openai",
           gemini: "/api/gemini",
           chat: "/",
         },
+        endpoints: {
+          chat: "/",
+          gemini: "/api/gemini",
+          earth: "/earth/query",
+          rates: "/earth/rates",
+        },
         providerModels: {
-          openai: Array.from(OPENAI_MODELS),
           gemini: Array.from(GEMINI_MODELS),
         },
-        openaiConfigured: openAiConfigured,
         geminiConfigured,
         streamingSupported: true,
-        secretConfigured: openAiConfigured || geminiConfigured,
+        secretConfigured: geminiConfigured,
         multimodalEnabled: true,
         allowedModels: Array.from(ALLOWED_MODELS),
         modelCapabilities: MODEL_REGISTRY,
@@ -4209,18 +3170,17 @@ export async function handleRequest(request, env = {}, deps = {}) {
       return jsonResponse({ error: "Malformed JSON payload." }, 400, corsHeaders);
     }
 
-    const openAiKey = resolveServerSecret(env, "OPENAI_API_KEY");
     const geminiKey = resolveServerSecret(env, "GEMINI_API_KEY");
 
     if (pathname === "/earth/query") {
       const validatedEarth = validateEarthQueryRequest(parsedBody);
       if (validatedEarth.error) {
         logProviderDiagnostic({
-          provider: validatedEarth.provider || null,
+          provider: validatedEarth.provider || "gemini",
           model: validatedEarth.requestedModel || null,
           handler: "validateEarthQueryRequest(/earth/query)",
           route: pathname,
-          endpointHost: validatedEarth.provider === "gemini" ? "generativelanguage.googleapis.com" : "api.openai.com",
+          endpointHost: "generativelanguage.googleapis.com",
           status: 400,
           errorMessage: validatedEarth.error,
         });
@@ -4236,17 +3196,15 @@ export async function handleRequest(request, env = {}, deps = {}) {
         );
       }
 
-      const earthEndpointHost = validatedEarth.provider === "openai" ? "api.openai.com" : "generativelanguage.googleapis.com";
-      const earthApiKey = validatedEarth.provider === "openai" ? openAiKey : geminiKey;
-      if (!earthApiKey) {
-        const missingName = validatedEarth.provider === "openai" ? "OPENAI_API_KEY" : "GEMINI_API_KEY";
-        const missingMsg = `Server ${missingName} secret is not configured. Set ${missingName} in backend environment variables or Cloudflare Worker Secrets.`;
+      if (!geminiKey) {
+        const missingMsg =
+          "Server GEMINI_API_KEY secret is not configured. Set GEMINI_API_KEY in backend environment variables or Cloudflare Worker Secrets.";
         logProviderDiagnostic({
-          provider: validatedEarth.provider,
+          provider: "gemini",
           model: validatedEarth.model,
           handler: "runEarthIntelligencePipeline",
           route: pathname,
-          endpointHost: earthEndpointHost,
+          endpointHost: "generativelanguage.googleapis.com",
           status: 503,
           errorMessage: missingMsg,
         });
@@ -4262,7 +3220,7 @@ export async function handleRequest(request, env = {}, deps = {}) {
 
       const earthOutcome = await runEarthIntelligencePipeline({
         validated: validatedEarth,
-        apiKey: earthApiKey,
+        apiKey: geminiKey,
         fetchImpl,
         timeoutMs,
       });
@@ -4270,11 +3228,11 @@ export async function handleRequest(request, env = {}, deps = {}) {
       if (!earthOutcome.ok) {
         if (earthOutcome.customError) {
           logProviderDiagnostic({
-            provider: earthOutcome.provider,
+            provider: "gemini",
             model: validatedEarth.model,
             handler: "runEarthIntelligencePipeline",
             route: pathname,
-            endpointHost: earthOutcome.provider === "openai" ? "api.openai.com" : "generativelanguage.googleapis.com",
+            endpointHost: "generativelanguage.googleapis.com",
             status: earthOutcome.customError.status,
             errorMessage: earthOutcome.customError.message,
           });
@@ -4289,24 +3247,17 @@ export async function handleRequest(request, env = {}, deps = {}) {
           );
         }
         const upstream = earthOutcome.upstreamRes;
-        const classified =
-          earthOutcome.provider === "openai"
-            ? classifyOpenAiUpstreamError(
-                upstream.status,
-                upstream.text,
-                upstream.headers?.get?.("Retry-After") || null
-              )
-            : classifyGeminiUpstreamError(
-                upstream.status,
-                upstream.text,
-                upstream.headers?.get?.("Retry-After") || null
-              );
+        const classified = classifyGeminiUpstreamError(
+          upstream.status,
+          upstream.text,
+          upstream.headers?.get?.("Retry-After") || null
+        );
         logProviderDiagnostic({
-          provider: earthOutcome.provider,
+          provider: "gemini",
           model: validatedEarth.model,
           handler: "runEarthIntelligencePipeline",
           route: pathname,
-          endpointHost: earthOutcome.provider === "openai" ? "api.openai.com" : "generativelanguage.googleapis.com",
+          endpointHost: "generativelanguage.googleapis.com",
           status: upstream.status,
           errorMessage: classified.message,
         });
@@ -4316,7 +3267,7 @@ export async function handleRequest(request, env = {}, deps = {}) {
         }
         return jsonResponse(
           {
-            provider: earthOutcome.provider,
+            provider: "gemini",
             error: classified.message,
             code: classified.code,
             quotaType: classified.quotaType,
@@ -4330,79 +3281,14 @@ export async function handleRequest(request, env = {}, deps = {}) {
       }
 
       logProviderDiagnostic({
-        provider: validatedEarth.provider,
+        provider: "gemini",
         model: validatedEarth.model,
         handler: "runEarthIntelligencePipeline",
         route: pathname,
-        endpointHost: earthEndpointHost,
+        endpointHost: "generativelanguage.googleapis.com",
         status: 200,
       });
       return jsonResponse(earthOutcome.data, 200, corsHeaders);
-    }
-
-    if (pathname === "/api/openai" || pathname === "/openai/chat") {
-      if (
-        parsedBody &&
-        typeof parsedBody === "object" &&
-        typeof parsedBody.provider === "string" &&
-        parsedBody.provider.trim().length > 0 &&
-        parsedBody.provider.trim().toLowerCase() !== "openai"
-      ) {
-        const errMsg = `Route '${pathname}' is dedicated to OpenAI and cannot process provider '${parsedBody.provider}'.`;
-        logProviderDiagnostic({
-          provider: parsedBody.provider,
-          model: parsedBody.model || null,
-          handler: "routeGuard(/api/openai)",
-          route: pathname,
-          endpointHost: "api.openai.com",
-          status: 400,
-          errorMessage: errMsg,
-        });
-        return jsonResponse(
-          {
-            provider: "openai",
-            error: errMsg,
-            code: "UNSUPPORTED_PROVIDER",
-            allowedModels: Array.from(OPENAI_MODELS),
-          },
-          400,
-          corsHeaders
-        );
-      }
-      const validatedOpenAi = validateAndSanitizeRequest({
-        ...(parsedBody && typeof parsedBody === "object" ? parsedBody : {}),
-        provider: "openai",
-      });
-      if (validatedOpenAi.error) {
-        logProviderDiagnostic({
-          provider: "openai",
-          model: validatedOpenAi.requestedModel || null,
-          handler: "validateAndSanitizeRequest(/api/openai)",
-          route: pathname,
-          endpointHost: "api.openai.com",
-          status: 400,
-          errorMessage: validatedOpenAi.error,
-        });
-        return jsonResponse(
-          {
-            provider: "openai",
-            error: validatedOpenAi.error,
-            code: validatedOpenAi.code || "INVALID_PAYLOAD",
-            requestedModel: validatedOpenAi.requestedModel || null,
-            allowedModels: validatedOpenAi.allowedModels || Array.from(OPENAI_MODELS),
-          },
-          400,
-          corsHeaders
-        );
-      }
-      return await handleOpenAiProviderRequest({
-        validated: validatedOpenAi,
-        openAiKey,
-        fetchImpl,
-        timeoutMs,
-        corsHeaders,
-        route: pathname,
-      });
     }
 
     if (pathname === "/api/gemini" || pathname === "/gemini/chat") {
@@ -4473,57 +3359,35 @@ export async function handleRequest(request, env = {}, deps = {}) {
     const validated = validateAndSanitizeRequest(parsedBody);
     if (validated.error) {
       logProviderDiagnostic({
-        provider: validated.provider || null,
+        provider: validated.provider || "gemini",
         model: validated.requestedModel || null,
         handler: "validateAndSanitizeRequest(/)",
         route: pathname,
-        endpointHost: validated.provider === "gemini" ? "generativelanguage.googleapis.com" : "api.openai.com",
+        endpointHost: "generativelanguage.googleapis.com",
         status: 400,
         errorMessage: validated.error,
       });
       return jsonResponse(
         {
-          provider: validated.provider || null,
+          provider: validated.provider || "gemini",
           error: validated.error,
           code: validated.code || "INVALID_PAYLOAD",
           requestedModel: validated.requestedModel || null,
-          allowedModels: validated.allowedModels || undefined,
+          allowedModels: validated.allowedModels || Array.from(GEMINI_MODELS),
         },
         400,
         corsHeaders
       );
     }
 
-    if (validated.provider === "openai") {
-      return await handleOpenAiProviderRequest({
-        validated,
-        openAiKey,
-        fetchImpl,
-        timeoutMs,
-        corsHeaders,
-        route: pathname,
-      });
-    }
-
-    if (validated.provider === "gemini") {
-      return await handleGeminiProviderRequest({
-        validated,
-        geminiKey,
-        fetchImpl,
-        timeoutMs,
-        corsHeaders,
-        route: pathname,
-      });
-    }
-
-    return jsonResponse(
-      {
-        error: `Unsupported provider '${validated.provider}'.`,
-        code: "UNSUPPORTED_PROVIDER",
-      },
-      400,
-      corsHeaders
-    );
+    return await handleGeminiProviderRequest({
+      validated,
+      geminiKey,
+      fetchImpl,
+      timeoutMs,
+      corsHeaders,
+      route: pathname,
+    });
   } catch (err) {
     if (err?.isTimeout) {
       return jsonResponse(

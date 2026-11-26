@@ -25,34 +25,24 @@ service cloud.firestore {
 
     function isValidModel(modelId) {
       return modelId in [
-        'gpt-4.1-mini',
-        'gpt-4.1',
-        'gpt-4o-mini',
-        'o4-mini',
         'gemini-2.5-flash',
         'gemini-2.5-flash-lite',
-        'gemini-2.5-pro',
-        // Legacy IDs still stored in existing user profiles / saved chats (accepted for
-        // validation only; the web app migrates them and never sends them to any AI API)
-        'gemini-3.8-flash',
-        'gemini-3.5-flash-lite',
-        'gemini-4-argon'
+        'gemini-2.5-pro'
       ];
     }
 
-    function isValidUserProfile(data) {
+    function isValidUserProfileBase(data) {
       return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
              data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
              (!('email' in data) || data.email == null || (data.email is string && data.email.size() <= 160)) &&
              (!('photoURL' in data) || data.photoURL == null || (data.photoURL is string && data.photoURL.size() <= 600)) &&
-             (!('theme' in data) || data.theme in ['dark', 'light']) &&
-             (!('preferredModel' in data) || isValidModel(data.preferredModel));
+             (!('theme' in data) || data.theme in ['dark', 'light']);
     }
 
-    function isValidChat(data) {
+    function isValidChatBase(data) {
       return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
              data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
-             data.modelId is string && isValidModel(data.modelId) &&
+             data.modelId is string && data.modelId.size() >= 1 && data.modelId.size() <= 64 &&
              data.isSaved is bool &&
              data.messageCount is int && data.messageCount >= 0 && data.messageCount <= 5000 &&
              data.lastMessagePreview is string && data.lastMessagePreview.size() <= 240;
@@ -90,14 +80,18 @@ service cloud.firestore {
                        incoming().userId == request.auth.uid &&
                        incoming().keys().hasAll(['userId', 'displayName', 'createdAt', 'updatedAt']) &&
                        incoming().keys().hasOnly(['userId', 'displayName', 'email', 'photoURL', 'theme', 'preferredModel', 'createdAt', 'updatedAt']) &&
-                       isValidUserProfile(incoming()) &&
+                       isValidUserProfileBase(incoming()) &&
+                       (!('preferredModel' in incoming()) || isValidModel(incoming().preferredModel)) &&
                        incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
                        incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
 
       allow update: if isSignedIn() &&
                        request.auth.uid == userId &&
                        isValidId(userId) &&
-                       isValidUserProfile(incoming()) &&
+                       isValidUserProfileBase(incoming()) &&
+                       (!('preferredModel' in incoming()) ||
+                        isValidModel(incoming().preferredModel) ||
+                        ('preferredModel' in existing() && incoming().preferredModel == existing().preferredModel)) &&
                        incoming().userId == existing().userId &&
                        incoming().createdAt == existing().createdAt &&
                        incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
@@ -116,14 +110,16 @@ service cloud.firestore {
                          incoming().userId == request.auth.uid &&
                          incoming().keys().hasAll(['userId', 'title', 'modelId', 'isSaved', 'messageCount', 'lastMessagePreview', 'createdAt', 'updatedAt']) &&
                          incoming().keys().hasOnly(['userId', 'title', 'modelId', 'isSaved', 'messageCount', 'lastMessagePreview', 'createdAt', 'updatedAt']) &&
-                         isValidChat(incoming()) &&
+                         isValidChatBase(incoming()) &&
+                         isValidModel(incoming().modelId) &&
                          incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
                          incoming().updatedAt is timestamp && incoming().updatedAt <= request.time;
 
         allow update: if isSignedIn() &&
                          request.auth.uid == userId &&
                          isValidId(chatId) &&
-                         isValidChat(incoming()) &&
+                         isValidChatBase(incoming()) &&
+                         (isValidModel(incoming().modelId) || incoming().modelId == existing().modelId) &&
                          incoming().userId == existing().userId &&
                          incoming().createdAt == existing().createdAt &&
                          incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&

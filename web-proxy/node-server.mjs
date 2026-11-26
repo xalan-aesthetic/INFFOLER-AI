@@ -3,11 +3,10 @@
  * Founder & Creator: Alankrit Pathak
  *
  * Exposes the exact same hardened AI & EARTH API (`handleRequest`) on Node.js
- * reading `process.env.OPENAI_API_KEY` (default OpenAI Responses API) and optional
- * `process.env.GEMINI_API_KEY` on the server — NEVER in frontend source code.
+ * reading `process.env.GEMINI_API_KEY` on the server — NEVER in frontend source code.
  *
  * Run locally or on any Node 18+ host:
- *   OPENAI_API_KEY=... node web-proxy/node-server.mjs
+ *   GEMINI_API_KEY=... node web-proxy/node-server.mjs
  */
 
 import http from "node:http";
@@ -52,7 +51,6 @@ export function createNodeProxyServer({ envOverrides = {}, fetchImpl = globalThi
       });
 
       const runtimeEnv = {
-        OPENAI_API_KEY: process.env.OPENAI_API_KEY || "",
         GEMINI_API_KEY: process.env.GEMINI_API_KEY || "",
         FIREBASE_PROJECT_ID: process.env.FIREBASE_PROJECT_ID || "",
         ...envOverrides,
@@ -96,10 +94,9 @@ const isMainModule =
 if (isMainModule) {
   const server = createNodeProxyServer();
   server.listen(PORT, () => {
-    const hasOpenAi = Boolean(process.env.OPENAI_API_KEY);
     const hasGemini = Boolean(process.env.GEMINI_API_KEY);
     console.log(
-      `INFFOLER AI backend listening on http://127.0.0.1:${PORT} (OPENAI_API_KEY=${hasOpenAi ? "configured" : "missing"}, GEMINI_API_KEY=${hasGemini ? "configured" : "missing"})`
+      `INFFOLER AI backend listening on http://127.0.0.1:${PORT} (GEMINI_API_KEY=${hasGemini ? "configured" : "missing"})`
     );
   });
 }

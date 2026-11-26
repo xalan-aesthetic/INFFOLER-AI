@@ -2,7 +2,7 @@
 
 **Your Intelligence. Your Assistant. Your Future.**
 
-INFFOLER AI is a modern, futuristic AI assistant project developed by **Alankrit Pathak**, built with **OpenAI Responses API (Default)**, **Google Gemini (Switchable Provider)**, **Kotlin + Jetpack Compose** (Android), and a responsive **GitHub Pages** web companion (`https://xalan-aesthetic.github.io/INFFOLER-AI/`).
+INFFOLER AI is a modern, futuristic AI assistant project developed by **Alankrit Pathak**, built with **Google Gemini (Sole AI Provider)**, **Kotlin + Jetpack Compose** (Android), and a responsive **GitHub Pages** web companion (`https://xalan-aesthetic.github.io/INFFOLER-AI/`).
 
 Created by **Alankrit Pathak** | **Building ideas into intelligence.**
 
@@ -19,8 +19,7 @@ To create a powerful, intelligent, and user-friendly AI assistant that helps peo
 
 ## Technology
 
-- **OpenAI Responses API (Default Provider)** via hardened server-side proxy (`https://api.openai.com/v1/responses`), supporting SSE token streaming, multi-turn history, multimodal vision (`input_image`), structured JSON (`WHAT IF` simulator), and live web search (`THE EARTH`). Default model: `gpt-4.1-mini`, plus `gpt-4.1`, `gpt-4o-mini`, and `o4-mini`.
-- **Google Gemini (Alternative Provider)**: Users can switch anytime between **OpenAI** and **Gemini** (`gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.5-pro`) without silent switching.
+- **Google Gemini API (Sole AI Provider)** via hardened server-side proxy (`https://generativelanguage.googleapis.com/v1beta/models/<model>`), supporting SSE token streaming, multi-turn history, multimodal vision (`inlineData`), structured JSON (`WHAT IF` simulator), and Google Search grounding (`THE EARTH`). Supported models: `gemini-2.5-flash` (default), `gemini-2.5-flash-lite`, and `gemini-2.5-pro`.
 - **Firebase Authentication & Cloud Firestore**: Google Sign-In, Microsoft Login, Apple Login, Phone OTP, Email/Password auth, password reset, account linking, account deletion, and per-user real-time chat & WHAT IF sync (`firestore.rules`).
 - **Web Companion (`docs/`)**: INFFOLER AI 2.0 futuristic dark/light UI, animated holographic brain, THE EARTH 3D global intelligence globe, Markdown + syntax highlighting, image previews, slide-out sidebar, and Creator Profile.
 - **Android Native App (`app/`)**: Kotlin, Jetpack Compose, Material 3, Firebase AI Logic + App Check, Room local persistence.
@@ -32,30 +31,29 @@ To create a powerful, intelligent, and user-friendly AI assistant that helps peo
 
 - `app/` — Native Android application source code (Kotlin, Jetpack Compose, Firebase AI Logic, Room)
 - `docs/` — Production static INFFOLER AI 2.0 web interface (`index.html`, `styles.css`, `app.js`, `reasoning-engine.js`, `earth-intelligence.js`, `auth-providers.js`, `intro-cinema.js`)
-- `web-proxy/cloudflare-worker.js` — Hardened OpenAI Responses API (default) & Gemini proxy (`OPENAI_API_KEY` / `GEMINI_API_KEY` read only on the server)
-- `web-proxy/node-server.mjs` — Optional Node.js HTTP server adapter reading `process.env.OPENAI_API_KEY` and `process.env.GEMINI_API_KEY`
+- `web-proxy/cloudflare-worker.js` — Hardened Google Gemini proxy (`GEMINI_API_KEY` read only on the server)
+- `web-proxy/node-server.mjs` — Optional Node.js HTTP server adapter reading `process.env.GEMINI_API_KEY`
 - `firestore.rules`, `firebase-blueprint.json`, `firestore.test.js` — Verified zero-trust Firestore security rules & emulator test suite
 - `.github/workflows/deploy-pages.yml` — Automatic GitHub Pages deployment workflow on push to `main`
 
 ## Secure API Key & Deployment Checklist
 
-Never place API keys inside `docs/`, client JS, HTML, or GitHub commits. Configure keys exclusively in server-side environment variables / secrets:
+Never place API keys inside `docs/`, client JS, HTML, or GitHub commits. Configure `GEMINI_API_KEY` exclusively in server-side environment variables / secrets:
 
 1. **Cloudflare Worker (`web-proxy/cloudflare-worker.js`)**:
    - Deploy the updated `web-proxy/cloudflare-worker.js` to Cloudflare Workers.
-   - Add your OpenAI secret via **Cloudflare Dashboard → Workers & Pages → Settings → Variables & Secrets** (type: **Secret**, name: `OPENAI_API_KEY`) or via Wrangler CLI:
+   - Add your Gemini secret via **Cloudflare Dashboard → Workers & Pages → Settings → Variables & Secrets** (type: **Secret**, name: `GEMINI_API_KEY`) or via Wrangler CLI:
      ```bash
-     wrangler secret put OPENAI_API_KEY
+     wrangler secret put GEMINI_API_KEY
      ```
-   - Optionally keep/add `GEMINI_API_KEY` as a Worker **Secret** so users who switch to Gemini also work seamlessly.
 2. **Node.js Backend (`web-proxy/node-server.mjs`)** *(if self-hosting instead of Cloudflare Workers)*:
-   - Export `OPENAI_API_KEY` (and optionally `GEMINI_API_KEY`) in your server environment:
+   - Export `GEMINI_API_KEY` in your server environment:
      ```bash
-     export OPENAI_API_KEY="your-secret-key"
+     export GEMINI_API_KEY="your-secret-key"
      node web-proxy/node-server.mjs
      ```
 3. **Firebase Console (`gen-lang-client-0028400465`)**:
-   - Deploy updated `firestore.rules` (allows both OpenAI and Gemini model IDs).
+   - Deploy updated `firestore.rules` (enforces Gemini 2.5 model IDs while preserving existing document updates).
    - Under **Authentication → Sign-in method**, ensure Google, Microsoft, Apple, Phone, and Email/Password are configured as desired.
    - Under **Authentication → Settings → Authorized domains**, verify `xalan-aesthetic.github.io`.
 4. **GitHub Pages (`https://xalan-aesthetic.github.io/INFFOLER-AI/`)**: Push to `main` and confirm **Actions → Deploy INFFOLER AI to GitHub Pages** succeeds.

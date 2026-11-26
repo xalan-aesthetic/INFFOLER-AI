@@ -55,16 +55,12 @@ import {
   increment,
 } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
 import {
-  DEFAULT_PROVIDER,
-  DEFAULT_OPENAI_MODEL,
+  AI_PROVIDER,
+  DEFAULT_GEMINI_MODEL,
   MODEL_CATALOG,
-  PROVIDER_MODEL_MAP,
   REASONING_MODES,
-  normalizeProvider,
-  getProviderForModel,
-  getDefaultModelForProvider,
-  getModelsForProvider,
-  isModelSupportedForProvider,
+  getSupportedGeminiModels,
+  isSupportedGeminiModel,
   migrateLegacySavedModelId,
   getProviderDisplayLabel,
   normalizeReasoningMode,
@@ -73,7 +69,7 @@ import {
   classifyTaskPreview,
   normalizeReasoningMetadata,
   formatVerificationBadge,
-} from "./reasoning-engine.js?v=20261126b";
+} from "./reasoning-engine.js?v=20261126e";
 import {
   normalizePhoneInput,
   validateOtpCode,
@@ -207,7 +203,6 @@ const STORAGE_SFX = "inffoler_v2_sfx";
 const STORAGE_MUSIC = "inffoler_v2_music";
 const STORAGE_VOLUME = "inffoler_v2_volume";
 const STORAGE_REASONING_MODE = "inffoler_v2_reasoning_mode";
-const STORAGE_PROVIDER = "inffoler_v2_provider";
 const STORAGE_MODEL = "inffoler_v2_model";
 const STORAGE_ENGINE_EXPLICIT = "inffoler_v2_engine_explicit";
 
@@ -274,21 +269,16 @@ const STARTER_PROMPTS = [
   { icon: "\uD83D\uDCF7", title: "Analyze an Image", action: "attach" },
 ];
 
-// Respect the user's selected provider & model strictly — OpenAI is the default on launch.
+// Google Gemini is the sole AI provider (`gemini-2.5-flash` default).
 let selectedReasoningMode = normalizeReasoningMode(loadPrefSafe(STORAGE_REASONING_MODE, "balanced"));
 let selectedModelId = (() => {
   const savedModel = loadPrefSafe(STORAGE_MODEL, "");
   const migratedModel = migrateLegacySavedModelId(savedModel);
-  if (migratedModel) {
+  if (migratedModel && isSupportedGeminiModel(migratedModel)) {
     return migratedModel;
   }
-  const savedProvider = loadPrefSafe(STORAGE_PROVIDER, "");
-  if (savedProvider) {
-    return getDefaultModelForProvider(savedProvider);
-  }
-  return DEFAULT_OPENAI_MODEL;
+  return DEFAULT_GEMINI_MODEL;
 })();
-let selectedProvider = getProviderForModel(selectedModelId);
 
 const ALLOWED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const MAX_PENDING_IMAGES = 3;
@@ -755,7 +745,7 @@ function makeSafeId(prefix = "id") {
 
 function normalizeModel(modelId) {
   const raw = String(modelId || "").trim();
-  return Object.prototype.hasOwnProperty.call(MODEL_CATALOG, raw) ? raw : DEFAULT_OPENAI_MODEL;
+  return migrateLegacySavedModelId(raw) || DEFAULT_GEMINI_MODEL;
 }
 
 function mapFirebaseError(err, contextProvider = "") {
@@ -1216,7 +1206,7 @@ function subscribeUserSimulations(uid, onUpdate, onError) {
   );
 }
 
-async function createCloudChat(uid, chatId, { title = "New Exploration", modelId = DEFAULT_OPENAI_MODEL } = {}) {
+async function createCloudChat(uid, chatId, { title = "New Exploration", modelId = DEFAULT_GEMINI_MODEL } = {}) {
   await setDoc(doc(db, "users", uid, "chats", chatId), {
     userId: uid,
     title: String(title).trim().slice(0, 120) || "New Exploration",
@@ -1332,29 +1322,20 @@ function showToast(msg) {
 
 function getSelectedModel() {
   const domVal = document.getElementById("modelSelect")?.value;
-  if (domVal && Object.prototype.hasOwnProperty.call(MODEL_CATALOG, domVal)) {
+  if (domVal && isSupportedGeminiModel(domVal)) {
     return domVal;
   }
   return normalizeModel(selectedModelId);
 }
 
-function getSelectedProvider() {
-  const domProv = document.getElementById("providerSelect")?.value;
-  if (domProv && Object.prototype.hasOwnProperty.call(PROVIDER_MODEL_MAP, String(domProv).toLowerCase())) {
-    return normalizeProvider(domProv);
-  }
-  return getProviderForModel(getSelectedModel());
-}
-
-function renderModelOptionsForProvider(providerId, selectedModel = null) {
+function renderGeminiModelOptions(selectedModel = null) {
   const modelSelect = document.getElementById("modelSelect");
   if (!modelSelect) return;
-  const normProvider = normalizeProvider(providerId);
-  const models = getModelsForProvider(normProvider);
+  const models = getSupportedGeminiModels();
   const targetModel =
-    selectedModel && isModelSupportedForProvider(normProvider, selectedModel)
+    selectedModel && isSupportedGeminiModel(selectedModel)
       ? selectedModel
-      : getDefaultModelForProvider(normProvider);
+      : DEFAULT_GEMINI_MODEL;
 
   modelSelect.innerHTML = models
     .map(
@@ -1365,22 +1346,13 @@ function renderModelOptionsForProvider(providerId, selectedModel = null) {
   modelSelect.value = targetModel;
 }
 
-function setActiveProviderAndModel(providerId, modelId = null, { persistCloud = false, markExplicit = false } = {}) {
-  const normalizedTargetProvider = providerId ? normalizeProvider(providerId) : null;
-  const hasCatalogModel = modelId && Object.prototype.hasOwnProperty.call(MODEL_CATALOG, modelId);
+function setActiveGeminiModel(modelId = null, { persistCloud = false, markExplicit = false } = {}) {
+  const migrated = migrateLegacySavedModelId(modelId);
   const resolvedModel =
-    hasCatalogModel && (!normalizedTargetProvider || isModelSupportedForProvider(normalizedTargetProvider, modelId))
-      ? modelId
-      : getDefaultModelForProvider(normalizedTargetProvider || DEFAULT_PROVIDER);
-  const resolvedProvider = getProviderForModel(resolvedModel);
-  selectedProvider = resolvedProvider;
+    migrated && isSupportedGeminiModel(migrated) ? migrated : DEFAULT_GEMINI_MODEL;
   selectedModelId = resolvedModel;
 
-  const provSelect = document.getElementById("providerSelect");
-  if (provSelect) provSelect.value = resolvedProvider;
-  renderModelOptionsForProvider(resolvedProvider, resolvedModel);
-
-  savePrefSafe(STORAGE_PROVIDER, resolvedProvider);
+  renderGeminiModelOptions(resolvedModel);
   savePrefSafe(STORAGE_MODEL, resolvedModel);
   if (markExplicit) {
     savePrefSafe(STORAGE_ENGINE_EXPLICIT, "1");
@@ -1389,7 +1361,7 @@ function setActiveProviderAndModel(providerId, modelId = null, { persistCloud = 
   if (persistCloud && currentUser) {
     updateUserProfileAndPrefs(currentUser.uid, { preferredModel: resolvedModel }).catch(() => {});
   }
-  return { provider: resolvedProvider, model: resolvedModel };
+  return { provider: AI_PROVIDER, model: resolvedModel };
 }
 
 function getSelectedReasoningMode() {
@@ -1409,18 +1381,13 @@ function syncEngineStatusBar(phaseMessage = null, tone = "idle") {
   const providerEl = document.getElementById("engineActiveProvider");
   const modelEl = document.getElementById("engineActiveModel");
   const modeEl = document.getElementById("engineActiveMode");
-  const providerSelect = document.getElementById("providerSelect");
   const modelSelect = document.getElementById("modelSelect");
   const modeSelect = document.getElementById("reasoningModeSelect");
 
   const activeModel = getSelectedModel();
-  const activeProvider = getProviderForModel(activeModel);
   const modeKey = getSelectedReasoningMode();
   const modeMeta = REASONING_MODES[modeKey] || REASONING_MODES.balanced;
 
-  if (providerSelect && providerSelect.value !== activeProvider) {
-    providerSelect.value = activeProvider;
-  }
   if (modelSelect && modelSelect.value !== activeModel) {
     modelSelect.value = activeModel;
   }
@@ -1428,7 +1395,7 @@ function syncEngineStatusBar(phaseMessage = null, tone = "idle") {
     modeSelect.value = modeKey;
   }
   if (providerEl) {
-    providerEl.textContent = `Provider: ${getProviderDisplayLabel(activeProvider)}`;
+    providerEl.textContent = getProviderDisplayLabel();
   }
   if (modelEl) {
     modelEl.textContent = getModelDisplayLabel(activeModel);
@@ -1824,15 +1791,9 @@ async function onAuthChange(user) {
       });
       const profile = await loadUserProfile(currentUser.uid);
       if (profile?.theme) setTheme(profile.theme, false);
-      const hasExplicitEnginePref = loadPref(STORAGE_ENGINE_EXPLICIT, "") === "1";
       const migratedProfileModel = migrateLegacySavedModelId(profile?.preferredModel);
-      if (
-        migratedProfileModel &&
-        (hasExplicitEnginePref || getProviderForModel(migratedProfileModel) === DEFAULT_PROVIDER)
-      ) {
-        setActiveProviderAndModel(getProviderForModel(migratedProfileModel), migratedProfileModel, {
-          persistCloud: false,
-        });
+      if (migratedProfileModel && isSupportedGeminiModel(migratedProfileModel)) {
+        setActiveGeminiModel(migratedProfileModel, { persistCloud: false });
       }
       syncEngineStatusBar("Reasoning Engine 1.0 · Ready", "idle");
     } catch (err) {
@@ -2145,7 +2106,7 @@ function openLightbox(src) {
   document.getElementById("imageLightbox").classList.remove("hidden");
 }
 
-/* ==================== AI PROXY CLIENT (OPENAI RESPONSES + GEMINI) ==================== */
+/* ==================== AI PROXY CLIENT (GOOGLE GEMINI) ==================== */
 function sanitizeConversationTurns(messages) {
   const cleaned = [];
   for (const m of messages) {
@@ -2159,17 +2120,15 @@ function sanitizeConversationTurns(messages) {
 
 function redactSensitiveText(text) {
   return String(text || "")
-    .replace(/sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{12,}/g, "[REDACTED_KEY]")
     .replace(/AIza[0-9A-Za-z\-_]{12,}/g, "[REDACTED_KEY]")
     .replace(/([?&]key=)[^&\s"']+/gi, "$1[REDACTED]")
     .replace(/Bearer\s+[A-Za-z0-9\-_.]+/gi, "Bearer [REDACTED]");
 }
 
-function classifyClientAiError(status, errJson = null, retryAfterHeader = null, rawText = "", providerId = null) {
+function classifyClientAiError(status, errJson = null, retryAfterHeader = null, rawText = "") {
   const errPayload = errJson && typeof errJson === "object" ? errJson : {};
   const nestedErr = errPayload.error && typeof errPayload.error === "object" ? errPayload.error : null;
-  const activeProvider = normalizeProvider(errPayload.provider || providerId || getSelectedProvider());
-  const providerLabel = getProviderDisplayLabel(activeProvider);
+  const providerLabel = getProviderDisplayLabel();
   const serverCode = String(errPayload.code || nestedErr?.code || nestedErr?.status || "").toUpperCase();
   const serverQuotaType = errPayload.quotaType || null;
   const rawMessage = redactSensitiveText(
@@ -2239,9 +2198,7 @@ function classifyClientAiError(status, errJson = null, retryAfterHeader = null, 
         retryAfterSec,
         badgeLabel: "DAILY QUOTA EXHAUSTED",
         userMessage:
-          activeProvider === "openai"
-            ? "OpenAI API quota has been exhausted. Check plan/billing quota limits or switch providers/try again later."
-            : "Daily Gemini API quota has been reached for today. Quota resets on the next daily cycle — please try again later.",
+          "Daily Gemini API quota has been reached for today. Quota resets on the next daily cycle — please try again later.",
       };
     }
 
@@ -2254,25 +2211,35 @@ function classifyClientAiError(status, errJson = null, retryAfterHeader = null, 
       badgeLabel: "TEMPORARY RATE LIMIT (429)",
       userMessage: retryAfterSec
         ? `${providerLabel} rate limit reached right now. Please wait about ${retryAfterSec}s and tap Retry.`
-        : `${providerLabel} API temporary rate limit reached due to high traffic. Please wait a few seconds and tap Retry.`,
+        : `${providerLabel} temporary rate limit reached due to high traffic. Please wait a few seconds and tap Retry.`,
     };
   }
 
-  if (serverCode === "UNSUPPORTED_MODEL" || serverCode === "UNSUPPORTED_PROVIDER" || status === 404) {
-    const isStaleGeminiOnlyWorker =
-      /gemini-3\.8-flash|gemini-4-argon/i.test(rawMessage) &&
-      (/unsupported model\s*['"]?(gpt-|o4-|gemini-2\.5-)/i.test(rawMessage) || activeProvider === "openai");
+  if (status === 404 || serverCode === "MODEL_NOT_FOUND" || serverCode === "NOT_FOUND") {
+    return {
+      kind: "unsupported_model",
+      code: "MODEL_NOT_FOUND",
+      quotaType: null,
+      retryable: false,
+      retryAfterSec: null,
+      badgeLabel: "MODEL UNAVAILABLE (404)",
+      userMessage:
+        rawMessage ||
+        "The selected Gemini model is currently unavailable or not found (HTTP 404). Please choose Gemini 2.5 Flash, Flash-Lite, or Pro.",
+    };
+  }
+
+  if (serverCode === "UNSUPPORTED_MODEL" || serverCode === "UNSUPPORTED_PROVIDER" || serverCode === "INVALID_ARGUMENT") {
     return {
       kind: "unsupported_model",
       code: serverCode || "UNSUPPORTED_MODEL",
       quotaType: null,
       retryable: false,
       retryAfterSec: null,
-      badgeLabel: isStaleGeminiOnlyWorker ? "BACKEND DEPLOYMENT OUTDATED (400)" : "UNSUPPORTED MODEL",
-      userMessage: isStaleGeminiOnlyWorker
-        ? `${rawMessage} The live Cloudflare Worker proxy is still on an older v2.1.0 deployment. Redeploy web-proxy/cloudflare-worker.js with OPENAI_API_KEY and GEMINI_API_KEY configured in Worker Secrets.`
-        : rawMessage ||
-          "The selected AI model is unavailable or unsupported. Please choose GPT-4.1 Mini, GPT-4.1, GPT-4o Mini, o4-mini, or a Gemini 2.5 model.",
+      badgeLabel: "UNSUPPORTED MODEL",
+      userMessage:
+        rawMessage ||
+        "The selected Gemini model is unsupported. Please choose Gemini 2.5 Flash, Gemini 2.5 Flash-Lite, or Gemini 2.5 Pro.",
     };
   }
 
@@ -2326,7 +2293,7 @@ function classifyClientAiError(status, errJson = null, retryAfterHeader = null, 
     const isProviderKeyOrPermissionError =
       serverCode === "INVALID_API_KEY" ||
       serverCode === "PERMISSION_DENIED" ||
-      Boolean(errJson?.provider && /api key|openai|gemini|permission|billing|model|access/i.test(rawMessage));
+      Boolean(errJson?.provider && /api key|gemini|permission|billing|model|access/i.test(rawMessage));
 
     if (isProviderKeyOrPermissionError || (status === 403 && errJson?.provider)) {
       return {
@@ -2338,7 +2305,7 @@ function classifyClientAiError(status, errJson = null, retryAfterHeader = null, 
         badgeLabel: status === 403 ? "API ACCESS DENIED (403)" : "API KEY ERROR (401)",
         userMessage:
           rawMessage ||
-          `${providerLabel} rejected the API request (HTTP ${status}). Verify backend API key and permissions.`,
+          `${providerLabel} rejected the API request (HTTP ${status}). Verify backend GEMINI_API_KEY and permissions.`,
       };
     }
 
@@ -2360,12 +2327,12 @@ function classifyClientAiError(status, errJson = null, retryAfterHeader = null, 
     retryable: false,
     retryAfterSec: null,
     badgeLabel: `REQUEST ERROR${status ? ` (${status})` : ""}`,
-    userMessage: rawMessage || `Unable to complete AI request (HTTP ${status || "error"}).`,
+    userMessage: rawMessage || `Unable to complete Gemini AI request (HTTP ${status || "error"}).`,
   };
 }
 
-function buildClassifiedClientError(status, errJson, retryAfterHeader, rawText, providerId) {
-  const classified = classifyClientAiError(status, errJson, retryAfterHeader, rawText, providerId);
+function buildClassifiedClientError(status, errJson, retryAfterHeader, rawText) {
+  const classified = classifyClientAiError(status, errJson, retryAfterHeader, rawText);
   const err = new Error(classified.userMessage);
   err.status = status;
   err.code = classified.code;
@@ -2400,24 +2367,13 @@ function extractTextFromJsonResponse(data) {
   if (!data || typeof data !== "object") return "";
   const geminiText = data?.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("")?.trim();
   if (geminiText) return geminiText;
-  if (typeof data.output_text === "string" && data.output_text.trim()) {
-    return data.output_text.trim();
-  }
-  if (Array.isArray(data.output)) {
-    const out = [];
-    for (const item of data.output) {
-      if (item?.type === "message" && Array.isArray(item.content)) {
-        for (const c of item.content) {
-          if (typeof c?.text === "string") out.push(c.text);
-        }
-      }
-    }
-    if (out.join("").trim()) return out.join("").trim();
+  if (typeof data.text === "string" && data.text.trim()) {
+    return data.text.trim();
   }
   return "";
 }
 
-async function readSseResponseStream(response, modelId, providerId, signal, onStreamDelta) {
+async function readSseResponseStream(response, modelId, signal, onStreamDelta) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
@@ -2481,7 +2437,7 @@ async function readSseResponseStream(response, modelId, providerId, signal, onSt
 
     if (eventName === "error") {
       const errStatus = Number(parsed?.status) || 502;
-      throw buildClassifiedClientError(errStatus, parsed, null, parsed?.error || "", providerId);
+      throw buildClassifiedClientError(errStatus, parsed, null, parsed?.error || "");
     }
   };
 
@@ -2529,7 +2485,7 @@ async function readSseResponseStream(response, modelId, providerId, signal, onSt
       ? donePayload
       : {
           candidates: [{ content: { parts: [{ text: finalText }] } }],
-          inffolerReasoning: metaReasoning || { modelUsed: modelId, providerUsed: providerId },
+          inffolerReasoning: metaReasoning || { modelUsed: modelId, providerUsed: AI_PROVIDER },
         };
 
   return {
@@ -2546,35 +2502,30 @@ async function callProxyOnce(
   responseMimeType,
   signal,
   reasoningMode = "balanced",
-  onStreamDelta = null,
-  explicitProvider = null
+  onStreamDelta = null
 ) {
   if (!auth.currentUser) {
     throw new Error("Authentication required. Please log in to access INFFOLER AI.");
   }
 
   const rawModelInput = String(modelId || "").trim();
-  const resolvedModelId = Object.prototype.hasOwnProperty.call(MODEL_CATALOG, rawModelInput)
+  const resolvedModelId = isSupportedGeminiModel(rawModelInput)
     ? rawModelInput
     : normalizeModel(rawModelInput);
-  const providerId = explicitProvider
-    ? normalizeProvider(explicitProvider)
-    : getProviderForModel(resolvedModelId);
-  if (!isModelSupportedForProvider(providerId, resolvedModelId)) {
+  if (rawModelInput && !isSupportedGeminiModel(resolvedModelId)) {
     throw buildClassifiedClientError(
       400,
       {
         code: "UNSUPPORTED_MODEL",
-        provider: providerId,
-        error: `Unsupported model '${rawModelInput || resolvedModelId}' for provider '${getProviderDisplayLabel(providerId)}'.`,
+        provider: AI_PROVIDER,
+        error: `Unsupported Gemini model '${rawModelInput}'. Allowed models: Gemini 2.5 Flash, Gemini 2.5 Flash-Lite, Gemini 2.5 Pro.`,
       },
       null,
-      "",
-      providerId
+      ""
     );
   }
   const wantsStream = Boolean(onStreamDelta && !responseMimeType);
-  const providerEndpoint = providerId === "openai" ? `${PUBLIC_PROXY_URL}/api/openai` : `${PUBLIC_PROXY_URL}/api/gemini`;
+  const geminiEndpoint = `${PUBLIC_PROXY_URL}/api/gemini`;
 
   const payload = {
     systemInstruction: { parts: [{ text: systemInstruction }] },
@@ -2596,14 +2547,14 @@ async function callProxyOnce(
 
   const sendAuthorizedRequest = async forceRefreshToken => {
     const idToken = await auth.currentUser.getIdToken(forceRefreshToken);
-    return fetch(providerEndpoint, {
+    return fetch(geminiEndpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${idToken}`,
       },
       body: JSON.stringify({
-        provider: providerId,
+        provider: AI_PROVIDER,
         model: resolvedModelId,
         stream: wantsStream,
         reasoningMode: normalizeReasoningMode(reasoningMode),
@@ -2635,8 +2586,7 @@ async function callProxyOnce(
         response.status,
         errJson,
         response.headers?.get?.("Retry-After") || null,
-        bodyText,
-        providerId
+        bodyText
       );
     }
 
@@ -2647,7 +2597,7 @@ async function callProxyOnce(
       response.body &&
       typeof response.body.getReader === "function"
     ) {
-      return await readSseResponseStream(response, modelId, providerId, signal, onStreamDelta);
+      return await readSseResponseStream(response, resolvedModelId, signal, onStreamDelta);
     }
 
     const bodyText = await response.text();
@@ -2657,7 +2607,7 @@ async function callProxyOnce(
 
     const data = JSON.parse(bodyText);
     const text = extractTextFromJsonResponse(data);
-    if (!text) throw new Error(`Model ${modelId} returned an empty response.`);
+    if (!text) throw new Error(`Model ${resolvedModelId} returned an empty response.`);
     return { text, rawResponse: data, streamed: false };
   } catch (err) {
     if (err.userStopped) throw err;
@@ -2669,7 +2619,7 @@ async function callProxyOnce(
         throw stopErr;
       }
       const timeoutErr = new Error(
-        `Request timed out while waiting for ${getProviderDisplayLabel(providerId)}. Tap Retry to try again.`
+        `Request timed out while waiting for ${getProviderDisplayLabel()}. Tap Retry to try again.`
       );
       timeoutErr.status = 504;
       timeoutErr.errorKind = "server_temp";
@@ -2699,10 +2649,9 @@ async function executeSelectedModelRequest(
   signal,
   reasoningMode = "balanced",
   onStatus = null,
-  onStreamDelta = null,
-  selectedProviderOverride = null
+  onStreamDelta = null
 ) {
-  // Never silently switch provider or model: strictly respect the user's selection.
+  // Strictly respect the user's selected Gemini model (never silently switch models).
   const MAX_TEMPORARY_RETRIES = 2; // Strictly bounded: max 2 retries (never retries indefinitely)
   const BASE_BACKOFF_MS = 750;
   const MAX_BACKOFF_MS = 8000;
@@ -2717,8 +2666,7 @@ async function executeSelectedModelRequest(
         responseMimeType,
         signal,
         reasoningMode,
-        onStreamDelta,
-        selectedProviderOverride
+        onStreamDelta
       );
       return {
         modelId: rawResponse?.inffolerReasoning?.modelUsed || selectedModel,
@@ -2736,6 +2684,8 @@ async function executeSelectedModelRequest(
         err.quotaType === "daily" ||
         err.code === "DAILY_QUOTA_EXCEEDED" ||
         err.code === "UNSUPPORTED_MODEL" ||
+        err.code === "MODEL_NOT_FOUND" ||
+        err.code === "INVALID_ARGUMENT" ||
         err.code === "EMPTY_PROMPT" ||
         err.code === "PAYLOAD_TOO_LARGE" ||
         !err.retryable
@@ -3211,11 +3161,7 @@ async function dispatchAiCompletion(priorTurns, promptText, imagesToSend) {
   userParts.push({ text: promptText });
 
   const contents = [...priorTurns, { role: "user", parts: userParts }];
-  const activeProviderNow = getSelectedProvider();
-  const activeModelNow = getSelectedModel();
-  const selectedModel = isModelSupportedForProvider(activeProviderNow, activeModelNow)
-    ? activeModelNow
-    : activeModelNow;
+  const selectedModel = getSelectedModel();
   const reasoningMode = getSelectedReasoningMode();
   const previewCategory = classifyTaskPreview(promptText, reasoningMode);
   const startedAt = Date.now();
@@ -3226,7 +3172,7 @@ async function dispatchAiCompletion(priorTurns, promptText, imagesToSend) {
   activeMessages.push({ role: "model", isTypingPlaceholder: true, text: "" });
   setGeneratingUi(true);
   syncEngineStatusBar(
-    `${getProviderDisplayLabel(activeProviderNow)} · ${previewCategory} (${REASONING_MODES[reasoningMode]?.shortLabel || "Balanced"})…`,
+    `${getProviderDisplayLabel()} · ${previewCategory} (${REASONING_MODES[reasoningMode]?.shortLabel || "Balanced"})…`,
     "active"
   );
   renderChatMessages();
@@ -3289,8 +3235,7 @@ async function dispatchAiCompletion(priorTurns, promptText, imagesToSend) {
       activeAbortController.signal,
       reasoningMode,
       statusMsg => syncEngineStatusBar(statusMsg, "active"),
-      handleStreamDelta,
-      activeProviderNow
+      handleStreamDelta
     );
 
     if (streamRenderTimer) {
@@ -3321,7 +3266,7 @@ async function dispatchAiCompletion(priorTurns, promptText, imagesToSend) {
 
     playReceivedSfx();
     syncEngineStatusBar(
-      `${getProviderDisplayLabel(getProviderForModel(modelId))} · ${reasoningMeta.category} · ${reasoningMeta.verification?.label || "Complete"}`,
+      `${getProviderDisplayLabel()} · ${reasoningMeta.category} · ${reasoningMeta.verification?.label || "Complete"}`,
       reasoningMeta.verification?.status === "caution" ? "error" : "idle"
     );
 
@@ -3818,21 +3763,11 @@ function bindEvents() {
   document.getElementById("btnThemeToggleSidebar").addEventListener("click", toggleTheme);
   document.getElementById("btnThemeToggleModal").addEventListener("click", toggleTheme);
 
-  document.getElementById("providerSelect")?.addEventListener("change", e => {
-    const nextProvider = normalizeProvider(e.target.value);
-    const nextModel = getDefaultModelForProvider(nextProvider);
-    setActiveProviderAndModel(nextProvider, nextModel, { persistCloud: true, markExplicit: true });
-    const label = `${getProviderDisplayLabel(nextProvider)} (${getModelDisplayLabel(nextModel)})`;
-    syncEngineStatusBar(`${label} · Ready`, "idle");
-    showToast(`Switched AI provider to ${getProviderDisplayLabel(nextProvider)}`);
-  });
-
   document.getElementById("modelSelect")?.addEventListener("change", e => {
     const pickedModel = normalizeModel(e.target.value);
-    const pickedProvider = getProviderForModel(pickedModel);
-    setActiveProviderAndModel(pickedProvider, pickedModel, { persistCloud: true, markExplicit: true });
+    setActiveGeminiModel(pickedModel, { persistCloud: true, markExplicit: true });
     syncEngineStatusBar(
-      `${getProviderDisplayLabel(pickedProvider)} · ${getModelDisplayLabel(pickedModel)} · Ready`,
+      `${getProviderDisplayLabel()} · ${getModelDisplayLabel(pickedModel)} · Ready`,
       "idle"
     );
   });
@@ -4769,7 +4704,7 @@ async function executeEarthRootProxyFallback({
         Authorization: `Bearer ${idToken}`,
       },
       body: JSON.stringify({
-        provider: getProviderForModel(model),
+        provider: AI_PROVIDER,
         model,
         reasoningMode: "balanced",
         payload,
@@ -4898,7 +4833,7 @@ async function runEarthQuery(rawQuery, { isFollowUp = false } = {}) {
           },
           body: JSON.stringify({
             query,
-            provider: getProviderForModel(selectedModel),
+            provider: AI_PROVIDER,
             model: selectedModel,
             targetCurrency,
             filters,
@@ -5139,10 +5074,11 @@ function boot() {
   try {
     localStorage.removeItem("inffoler_v2_guest_chats");
     localStorage.removeItem("inffoler_v2_guest_sims");
+    localStorage.removeItem("inffoler_v2_provider");
   } catch { /* ignore */ }
 
   setTheme(loadPref(STORAGE_THEME, "dark"), false);
-  setActiveProviderAndModel(selectedProvider, selectedModelId, { persistCloud: false });
+  setActiveGeminiModel(selectedModelId, { persistCloud: false });
   syncAudioUi();
   syncEngineStatusBar("Reasoning Engine 1.0 · Ready", "idle");
   renderInstagramLists();

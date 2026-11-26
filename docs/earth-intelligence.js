@@ -438,7 +438,7 @@ export function buildEarthFallbackRequestPayload({
 export function normalizeEarthClientResponse({
   rawText,
   query,
-  model = "gpt-4.1-mini",
+  model = "gemini-2.5-flash",
   targetCurrency = "USD",
   filters = {},
   fxData = null,

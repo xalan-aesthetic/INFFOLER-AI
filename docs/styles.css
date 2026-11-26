@@ -695,7 +695,6 @@ body {
   box-shadow: 0 0 8px var(--teal);
 }
 
-.provider-select,
 .model-select {
   background: var(--bg-input);
   color: var(--cyan);
@@ -706,11 +705,6 @@ body {
   font-weight: 600;
   outline: none;
   cursor: pointer;
-}
-
-.provider-select {
-  color: var(--teal);
-  border-color: rgba(0, 245, 212, 0.36);
 }
 
 .topbar-profile-chip {
@@ -3164,19 +3158,18 @@ body {
     grid-column: 1 / -1;
     grid-row: 2;
     display: grid;
-    grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.32fr) minmax(0, 1fr);
-    gap: 5px;
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+    gap: 6px;
     width: 100%;
   }
-  .provider-select,
   .model-select,
   .mode-select {
     width: 100%;
     max-width: none;
     min-width: 0;
     min-height: 36px;
-    padding: 5px 7px;
-    font-size: 0.7rem;
+    padding: 5px 8px;
+    font-size: 0.72rem;
     text-overflow: ellipsis;
   }
   .chat-subbar {
@@ -3242,7 +3235,6 @@ body {
   cursor: pointer;
 }
 
-.provider-select:focus,
 .mode-select:focus,
 .model-select:focus {
   border-color: var(--cyan);

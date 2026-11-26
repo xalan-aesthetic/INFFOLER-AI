@@ -2,72 +2,24 @@
  * INFFOLER AI — Advanced Reasoning Engine 1.0 (Frontend Module)
  * Founder & Creator: Alankrit Pathak
  *
- * Modular client-side provider/model descriptors, pre-flight prompt validation,
+ * Modular client-side Google Gemini model descriptors, pre-flight prompt validation,
  * live reasoning status helpers, and metadata normalizer.
- * Never exposes secrets or silently switches user-selected providers/models.
+ * Never exposes secrets or silently switches user-selected Gemini models.
  */
 
 export const MAX_PROMPT_CHARS = 12000;
 
-export const DEFAULT_PROVIDER = "openai";
-export const DEFAULT_OPENAI_MODEL = "gpt-4.1-mini";
+export const AI_PROVIDER = "gemini";
+export const DEFAULT_PROVIDER = "gemini";
 export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 
-export const AI_PROVIDERS = Object.freeze({
-  openai: {
-    id: "openai",
-    label: "OpenAI",
-    shortLabel: "OpenAI",
-    defaultModel: DEFAULT_OPENAI_MODEL,
-    apiStyle: "responses",
-  },
-  gemini: {
-    id: "gemini",
-    label: "Gemini",
-    shortLabel: "Gemini",
-    defaultModel: DEFAULT_GEMINI_MODEL,
-    apiStyle: "generateContent",
-  },
-});
+export const GEMINI_MODEL_IDS = Object.freeze([
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-pro",
+]);
 
 export const MODEL_CATALOG = Object.freeze({
-  "gpt-4.1-mini": {
-    id: "gpt-4.1-mini",
-    provider: "openai",
-    label: "GPT-4.1 Mini",
-    shortLabel: "GPT-4.1 Mini",
-    supportsThinkingConfig: false,
-    supportsStreaming: true,
-    maxOutputTokens: 8192,
-  },
-  "gpt-4.1": {
-    id: "gpt-4.1",
-    provider: "openai",
-    label: "GPT-4.1 Flagship",
-    shortLabel: "GPT-4.1",
-    supportsThinkingConfig: false,
-    supportsStreaming: true,
-    maxOutputTokens: 8192,
-  },
-  "gpt-4o-mini": {
-    id: "gpt-4o-mini",
-    provider: "openai",
-    label: "GPT-4o Mini",
-    shortLabel: "GPT-4o Mini",
-    supportsThinkingConfig: false,
-    supportsStreaming: true,
-    maxOutputTokens: 6144,
-  },
-  "o4-mini": {
-    id: "o4-mini",
-    provider: "openai",
-    label: "OpenAI o4-mini",
-    shortLabel: "o4-mini",
-    supportsThinkingConfig: false,
-    supportsReasoningEffort: true,
-    supportsStreaming: true,
-    maxOutputTokens: 8192,
-  },
   "gemini-2.5-flash": {
     id: "gemini-2.5-flash",
     provider: "gemini",
@@ -135,11 +87,6 @@ export const REASONING_MODES = Object.freeze({
   },
 });
 
-export const PROVIDER_MODEL_MAP = Object.freeze({
-  openai: Object.freeze(["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "o4-mini"]),
-  gemini: Object.freeze(["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"]),
-});
-
 const LEGACY_GEMINI_MODEL_ALIASES = Object.freeze({
   "gemini-3.8-flash": "gemini-2.5-flash",
   "gemini-3.5-flash-lite": "gemini-2.5-flash-lite",
@@ -152,36 +99,20 @@ export function migrateLegacySavedModelId(modelId) {
   return LEGACY_GEMINI_MODEL_ALIASES[key] || null;
 }
 
-export function normalizeProvider(providerId) {
-  const key = String(providerId || "").trim().toLowerCase();
-  return Object.prototype.hasOwnProperty.call(AI_PROVIDERS, key) ? key : DEFAULT_PROVIDER;
+export function getSupportedGeminiModels() {
+  return GEMINI_MODEL_IDS.map(id => MODEL_CATALOG[id]).filter(Boolean);
 }
 
-export function getProviderForModel(modelId) {
-  const entry = MODEL_CATALOG[modelId];
-  if (entry?.provider) return entry.provider;
-  if (String(modelId || "").toLowerCase().startsWith("gemini-")) return "gemini";
-  return DEFAULT_PROVIDER;
+export function isSupportedGeminiModel(modelId) {
+  return Object.prototype.hasOwnProperty.call(MODEL_CATALOG, String(modelId || "").trim());
 }
 
-export function getDefaultModelForProvider(providerId) {
-  return AI_PROVIDERS[normalizeProvider(providerId)]?.defaultModel || DEFAULT_OPENAI_MODEL;
+export function getProviderForModel() {
+  return AI_PROVIDER;
 }
 
-export function isModelSupportedForProvider(providerId, modelId) {
-  const target = normalizeProvider(providerId);
-  const allowed = PROVIDER_MODEL_MAP[target] || [];
-  return allowed.includes(String(modelId || "").trim());
-}
-
-export function getModelsForProvider(providerId) {
-  const target = normalizeProvider(providerId);
-  const ids = PROVIDER_MODEL_MAP[target] || [];
-  return ids.map(id => MODEL_CATALOG[id]).filter(Boolean);
-}
-
-export function getProviderDisplayLabel(providerId) {
-  return AI_PROVIDERS[normalizeProvider(providerId)]?.label || "OpenAI";
+export function getProviderDisplayLabel() {
+  return "Gemini AI";
 }
 
 export function normalizeReasoningMode(modeId) {
@@ -190,7 +121,7 @@ export function normalizeReasoningMode(modeId) {
 }
 
 export function getModelDisplayLabel(modelId) {
-  return MODEL_CATALOG[modelId]?.label || modelId || "Unknown Model";
+  return MODEL_CATALOG[modelId]?.label || modelId || "Gemini 2.5 Flash";
 }
 
 export function validatePromptInput(rawText, imagesCount = 0) {
