@@ -1,0 +1,14 @@
+{
+  "name": "inffoler-ai",
+  "version": "3.0.0",
+  "description": "INFFOLER AI 3.0 — Your Ultimate AI Companion. Futuristic AI platform by Alankrit Pathak.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "node scripts/build.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

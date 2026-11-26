@@ -2133,7 +2133,7 @@ test("Reasoning Engine Scenario 10 & E2E: Reasoning mode switcher, status bar, e
     const modelEl = document.getElementById("modelSelect");
     modelEl.value = "gemini-2.5-pro";
     await modelEl.dispatchEvent({ type: "change", target: modelEl });
-    assert.equal(document.getElementById("engineActiveModel").textContent, "Gemini 4 Argon");
+    assert.equal(document.getElementById("engineActiveModel").textContent, "Gemini 2.5 Pro");
 
     // Empty message & very long message blocked before hitting Worker
     workerRequestCount = 0;
