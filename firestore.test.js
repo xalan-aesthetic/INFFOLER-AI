@@ -67,7 +67,7 @@ test("User profile creation, valid update, ghost-field rejection, and cross-user
       email: "alice@example.com",
       photoURL: "https://example.com/a.png",
       theme: "dark",
-      preferredModel: "gemini-3.8-flash",
+      preferredModel: "gemini-2.5-flash",
       createdAt: created,
       updatedAt: created,
     })
@@ -114,7 +114,7 @@ test("Personal chats and messages lifecycle + cross-user denial", async () => {
     chatRef.set({
       userId: ALICE_UID,
       title: "Quantum Computing",
-      modelId: "gemini-3.8-flash",
+      modelId: "gemini-2.5-flash",
       isSaved: false,
       messageCount: 1,
       lastMessagePreview: "Explain qubits simply",
@@ -139,7 +139,7 @@ test("Personal chats and messages lifecycle + cross-user denial", async () => {
       userId: ALICE_UID,
       role: "model",
       text: "A qubit can exist in a superposition of 0 and 1.",
-      modelId: "gemini-3.8-flash",
+      modelId: "gemini-2.5-flash",
       hasImage: false,
       feedback: "none",
       createdAt: t0,

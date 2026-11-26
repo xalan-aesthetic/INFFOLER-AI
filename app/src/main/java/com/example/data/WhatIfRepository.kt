@@ -101,7 +101,7 @@ class WhatIfRepository(private val dao: WhatIfDao) {
 
     suspend fun runWhatIfSimulation(question: String): WhatIfSimulationResult {
         try {
-            val modelChain = GeminiResilience.fallbackChainFor("gemini-3.8-flash")
+            val modelChain = GeminiResilience.fallbackChainFor("gemini-2.5-flash")
             val (_, responseText) = GeminiResilience.executeWithRetryAndFallback(
                 modelIds = modelChain
             ) { modelId ->

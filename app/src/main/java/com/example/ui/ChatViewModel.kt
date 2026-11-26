@@ -36,24 +36,24 @@ enum class AiAgentModel(
     val badge: String,
     val description: String
 ) {
-    FLASH_3_8(
-        modelId = "gemini-3.8-flash",
-        displayName = "Gemini 3.8 Flash",
-        shortLabel = "3.8 Flash",
+    FLASH_2_5(
+        modelId = "gemini-2.5-flash",
+        displayName = "Gemini 2.5 Flash",
+        shortLabel = "2.5 Flash",
         badge = "DEFAULT · BALANCED",
         description = "All-purpose universal answer agent with automatic Flash-Lite fallback."
     ),
-    FLASH_LITE_3_5(
-        modelId = "gemini-3.5-flash-lite",
-        displayName = "Gemini 3.5 Flash-Lite",
-        shortLabel = "3.5 Lite",
+    FLASH_LITE_2_5(
+        modelId = "gemini-2.5-flash-lite",
+        displayName = "Gemini 2.5 Flash-Lite",
+        shortLabel = "2.5 Lite",
         badge = "ULTRA-FAST",
         description = "High-availability, low-latency responses for quick facts, summaries & translations."
     ),
-    ARGON_4(
-        modelId = "gemini-4-argon",
-        displayName = "Gemini 4 Argon",
-        shortLabel = "4 Argon",
+    PRO_2_5(
+        modelId = "gemini-2.5-pro",
+        displayName = "Gemini 2.5 Pro",
+        shortLabel = "2.5 Pro",
         badge = "DEEP REASONING · BLAZE",
         description = "Maximum reasoning depth for STEM & architecture (falls back to Flash if unavailable)."
     )
@@ -77,7 +77,7 @@ sealed interface ChatStatus {
 
 data class ChatUiState(
     val activeConversationId: Long? = null,
-    val selectedModel: AiAgentModel = AiAgentModel.FLASH_3_8,
+    val selectedModel: AiAgentModel = AiAgentModel.FLASH_2_5,
     val lastResponderModelId: String? = null,
     val messages: List<ChatMessage> = emptyList(),
     val conversations: List<ConversationEntity> = emptyList(),
@@ -121,7 +121,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private val activeConversationId = MutableStateFlow<Long?>(null)
-    private val selectedModel = MutableStateFlow(AiAgentModel.FLASH_3_8)
+    private val selectedModel = MutableStateFlow(AiAgentModel.FLASH_2_5)
     private val lastResponderModelId = MutableStateFlow<String?>(null)
     private val chatStatus = MutableStateFlow<ChatStatus>(ChatStatus.Idle)
 

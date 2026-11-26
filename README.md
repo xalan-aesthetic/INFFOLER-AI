@@ -20,7 +20,7 @@ To create a powerful, intelligent, and user-friendly AI assistant that helps peo
 ## Technology
 
 - **OpenAI Responses API (Default Provider)** via hardened server-side proxy (`https://api.openai.com/v1/responses`), supporting SSE token streaming, multi-turn history, multimodal vision (`input_image`), structured JSON (`WHAT IF` simulator), and live web search (`THE EARTH`). Default model: `gpt-4.1-mini`, plus `gpt-4.1`, `gpt-4o-mini`, and `o4-mini`.
-- **Google Gemini (Alternative Provider)**: Users can switch anytime between **OpenAI** and **Gemini** (`gemini-3.8-flash`, `gemini-3.5-flash-lite`, `gemini-4-argon`) without silent switching.
+- **Google Gemini (Alternative Provider)**: Users can switch anytime between **OpenAI** and **Gemini** (`gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.5-pro`) without silent switching.
 - **Firebase Authentication & Cloud Firestore**: Google Sign-In, Microsoft Login, Apple Login, Phone OTP, Email/Password auth, password reset, account linking, account deletion, and per-user real-time chat & WHAT IF sync (`firestore.rules`).
 - **Web Companion (`docs/`)**: INFFOLER AI 2.0 futuristic dark/light UI, animated holographic brain, THE EARTH 3D global intelligence globe, Markdown + syntax highlighting, image previews, slide-out sidebar, and Creator Profile.
 - **Android Native App (`app/`)**: Kotlin, Jetpack Compose, Material 3, Firebase AI Logic + App Check, Room local persistence.
