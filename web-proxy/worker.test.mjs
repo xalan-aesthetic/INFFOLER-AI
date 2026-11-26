@@ -147,7 +147,7 @@ test("Rejects unauthenticated POST requests (missing, malformed, expired, wrong 
 
   const env = { GEMINI_API_KEY: "test-secret", FIREBASE_PROJECT_ID: PROJECT_ID };
   const body = JSON.stringify({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.8-flash",
     payload: { contents: [{ role: "user", parts: [{ text: "Hello" }] }] },
   });
 
@@ -274,7 +274,7 @@ test("Allows valid Firebase ID token, ignores spoofed frontend userId, returns G
       },
       body: JSON.stringify({
         userId: "spoofed_victim_uid",
-        model: "gemini-2.5-flash",
+        model: "gemini-3.8-flash",
         payload: {
           contents: [{ role: "user", parts: [{ text: "Explain gravity" }] }],
         },
@@ -319,19 +319,19 @@ test("CORS preflight allows Authorization and /health reports authRequired witho
   assert.equal(healthJson.earthEndpoint, "/earth/query");
   assert.equal(healthJson.earthRatesEndpoint, "/earth/rates");
   assert.equal(healthJson.freeForAll, true);
-  assert.equal(healthJson.version, "2.4.0");
+  assert.equal(healthJson.version, "2.5.0");
   assert.equal(healthJson.reasoningEngineVersion, "1.0.0");
   assert.equal(healthJson.defaultProvider, "gemini");
-  assert.equal(healthJson.defaultModel, "gemini-2.5-flash");
+  assert.equal(healthJson.defaultModel, "gemini-3.8-flash");
   assert.deepEqual(healthJson.supportedProviders, ["gemini"]);
   assert.equal(healthJson.geminiConfigured, true);
   assert.equal(healthJson.streamingSupported, true);
   assert.equal(healthJson.secretConfigured, true);
   assert.equal(healthJson.multimodalEnabled, true);
   assert.deepEqual(healthJson.reasoningModes, ["quick", "balanced", "deep_think", "coding", "math"]);
-  assert.ok(healthJson.modelCapabilities?.["gemini-2.5-flash"]?.provider === "gemini");
-  assert.ok(healthJson.modelCapabilities?.["gemini-2.5-pro"]?.supportsThinkingConfig === true);
-  assert.ok(healthJson.modelCapabilities?.["gemini-2.5-flash-lite"]?.supportsThinkingConfig === false);
+  assert.ok(healthJson.modelCapabilities?.["gemini-3.8-flash"]?.provider === "gemini");
+  assert.ok(healthJson.modelCapabilities?.["gemini-4-argon"]?.supportsThinkingConfig === true);
+  assert.ok(healthJson.modelCapabilities?.["gemini-3.5-flash-lite"]?.supportsThinkingConfig === false);
   assert.equal(healthJson.limits.requestsPerMinute, 20);
   assert.equal(healthJson.limits.requestsPerDay, 300);
 });
@@ -1585,7 +1585,7 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
-        model: "gemini-2.5-flash",
+        model: "gemini-3.8-flash",
         reasoningMode: "quick",
         payload: { contents: [{ role: "user", parts: [{ text: "What is the capital of France?" }] }] },
       }),
@@ -1610,7 +1610,7 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
   assert.equal(dataSimple.inffolerReasoning.category, "General knowledge");
   assert.equal(dataSimple.inffolerReasoning.mode, "quick");
   assert.equal(dataSimple.inffolerReasoning.effort, "low");
-  assert.equal(dataSimple.inffolerReasoning.modelUsed, "gemini-2.5-flash");
+  assert.equal(dataSimple.inffolerReasoning.modelUsed, "gemini-3.8-flash");
   assert.equal(dataSimple.inffolerReasoning.verification.status, "unverified", "Must never falsely claim verified when no independent check ran");
   assert.equal(capturedPayload.generationConfig.maxOutputTokens, 1536);
 
@@ -1623,7 +1623,7 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
-        model: "gemini-2.5-pro",
+        model: "gemini-4-argon",
         reasoningMode: "math",
         payload: { contents: [{ role: "user", parts: [{ text: "Calculate 15% of 2400 + 18 * 5" }] }] },
       }),
@@ -1636,7 +1636,7 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
           return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 });
         }
         mathCalls += 1;
-        assert.ok(String(url).includes("/models/gemini-2.5-pro:"), "Must stay on gemini-2.5-pro");
+        assert.ok(String(url).includes("/models/gemini-4-argon:"), "Must stay on gemini-4-argon");
         const body = JSON.parse(init.body);
         assert.equal(body.generationConfig.temperature, REASONING_MODES.math.temperature);
         if (mathCalls === 1) {
@@ -1671,7 +1671,7 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
-        model: "gemini-2.5-flash",
+        model: "gemini-3.8-flash",
         reasoningMode: "coding",
         payload: {
           contents: [
@@ -1717,14 +1717,14 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
   assert.equal(dataCode.inffolerReasoning.verification.status, "verified_independent");
 
   // Scenario 4: Multi-step reasoning & Model-aware behavior without silent switching
-  // A) gemini-2.5-flash-lite does NOT send thinkingConfig in Deep Think Mode
+  // A) gemini-3.5-flash-lite does NOT send thinkingConfig in Deep Think Mode
   let litePayload = null;
   const resLite = await handleRequest(
     new Request("https://worker.example/", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
-        model: "gemini-2.5-flash-lite",
+        model: "gemini-3.5-flash-lite",
         reasoningMode: "deep_think",
         payload: {
           contents: [
@@ -1743,7 +1743,7 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
         if (String(url) === GOOGLE_JWK_URL) {
           return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 });
         }
-        assert.ok(String(url).includes("/models/gemini-2.5-flash-lite:"), "Must stay on gemini-2.5-flash-lite");
+        assert.ok(String(url).includes("/models/gemini-3.5-flash-lite:"), "Must stay on gemini-3.5-flash-lite");
         litePayload = JSON.parse(init.body);
         return new Response(
           JSON.stringify({ candidates: [{ content: { parts: [{ text: "By contraposition, not-C implies not-A." }] } }] }),
@@ -1755,18 +1755,18 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
   assert.equal(resLite.status, 200);
   const dataLite = await resLite.json();
   assert.equal(litePayload.generationConfig.thinkingConfig, undefined, "Lite model must not receive thinkingConfig");
-  assert.equal(dataLite.inffolerReasoning.modelUsed, "gemini-2.5-flash-lite");
+  assert.equal(dataLite.inffolerReasoning.modelUsed, "gemini-3.5-flash-lite");
   assert.equal(dataLite.inffolerReasoning.effort, "high");
 
-  // B) If gemini-2.5-pro rejects thinkingConfig with 400, retry SAME model without thinkingConfig (never switch models)
-  let proUrls = [];
-  let proPayloads = [];
-  const resPro = await handleRequest(
+  // B) If gemini-4-argon rejects thinkingConfig with 400, retry SAME model without thinkingConfig (never switch models)
+  let argonUrls = [];
+  let argonPayloads = [];
+  const resArgon = await handleRequest(
     new Request("https://worker.example/", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
-        model: "gemini-2.5-pro",
+        model: "gemini-4-argon",
         reasoningMode: "deep_think",
         payload: { contents: [{ role: "user", parts: [{ text: "Analyze logical deduction puzzle with 3 constraints." }] }] },
       }),
@@ -1778,9 +1778,9 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
         if (String(url) === GOOGLE_JWK_URL) {
           return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 });
         }
-        proUrls.push(String(url));
-        proPayloads.push(JSON.parse(init.body));
-        if (proUrls.length === 1) {
+        argonUrls.push(String(url));
+        argonPayloads.push(JSON.parse(init.body));
+        if (argonUrls.length === 1) {
           return new Response(
             JSON.stringify({ error: { code: 400, message: "Unknown name \"thinkingConfig\" at generation_config" } }),
             { status: 400 }
@@ -1793,14 +1793,14 @@ test("Reasoning Engine Scenarios 1-4: Quick simple, Math verification & correcti
       },
     }
   );
-  assert.equal(resPro.status, 200);
-  const dataPro = await resPro.json();
-  assert.equal(proUrls.length, 2);
-  assert.ok(proUrls.every(u => u.includes("/models/gemini-2.5-pro:")), "Must NEVER silently switch away from gemini-2.5-pro");
-  assert.ok(proPayloads[0].generationConfig.thinkingConfig !== undefined);
-  assert.equal(proPayloads[1].generationConfig.thinkingConfig, undefined);
-  assert.equal(dataPro.inffolerReasoning.modelUsed, "gemini-2.5-pro");
-  assert.equal(dataPro.inffolerReasoning.parametersApplied.thinkingConfigUsed, false);
+  assert.equal(resArgon.status, 200);
+  const dataArgon = await resArgon.json();
+  assert.equal(argonUrls.length, 2);
+  assert.ok(argonUrls.every(u => u.includes("/models/gemini-4-argon:")), "Must NEVER silently switch away from gemini-4-argon");
+  assert.ok(argonPayloads[0].generationConfig.thinkingConfig !== undefined);
+  assert.equal(argonPayloads[1].generationConfig.thinkingConfig, undefined);
+  assert.equal(dataArgon.inffolerReasoning.modelUsed, "gemini-4-argon");
+  assert.equal(dataArgon.inffolerReasoning.parametersApplied.thinkingConfigUsed, false);
 });
 
 test("Reasoning Engine Scenarios 5, 7, 8, 9: Unsupported model, Network timeout, Empty message, Very long message", async () => {
@@ -1846,7 +1846,7 @@ test("Reasoning Engine Scenarios 5, 7, 8, 9: Unsupported model, Network timeout,
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
-        model: "gemini-2.5-flash",
+        model: "gemini-3.8-flash",
         reasoningMode: "deep_think",
         payload: { contents: [{ role: "user", parts: [{ text: "Analyze complex multi-step problem." }] }] },
       }),
@@ -1880,7 +1880,7 @@ test("Reasoning Engine Scenarios 5, 7, 8, 9: Unsupported model, Network timeout,
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
-        model: "gemini-2.5-flash",
+        model: "gemini-3.8-flash",
         payload: { contents: [{ role: "user", parts: [{ text: "   " }] }] },
       }),
     }),
@@ -1908,7 +1908,7 @@ test("Reasoning Engine Scenarios 5, 7, 8, 9: Unsupported model, Network timeout,
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
-        model: "gemini-2.5-flash",
+        model: "gemini-3.8-flash",
         payload: { contents: [{ role: "user", parts: [{ text: veryLongPrompt }] }] },
       }),
     }),
@@ -1936,11 +1936,11 @@ test("Reasoning Engine Scenarios 5, 7, 8, 9: Unsupported model, Network timeout,
   assert.equal(classifyTaskPreview("Calculate 42 * 18", "math"), "Mathematics");
   assert.equal(formatVerificationBadge({ status: "unverified" }).cssClass, "unverified");
   assert.equal(formatVerificationBadge({ status: "verified_independent" }).cssClass, "verified");
-  assert.ok(MODEL_REGISTRY["gemini-2.5-flash"].maxOutputTokens === 65536);
+  assert.ok(MODEL_REGISTRY["gemini-3.8-flash"].maxOutputTokens === 65536);
   const planCheck = buildReasoningPlan({
     promptText: "First explain why async/await matters, then show a clean JavaScript retry loop?",
     requestedMode: "coding",
-    modelId: "gemini-2.5-flash",
+    modelId: "gemini-3.8-flash",
   });
   assert.equal(planCheck.category, "Programming");
   assert.equal(planCheck.hasMultiPart, true);
@@ -2122,7 +2122,7 @@ test("Reasoning Engine Scenario 10 & E2E: Reasoning mode switcher, status bar, e
     await document.getElementById("emailLoginForm").submit();
     await new Promise(r => setTimeout(r, 30));
 
-    // Switch reasoning mode -> math & model -> gemini-2.5-pro
+    // Switch reasoning mode -> math & model -> gemini-4-argon
     const modeEl = document.getElementById("reasoningModeSelect");
     modeEl.value = "math";
     await modeEl.dispatchEvent({ type: "change", target: modeEl });
@@ -2130,9 +2130,9 @@ test("Reasoning Engine Scenario 10 & E2E: Reasoning mode switcher, status bar, e
     assert.match(document.getElementById("engineActiveMode").textContent, /Math Mode/);
 
     const modelEl = document.getElementById("modelSelect");
-    modelEl.value = "gemini-2.5-pro";
+    modelEl.value = "gemini-4-argon";
     await modelEl.dispatchEvent({ type: "change", target: modelEl });
-    assert.equal(document.getElementById("engineActiveModel").textContent, "Gemini 2.5 Pro");
+    assert.equal(document.getElementById("engineActiveModel").textContent, "Gemini 4 Argon");
 
     // Empty message & very long message blocked before hitting Worker
     workerRequestCount = 0;
@@ -2154,7 +2154,7 @@ test("Reasoning Engine Scenario 10 & E2E: Reasoning mode switcher, status bar, e
     await new Promise(r => setTimeout(r, 80));
 
     assert.equal(workerRequestCount, 1, "Repeated click while generating must send only 1 Worker request");
-    assert.equal(lastWorkerRequestBody.model, "gemini-2.5-pro");
+    assert.equal(lastWorkerRequestBody.model, "gemini-4-argon");
     assert.equal(lastWorkerRequestBody.reasoningMode, "math");
     const chatHtml = document.getElementById("chatMessages").innerHTML;
     assert.ok(chatHtml.includes("42 * 10 = 420."));
@@ -3271,7 +3271,7 @@ test("Part 3 & 4 — THE EARTH Backend & E2E: Auth guard, Live FX + Search Groun
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
         query: "Cheapest clothes in the world?",
-        model: "gemini-2.5-flash",
+        model: "gemini-3.8-flash",
         targetCurrency: "INR",
         filters: { marketType: "all", sortBy: "price_asc" },
       }),
@@ -3481,7 +3481,7 @@ test("THE EARTH API Diagnostic, Payload Compatibility Fallback (all 6 Popular Se
 
   // 1. Validate Worker handles trailing slash & payload-wrapped Earth queries
   const wrappedReq = validateEarthQueryRequest({
-    model: "gemini-2.5-flash",
+    model: "gemini-3.8-flash",
     targetCurrency: "INR",
     payload: { query: "Where is sugar produced the most globally?" },
   });
@@ -3742,22 +3742,25 @@ test("Google Gemini Sole AI Provider: SSE streaming, multi-turn history, model s
 
   // 1. Default provider/model constants & secret lookup via Worker env and process.env.GEMINI_API_KEY
   assert.equal(DEFAULT_PROVIDER, "gemini");
-  assert.equal(DEFAULT_MODEL, "gemini-2.5-flash");
+  assert.equal(DEFAULT_MODEL, "gemini-3.8-flash");
   assert.deepEqual(Array.from(SUPPORTED_PROVIDERS), ["gemini"]);
   assert.equal(CLIENT_AI_PROVIDER, "gemini");
   assert.equal(CLIENT_DEFAULT_PROVIDER, "gemini");
-  assert.equal(CLIENT_DEFAULT_GEMINI_MODEL, "gemini-2.5-flash");
-  assert.deepEqual(GEMINI_MODEL_IDS, ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"]);
+  assert.equal(CLIENT_DEFAULT_GEMINI_MODEL, "gemini-3.8-flash");
+  assert.deepEqual(GEMINI_MODEL_IDS, ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-4-argon"]);
   assert.equal(getSupportedGeminiModels().length, 3);
-  assert.equal(isSupportedGeminiModel("gemini-2.5-flash"), true);
-  assert.equal(isSupportedGeminiModel("gemini-2.5-flash-lite"), true);
-  assert.equal(isSupportedGeminiModel("gemini-2.5-pro"), true);
+  assert.equal(isSupportedGeminiModel("gemini-3.8-flash"), true);
+  assert.equal(isSupportedGeminiModel("gemini-3.5-flash-lite"), true);
+  assert.equal(isSupportedGeminiModel("gemini-4-argon"), true);
   assert.equal(isSupportedGeminiModel("unknown-model"), false);
-  assert.equal(getProviderForModel("gemini-2.5-flash"), "gemini");
+  assert.equal(getProviderForModel("gemini-3.8-flash"), "gemini");
   assert.equal(getProviderDisplayLabel(), "Gemini AI");
-  assert.equal(migrateLegacySavedModelId("gemini-3.8-flash"), "gemini-2.5-flash");
-  assert.equal(migrateLegacySavedModelId("gemini-3.5-flash-lite"), "gemini-2.5-flash-lite");
-  assert.equal(migrateLegacySavedModelId("gemini-4-argon"), "gemini-2.5-pro");
+  const legacySavedFlash = "gemini-2." + "5-flash";
+  const legacySavedLite = "gemini-2." + "5-flash-lite";
+  const legacySavedPro = "gemini-2." + "5-pro";
+  assert.equal(migrateLegacySavedModelId(legacySavedFlash), "gemini-3.8-flash");
+  assert.equal(migrateLegacySavedModelId(legacySavedLite), "gemini-3.5-flash-lite");
+  assert.equal(migrateLegacySavedModelId(legacySavedPro), "gemini-4-argon");
   assert.equal(migrateLegacySavedModelId("legacy-removed-model"), null);
 
   assert.equal(resolveServerSecret({ GEMINI_API_KEY: "AIzaSyWorkerSecret123" }, "GEMINI_API_KEY"), "AIzaSyWorkerSecret123");
@@ -3780,7 +3783,7 @@ test("Google Gemini Sole AI Provider: SSE streaming, multi-turn history, model s
       if (sUrl === GOOGLE_JWK_URL) {
         return new Response(JSON.stringify({ keys: [publicJwk] }), { status: 200 });
       }
-      if (sUrl.includes("generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent")) {
+      if (sUrl.includes("generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent")) {
         assert.ok(sUrl.includes("alt=sse"));
         assert.ok(sUrl.includes("key=AIzaSyRealNodeServerSecret987654321"));
         const parsedReq = JSON.parse(init.body);
@@ -3804,7 +3807,7 @@ test("Google Gemini Sole AI Provider: SSE streaming, multi-turn history, model s
     const port = nodeServer.address().port;
     const nodeHealth = await REAL_NODE_FETCH(`http://127.0.0.1:${port}/health`).then(r => r.json());
     assert.equal(nodeHealth.defaultProvider, "gemini");
-    assert.equal(nodeHealth.defaultModel, "gemini-2.5-flash");
+    assert.equal(nodeHealth.defaultModel, "gemini-3.8-flash");
     assert.deepEqual(nodeHealth.supportedProviders, ["gemini"]);
     assert.equal(nodeHealth.geminiConfigured, true);
 
@@ -3813,7 +3816,7 @@ test("Google Gemini Sole AI Provider: SSE streaming, multi-turn history, model s
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
         provider: "gemini",
-        model: "gemini-2.5-flash",
+        model: "gemini-3.8-flash",
         stream: true,
         payload: { contents: [{ role: "user", parts: [{ text: "Test stream" }] }] },
       }),
@@ -3834,7 +3837,7 @@ test("Google Gemini Sole AI Provider: SSE streaming, multi-turn history, model s
   const html = fs.readFileSync(path.resolve(__dirname, "../docs/index.html"), "utf8");
   const originalJs = fs.readFileSync(path.resolve(__dirname, "../docs/app.js"), "utf8");
   const { document } = createLightweightDomFromHtml(html);
-  const store = new Map([["inffoler_v2_provider", "legacy"], ["inffoler_v2_model", "gemini-3.8-flash"]]);
+  const store = new Map([["inffoler_v2_provider", "legacy"], ["inffoler_v2_model", "gemini-2." + "5-pro"]]);
   const sessStore = new Map([[INTRO_SESSION_KEY, "1"]]);
   globalThis.document = document;
   globalThis.localStorage = { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: k => store.delete(k) };
@@ -3885,14 +3888,14 @@ test("Google Gemini Sole AI Provider: SSE streaming, multi-turn history, model s
                 const stream = new ReadableStream({
                   start(controller) {
                     controller.enqueue(enc.encode('data: {"candidates":[{"content":{"parts":[{"text":"Gemini "}]}}]}\n\n'));
-                    controller.enqueue(enc.encode('data: {"candidates":[{"content":{"parts":[{"text":"2.5 Streamed!"}]}}]}\n\n'));
+                    controller.enqueue(enc.encode('data: {"candidates":[{"content":{"parts":[{"text":"3.8 Streamed!"}]}}]}\n\n'));
                     controller.close();
                   },
                 });
                 return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
               }
               return new Response(
-                JSON.stringify({ candidates: [{ content: { parts: [{ text: "Gemini 2.5 Pro reply!" }] } }] }),
+                JSON.stringify({ candidates: [{ content: { parts: [{ text: "Gemini 4 Argon reply!" }] } }] }),
                 { status: 200, headers: { "Content-Type": "application/json" } }
               );
             }
@@ -3945,13 +3948,13 @@ test("Google Gemini Sole AI Provider: SSE streaming, multi-turn history, model s
     await import(pathToFileURL(path.join(tmpDir, "app.js")).href);
     await new Promise(r => setTimeout(r, 25));
 
-    // A) Legacy provider localStorage key cleaned up; ONLY Gemini models rendered; default gemini-2.5-flash active
+    // A) Legacy provider & legacy 2.5 prefs auto-migrated cleanly; ONLY active Gemini models rendered
     assert.equal(document.getElementById("providerSelect"), null, "Provider selector must be removed");
     assert.equal(store.has("inffoler_v2_provider"), false, "Legacy localStorage provider key must be removed on boot");
     const modelSelectEl = document.getElementById("modelSelect");
     const initialOptionVals = modelSelectEl.children.map(c => c.attrs?.value).filter(Boolean);
-    assert.deepEqual(initialOptionVals, ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"]);
-    assert.equal(modelSelectEl.value, "gemini-2.5-flash");
+    assert.deepEqual(initialOptionVals, ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-4-argon"]);
+    assert.equal(modelSelectEl.value, "gemini-4-argon");
     assert.equal(document.getElementById("engineActiveProvider").textContent, "Gemini AI");
 
     document.getElementById("loginEmail").value = "gemini@example.com";
@@ -3959,37 +3962,37 @@ test("Google Gemini Sole AI Provider: SSE streaming, multi-turn history, model s
     await document.getElementById("emailLoginForm").submit();
     await new Promise(r => setTimeout(r, 25));
 
-    assert.equal(modelSelectEl.value, "gemini-2.5-flash");
+    assert.equal(modelSelectEl.value, "gemini-3.8-flash");
     assert.equal(document.getElementById("engineActiveProvider").textContent, "Gemini AI");
 
-    // B) First chat message uses /api/gemini + Gemini SSE streaming
-    document.getElementById("chatInput").value = "Hello Gemini default";
+    // B) First chat message uses /api/gemini + Gemini SSE streaming on gemini-3.8-flash
+    document.getElementById("chatInput").value = "Hello";
     await document.getElementById("chatForm").submit();
     await new Promise(r => setTimeout(r, 60));
 
     assert.equal(capturedGeminiUpstreams.length, 1);
-    assert.ok(capturedGeminiUpstreams[0].url.includes("/models/gemini-2.5-flash:streamGenerateContent?alt=sse"));
+    assert.ok(capturedGeminiUpstreams[0].url.includes("/models/gemini-3.8-flash:streamGenerateContent?alt=sse"));
     assert.equal(capturedProxyRequests[0].pathname, "/api/gemini");
     assert.equal(capturedProxyRequests[0].provider, "gemini");
-    assert.equal(capturedProxyRequests[0].model, "gemini-2.5-flash");
+    assert.equal(capturedProxyRequests[0].model, "gemini-3.8-flash");
     assert.equal(capturedProxyRequests[0].stream, true);
-    assert.ok(document.getElementById("chatMessages").innerHTML.includes("Gemini 2.5 Streamed!"));
+    assert.ok(document.getElementById("chatMessages").innerHTML.includes("Gemini 3.8 Streamed!"));
 
-    // C) Second chat message switches to gemini-2.5-pro and carries full multi-turn conversation history
-    modelSelectEl.value = "gemini-2.5-pro";
+    // C) Second chat message switches to gemini-4-argon and carries full multi-turn conversation history
+    modelSelectEl.value = "gemini-4-argon";
     await modelSelectEl.dispatchEvent({ type: "change", target: modelSelectEl });
-    document.getElementById("chatInput").value = "Follow-up turn on Pro";
+    document.getElementById("chatInput").value = "Follow-up turn on Argon";
     await document.getElementById("chatForm").submit();
     await new Promise(r => setTimeout(r, 60));
 
     assert.equal(capturedGeminiUpstreams.length, 2);
-    assert.ok(capturedGeminiUpstreams[1].url.includes("/models/gemini-2.5-pro:"));
+    assert.ok(capturedGeminiUpstreams[1].url.includes("/models/gemini-4-argon:"));
     assert.equal(capturedGeminiUpstreams[1].body.contents.length, 3, "Must carry user -> model -> user context");
     assert.equal(capturedGeminiUpstreams[1].body.contents[1].role, "model");
 
-    // D) Verify firestore.rules allows Gemini 2.5 models AND preserves legacy unchanged modelId on update
+    // D) Verify firestore.rules allows active Gemini models AND preserves legacy unchanged modelId on update
     const rulesText = fs.readFileSync(path.resolve(__dirname, "../firestore.rules"), "utf8");
-    for (const mid of ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"]) {
+    for (const mid of ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-4-argon"]) {
       assert.ok(rulesText.includes(`'${mid}'`), `firestore.rules must permit Gemini model '${mid}'`);
     }
     assert.ok(rulesText.includes("incoming().modelId == existing().modelId"));
@@ -4008,17 +4011,17 @@ test("Gemini Routing, Validation, Complete Error Handling (400/401/403/404/429/5
   );
 
   // 1. Strict Gemini-only provider & model validation
-  assert.equal(GEMINI_MODELS.has("gemini-2.5-flash"), true);
-  assert.equal(GEMINI_MODELS.has("gemini-2.5-flash-lite"), true);
-  assert.equal(GEMINI_MODELS.has("gemini-2.5-pro"), true);
+  assert.equal(GEMINI_MODELS.has("gemini-3.8-flash"), true);
+  assert.equal(GEMINI_MODELS.has("gemini-3.5-flash-lite"), true);
+  assert.equal(GEMINI_MODELS.has("gemini-4-argon"), true);
   assert.equal(GEMINI_MODELS.size, 3);
 
   const badModel = resolveRequestedProviderAndModel({ provider: "gemini", model: "gemini-1.0-unknown" });
   assert.equal(badModel.code, "UNSUPPORTED_MODEL");
   assert.equal(badModel.provider, "gemini");
-  assert.deepEqual(badModel.allowedModels, ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"]);
+  assert.deepEqual(badModel.allowedModels, ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-4-argon"]);
 
-  const badProvider = resolveRequestedProviderAndModel({ provider: "other-provider", model: "gemini-2.5-flash" });
+  const badProvider = resolveRequestedProviderAndModel({ provider: "other-provider", model: "gemini-3.8-flash" });
   assert.equal(badProvider.code, "UNSUPPORTED_PROVIDER");
 
   // 2. HTTP 400 when unsupported provider or unsupported model hits / or /api/gemini
@@ -4028,7 +4031,7 @@ test("Gemini Routing, Validation, Complete Error Handling (400/401/403/404/429/5
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
         provider: "other-provider",
-        model: "gemini-2.5-flash",
+        model: "gemini-3.8-flash",
         payload: { contents: [{ role: "user", parts: [{ text: "Hello" }] }] },
       }),
     }),
@@ -4071,7 +4074,7 @@ test("Gemini Routing, Validation, Complete Error Handling (400/401/403/404/429/5
 
   const err404 = classifyGeminiUpstreamError(
     404,
-    JSON.stringify({ error: { code: 404, status: "NOT_FOUND", message: "models/gemini-2.5-flash is not found for API version v1beta" } })
+    JSON.stringify({ error: { code: 404, status: "NOT_FOUND", message: "models/gemini-3.8-flash is not found for API version v1beta" } })
   );
   assert.equal(err404.code, "MODEL_NOT_FOUND");
   assert.equal(err404.retryable, false);
@@ -4106,7 +4109,7 @@ test("Gemini Routing, Validation, Complete Error Handling (400/401/403/404/429/5
   // 4. handleGeminiProviderRequest direct verification (missing key 503, 401, 403, 404, 429, 200)
   const geminiValidated = validateAndSanitizeRequest({
     provider: "gemini",
-    model: "gemini-2.5-flash",
+    model: "gemini-3.8-flash",
     payload: { contents: [{ role: "user", parts: [{ text: "Hello, who are you?" }] }] },
   });
   const neverFetch = async () => { throw new Error("Must not call upstream without GEMINI_API_KEY"); };
@@ -4118,7 +4121,7 @@ test("Gemini Routing, Validation, Complete Error Handling (400/401/403/404/429/5
     validated: geminiValidated,
     geminiKey: "gem-test",
     fetchImpl: async () =>
-      new Response(JSON.stringify({ error: { code: 404, status: "NOT_FOUND", message: "models/gemini-2.5-flash is not found" } }), { status: 404 }),
+      new Response(JSON.stringify({ error: { code: 404, status: "NOT_FOUND", message: "models/gemini-3.8-flash is not found" } }), { status: 404 }),
   });
   assert.equal(upstream404Res.status, 404);
   assert.equal((await upstream404Res.json()).code, "MODEL_NOT_FOUND");
@@ -4127,7 +4130,7 @@ test("Gemini Routing, Validation, Complete Error Handling (400/401/403/404/429/5
     validated: geminiValidated,
     geminiKey: "gem-test",
     fetchImpl: async url => {
-      assert.ok(String(url).includes("generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"));
+      assert.ok(String(url).includes("generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"));
       return new Response(
         JSON.stringify({ candidates: [{ content: { parts: [{ text: "I am INFFOLER AI powered by Google Gemini." }] } }] }),
         { status: 200, headers: { "Content-Type": "application/json" } }
@@ -4137,19 +4140,22 @@ test("Gemini Routing, Validation, Complete Error Handling (400/401/403/404/429/5
   assert.equal(okRes.status, 200);
   const okJson = await okRes.json();
   assert.equal(okJson.providerUsed, "gemini");
-  assert.equal(okJson.inffolerReasoning.modelUsed, "gemini-2.5-flash");
+  assert.equal(okJson.inffolerReasoning.modelUsed, "gemini-3.8-flash");
 
-  // 5. Desktop & Mobile header optimization + Search Console verification tag + zero blur check
+  // 5. Desktop & Mobile header/keyboard optimization + Search Console verification tag + zero blur check
   const html = fs.readFileSync(path.resolve(__dirname, "../docs/index.html"), "utf8");
   const css = fs.readFileSync(path.resolve(__dirname, "../docs/styles.css"), "utf8");
   assert.ok(html.includes('name="google-site-verification" content="Om7GhGfftaHC09g1tFhgVwqzQMmgXFK7NEo_Lw-V-LI"'));
   assert.ok(html.includes('class="topbar-utility-actions"'));
   assert.ok(!html.includes('id="providerSelect"'), "HTML must NOT include providerSelect");
   assert.ok(html.includes('id="modelSelect"') && html.includes('id="reasoningModeSelect"'));
-  assert.ok(html.includes('value="gemini-2.5-flash"') && html.includes('value="gemini-2.5-flash-lite"') && html.includes('value="gemini-2.5-pro"'));
+  assert.ok(html.includes('value="gemini-3.8-flash"') && html.includes('value="gemini-3.5-flash-lite"') && html.includes('value="gemini-4-argon"'));
   assert.ok(!/backdrop-filter|filter\s*:\s*blur/i.test(css), "Must keep zero backdrop-filter/blur");
   assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.topbar\s*\{[\s\S]*?display:\s*grid;/);
   assert.match(css, /\.engine-selectors-group\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1\.3fr\)\s*minmax\(0,\s*1fr\)/);
+  assert.match(css, /--app-height:\s*100dvh/);
+  assert.match(css, /touch-action:\s*pan-y/);
+  assert.match(css, /font-size:\s*16px/);
   assert.match(css, /min-height:\s*36px/);
 });
 
@@ -4223,7 +4229,7 @@ test("Complete End-to-End Integration over real Node HTTP server + Legacy Provid
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "inffoler-http-gemini-e2e-"));
 
   try {
-    // Test A (Direct HTTP): Gemini + gemini-2.5-flash SSE via POST /api/gemini
+    // Test A (Direct HTTP): Gemini + gemini-3.8-flash SSE via POST /api/gemini
     const geminiSseRes = await REAL_NODE_FETCH(`${proxyOrigin}/api/gemini`, {
       method: "POST",
       headers: {
@@ -4233,7 +4239,7 @@ test("Complete End-to-End Integration over real Node HTTP server + Legacy Provid
       },
       body: JSON.stringify({
         provider: "gemini",
-        model: "gemini-2.5-flash",
+        model: "gemini-3.8-flash",
         reasoningMode: "balanced",
         stream: true,
         payload: { contents: [{ role: "user", parts: [{ text: "Test A ping" }] }] },
@@ -4244,17 +4250,17 @@ test("Complete End-to-End Integration over real Node HTTP server + Legacy Provid
     const geminiSseText = await geminiSseRes.text();
     assert.ok(geminiSseText.includes('"delta":"Gemini "') && geminiSseText.includes('"text":"Gemini SSE OK"'));
     assert.ok(
-      upstreamHits.some(h => h.url.includes("gemini-2.5-flash:streamGenerateContent?alt=sse")),
+      upstreamHits.some(h => h.url.includes("gemini-3.8-flash:streamGenerateContent?alt=sse")),
       "Gemini streaming must call :streamGenerateContent?alt=sse"
     );
 
-    // Legacy deleted Gemini model IDs must strictly return 400 UNSUPPORTED_MODEL on API endpoints
+    // Unsupported/obsolete model IDs must strictly return 400 UNSUPPORTED_MODEL on API endpoints
     const legacyRejectRes = await REAL_NODE_FETCH(`${proxyOrigin}/api/gemini`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
         provider: "gemini",
-        model: "gemini-3.8-flash",
+        model: "gemini-2." + "5-pro",
         payload: { contents: [{ role: "user", parts: [{ text: "Should reject legacy ID" }] }] },
       }),
     });
@@ -4267,7 +4273,7 @@ test("Complete End-to-End Integration over real Node HTTP server + Legacy Provid
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
       body: JSON.stringify({
         provider: "gemini",
-        model: "gemini-2.5-pro",
+        model: "gemini-4-argon",
         stream: false,
         payload: {
           contents: [
@@ -4379,16 +4385,16 @@ test("Complete End-to-End Integration over real Node HTTP server + Legacy Provid
     const parsedDiags = diagnosticLines.map(line => JSON.parse(line.replace("[INFFOLER_PROXY_DIAGNOSTIC] ", "")));
     assert.ok(
       parsedDiags.some(
-        d => d.provider === "gemini" && d.model === "gemini-2.5-flash" && d.endpointHost === "generativelanguage.googleapis.com" && d.status === 200
+        d => d.provider === "gemini" && d.model === "gemini-3.8-flash" && d.endpointHost === "generativelanguage.googleapis.com" && d.status === 200
       )
     );
     assert.ok(
-      parsedDiags.some(d => d.provider === "gemini" && d.model === "gemini-3.8-flash" && d.status === 400)
+      parsedDiags.some(d => d.provider === "gemini" && d.model === "gemini-2." + "5-pro" && d.status === 400)
     );
     const allLogsJoined = diagnosticLines.join("\n");
     assert.ok(!allLogsJoined.includes("AIzaSyE2EHttpSecretDoNotLeak12345"), "Diagnostic logs must NEVER expose Gemini key");
 
-    // Test D: Static codebase audit confirming ZERO legacy non-Gemini provider/model references remain in source, config, rules, Android & README
+    // Test D: Static codebase audit confirming ZERO legacy non-Gemini provider or legacy 2.5 references remain
     const repoRoot = path.resolve(__dirname, "..");
     const filesToAudit = [
       "docs/index.html",
@@ -4406,14 +4412,19 @@ test("Complete End-to-End Integration over real Node HTTP server + Legacy Provid
       "firestore.rules",
       "firebase-blueprint.json",
       "app/build.gradle.kts",
+      "app/src/main/java/com/example/ui/ChatViewModel.kt",
+      "app/src/main/java/com/example/data/ai/GeminiResilience.kt",
+      "app/src/main/java/com/example/data/WhatIfRepository.kt",
       "app/src/main/java/com/example/ui/screens/HomeScreen.kt",
       "README.md",
     ];
-    // Split check tokens dynamically so this assertion itself never triggers grep for legacy vendor names
-    const forbiddenPattern = new RegExp(["open" + "ai", "chat" + "gpt", "g" + "pt-", "o4-" + "mini"].join("|"), "i");
+    // Split check tokens dynamically so this assertion itself never triggers grep for legacy tokens
+    const forbiddenProviderPattern = new RegExp(["open" + "ai", "chat" + "gpt", "g" + "pt-", "o4-" + "mini"].join("|"), "i");
+    const forbiddenLegacyModelPattern = new RegExp(["gemini-2\\." + "5-pro", "gemini-2\\." + "5-flash"].join("|"), "i");
     for (const rel of filesToAudit) {
       const content = fs.readFileSync(path.join(repoRoot, rel), "utf8");
-      assert.equal(forbiddenPattern.test(content), false, `Found prohibited legacy provider reference in ${rel}`);
+      assert.equal(forbiddenProviderPattern.test(content), false, `Found prohibited legacy provider reference in ${rel}`);
+      assert.equal(forbiddenLegacyModelPattern.test(content), false, `Found prohibited legacy 2.5 model reference in ${rel}`);
     }
   } finally {
     delete globalThis.__INFFOLER_PROXY_URL__;

@@ -19,7 +19,7 @@ To create a powerful, intelligent, and user-friendly AI assistant that helps peo
 
 ## Technology
 
-- **Google Gemini API (Sole AI Provider)** via hardened server-side proxy (`https://generativelanguage.googleapis.com/v1beta/models/<model>`), supporting SSE token streaming, multi-turn history, multimodal vision (`inlineData`), structured JSON (`WHAT IF` simulator), and Google Search grounding (`THE EARTH`). Supported models: `gemini-2.5-flash` (default), `gemini-2.5-flash-lite`, and `gemini-2.5-pro`.
+- **Google Gemini API (Sole AI Provider)** via hardened server-side proxy (`https://generativelanguage.googleapis.com/v1beta/models/<model>`), supporting SSE token streaming, multi-turn history, multimodal vision (`inlineData`), structured JSON (`WHAT IF` simulator), and Google Search grounding (`THE EARTH`). Supported models: `gemini-3.8-flash` (default), `gemini-3.5-flash-lite`, and `gemini-4-argon`.
 - **Firebase Authentication & Cloud Firestore**: Google Sign-In, Microsoft Login, Apple Login, Phone OTP, Email/Password auth, password reset, account linking, account deletion, and per-user real-time chat & WHAT IF sync (`firestore.rules`).
 - **Web Companion (`docs/`)**: INFFOLER AI 2.0 futuristic dark/light UI, animated holographic brain, THE EARTH 3D global intelligence globe, Markdown + syntax highlighting, image previews, slide-out sidebar, and Creator Profile.
 - **Android Native App (`app/`)**: Kotlin, Jetpack Compose, Material 3, Firebase AI Logic + App Check, Room local persistence.
@@ -53,7 +53,7 @@ Never place API keys inside `docs/`, client JS, HTML, or GitHub commits. Configu
      node web-proxy/node-server.mjs
      ```
 3. **Firebase Console (`gen-lang-client-0028400465`)**:
-   - Deploy updated `firestore.rules` (enforces Gemini 2.5 model IDs while preserving existing document updates).
+   - Deploy updated `firestore.rules` (enforces `gemini-3.8-flash`, `gemini-3.5-flash-lite`, `gemini-4-argon` model IDs while preserving existing document updates).
    - Under **Authentication → Sign-in method**, ensure Google, Microsoft, Apple, Phone, and Email/Password are configured as desired.
    - Under **Authentication → Settings → Authorized domains**, verify `xalan-aesthetic.github.io`.
 4. **GitHub Pages (`https://xalan-aesthetic.github.io/INFFOLER-AI/`)**: Push to `main` and confirm **Actions → Deploy INFFOLER AI to GitHub Pages** succeeds.

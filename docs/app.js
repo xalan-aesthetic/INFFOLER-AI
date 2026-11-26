@@ -69,7 +69,7 @@ import {
   classifyTaskPreview,
   normalizeReasoningMetadata,
   formatVerificationBadge,
-} from "./reasoning-engine.js?v=20261126e";
+} from "./reasoning-engine.js?v=20261126f";
 import {
   normalizePhoneInput,
   validateOtpCode,
@@ -269,7 +269,7 @@ const STARTER_PROMPTS = [
   { icon: "\uD83D\uDCF7", title: "Analyze an Image", action: "attach" },
 ];
 
-// Google Gemini is the sole AI provider (`gemini-2.5-flash` default).
+// Google Gemini is the sole AI provider (`gemini-3.8-flash` default).
 let selectedReasoningMode = normalizeReasoningMode(loadPrefSafe(STORAGE_REASONING_MODE, "balanced"));
 let selectedModelId = (() => {
   const savedModel = loadPrefSafe(STORAGE_MODEL, "");
@@ -2225,7 +2225,7 @@ function classifyClientAiError(status, errJson = null, retryAfterHeader = null, 
       badgeLabel: "MODEL UNAVAILABLE (404)",
       userMessage:
         rawMessage ||
-        "The selected Gemini model is currently unavailable or not found (HTTP 404). Please choose Gemini 2.5 Flash, Flash-Lite, or Pro.",
+        "The selected Gemini model is currently unavailable or not found (HTTP 404). Please choose Gemini 3.8 Flash, Gemini 3.5 Flash Lite, or Gemini 4 Argon.",
     };
   }
 
@@ -2239,7 +2239,7 @@ function classifyClientAiError(status, errJson = null, retryAfterHeader = null, 
       badgeLabel: "UNSUPPORTED MODEL",
       userMessage:
         rawMessage ||
-        "The selected Gemini model is unsupported. Please choose Gemini 2.5 Flash, Gemini 2.5 Flash-Lite, or Gemini 2.5 Pro.",
+        "The selected Gemini model is unsupported. Please choose Gemini 3.8 Flash, Gemini 3.5 Flash Lite, or Gemini 4 Argon.",
     };
   }
 
@@ -2495,6 +2495,17 @@ async function readSseResponseStream(response, modelId, signal, onStreamDelta) {
   };
 }
 
+function logClientAiDiagnostic(level, event, details = {}) {
+  try {
+    const safeDetails = {};
+    for (const [k, v] of Object.entries(details || {})) {
+      safeDetails[k] = typeof v === "string" ? redactSensitiveText(v) : v;
+    }
+    const logger = level === "warn" || level === "error" ? console.warn : console.info;
+    logger?.("[INFFOLER AI]", event, safeDetails);
+  } catch { /* ignore */ }
+}
+
 async function callProxyOnce(
   modelId,
   contents,
@@ -2518,7 +2529,7 @@ async function callProxyOnce(
       {
         code: "UNSUPPORTED_MODEL",
         provider: AI_PROVIDER,
-        error: `Unsupported Gemini model '${rawModelInput}'. Allowed models: Gemini 2.5 Flash, Gemini 2.5 Flash-Lite, Gemini 2.5 Pro.`,
+        error: `Unsupported Gemini model '${rawModelInput}'. Allowed models: Gemini 3.8 Flash, Gemini 3.5 Flash Lite, Gemini 4 Argon.`,
       },
       null,
       ""
@@ -2526,6 +2537,15 @@ async function callProxyOnce(
   }
   const wantsStream = Boolean(onStreamDelta && !responseMimeType);
   const geminiEndpoint = `${PUBLIC_PROXY_URL}/api/gemini`;
+  const normalizedMode = normalizeReasoningMode(reasoningMode);
+
+  logClientAiDiagnostic("info", "request_dispatch", {
+    provider: AI_PROVIDER,
+    model: resolvedModelId,
+    mode: normalizedMode,
+    stream: wantsStream,
+    endpoint: "/api/gemini",
+  });
 
   const payload = {
     systemInstruction: { parts: [{ text: systemInstruction }] },
@@ -2557,7 +2577,7 @@ async function callProxyOnce(
         provider: AI_PROVIDER,
         model: resolvedModelId,
         stream: wantsStream,
-        reasoningMode: normalizeReasoningMode(reasoningMode),
+        reasoningMode: normalizedMode,
         payload,
       }),
       signal: timeoutController.signal,
@@ -2582,12 +2602,20 @@ async function callProxyOnce(
       try {
         errJson = JSON.parse(bodyText);
       } catch { /* ignore */ }
-      throw buildClassifiedClientError(
+      const classifiedErr = buildClassifiedClientError(
         response.status,
         errJson,
         response.headers?.get?.("Retry-After") || null,
         bodyText
       );
+      logClientAiDiagnostic("warn", "request_error", {
+        provider: AI_PROVIDER,
+        model: resolvedModelId,
+        status: response.status,
+        code: classifiedErr.code,
+        message: classifiedErr.message,
+      });
+      throw classifiedErr;
     }
 
     const contentType = String(response.headers?.get?.("Content-Type") || "").toLowerCase();
@@ -2625,6 +2653,11 @@ async function callProxyOnce(
       timeoutErr.errorKind = "server_temp";
       timeoutErr.badgeLabel = "REQUEST TIMED OUT (504)";
       timeoutErr.retryable = true;
+      logClientAiDiagnostic("warn", "request_timeout", {
+        provider: AI_PROVIDER,
+        model: resolvedModelId,
+        status: 504,
+      });
       throw timeoutErr;
     }
     if (err instanceof TypeError) {
@@ -2632,6 +2665,11 @@ async function callProxyOnce(
       netErr.errorKind = "network";
       netErr.badgeLabel = "CONNECTION ISSUE";
       netErr.retryable = true;
+      logClientAiDiagnostic("warn", "request_network_error", {
+        provider: AI_PROVIDER,
+        model: resolvedModelId,
+        message: err.message,
+      });
       throw netErr;
     }
     throw err;
@@ -2900,6 +2938,11 @@ function renderChatMessages() {
             ${explainHtml}
             <div class="msg-actions-bar">
               ${
+                showRetry && msg.errorKind === "unsupported_model"
+                  ? `<button type="button" class="msg-action-btn retry-action-btn" data-msg-switch-retry="${idx}" ${isGenerating ? "disabled" : ""} title="Switch to Gemini 3.8 Flash and retry">&#x26A1; Use Gemini 3.8 Flash &amp; Retry</button>`
+                  : ""
+              }
+              ${
                 showRetry
                   ? `<button type="button" class="msg-action-btn retry-action-btn" data-msg-retry="${idx}" ${isGenerating ? "disabled" : ""} title="Retry this request">&#x21BB; Retry</button>`
                   : ""
@@ -2940,6 +2983,13 @@ function renderChatMessages() {
         navigator.clipboard?.writeText(m.text);
         showToast("Response copied");
       }
+    });
+  });
+
+  container.querySelectorAll("[data-msg-switch-retry]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      setActiveGeminiModel(DEFAULT_GEMINI_MODEL, { persistCloud: true, markExplicit: true });
+      retryFailedTurn(Number(btn.getAttribute("data-msg-switch-retry")));
     });
   });
 
@@ -3786,7 +3836,7 @@ function bindEvents() {
     chatInput.style.height = `${Math.min(chatInput.scrollHeight, 140)}px`;
   });
   chatInput.addEventListener("keydown", e => {
-    if (e.key === "Enter" && !e.shiftKey && window.innerWidth >= 768) {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && window.innerWidth >= 768) {
       e.preventDefault();
       document.getElementById("chatForm").requestSubmit();
     }
@@ -5070,6 +5120,34 @@ function bindEarthEvents() {
   });
 }
 
+function bindMobileViewportAdjustments() {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  const rootStyle = document.documentElement?.style;
+  if (!rootStyle || typeof rootStyle.setProperty !== "function") return;
+
+  const syncViewportHeight = () => {
+    const vv = window.visualViewport;
+    if (vv && typeof vv.height === "number" && vv.height >= 320) {
+      rootStyle.setProperty("--app-height", `${Math.round(vv.height)}px`);
+    } else if (typeof window.innerHeight === "number" && window.innerHeight >= 320) {
+      rootStyle.setProperty("--app-height", `${Math.round(window.innerHeight)}px`);
+    }
+  };
+
+  syncViewportHeight();
+  window.visualViewport?.addEventListener?.("resize", syncViewportHeight);
+  window.visualViewport?.addEventListener?.("scroll", syncViewportHeight);
+  window.addEventListener?.("resize", syncViewportHeight);
+
+  const chatInputEl = document.getElementById("chatInput");
+  chatInputEl?.addEventListener?.("focus", () => {
+    setTimeout(() => {
+      syncViewportHeight();
+      scrollChatToBottom();
+    }, 120);
+  });
+}
+
 function boot() {
   try {
     localStorage.removeItem("inffoler_v2_guest_chats");
@@ -5086,6 +5164,7 @@ function boot() {
   renderExplore();
   introController.bindControls();
   bindEvents();
+  bindMobileViewportAdjustments();
   attachInteractiveRipplesAndAudio();
   initParticleCanvas();
   initBrainCanvas();

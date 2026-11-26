@@ -955,7 +955,7 @@ fun HomeScreen(
                 HorizontalDivider(color = GlassBorder)
                 ListItem(
                     headlineContent = { Text("Gemini AI Engine Active") },
-                    supportingContent = { Text("Multi-model failover enabled (2.5 Flash, 2.5 Flash-Lite, 2.5 Pro)") },
+                    supportingContent = { Text("Multi-model failover enabled (3.8 Flash, 3.5 Flash Lite, 4 Argon)") },
                     leadingContent = {
                         Icon(Icons.Rounded.AutoAwesome, contentDescription = null, tint = NeonCyan)
                     },

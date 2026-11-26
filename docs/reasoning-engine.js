@@ -11,38 +11,38 @@ export const MAX_PROMPT_CHARS = 12000;
 
 export const AI_PROVIDER = "gemini";
 export const DEFAULT_PROVIDER = "gemini";
-export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
+export const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
 
 export const GEMINI_MODEL_IDS = Object.freeze([
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-  "gemini-2.5-pro",
+  "gemini-3.8-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-4-argon",
 ]);
 
 export const MODEL_CATALOG = Object.freeze({
-  "gemini-2.5-flash": {
-    id: "gemini-2.5-flash",
+  "gemini-3.8-flash": {
+    id: "gemini-3.8-flash",
     provider: "gemini",
-    label: "Gemini 2.5 Flash",
-    shortLabel: "2.5 Flash",
+    label: "Gemini 3.8 Flash",
+    shortLabel: "3.8 Flash",
     supportsThinkingConfig: true,
     supportsStreaming: true,
     maxOutputTokens: 65536,
   },
-  "gemini-2.5-flash-lite": {
-    id: "gemini-2.5-flash-lite",
+  "gemini-3.5-flash-lite": {
+    id: "gemini-3.5-flash-lite",
     provider: "gemini",
-    label: "Gemini 2.5 Flash-Lite",
-    shortLabel: "2.5 Lite",
+    label: "Gemini 3.5 Flash Lite",
+    shortLabel: "3.5 Lite",
     supportsThinkingConfig: false,
     supportsStreaming: true,
     maxOutputTokens: 65536,
   },
-  "gemini-2.5-pro": {
-    id: "gemini-2.5-pro",
+  "gemini-4-argon": {
+    id: "gemini-4-argon",
     provider: "gemini",
-    label: "Gemini 2.5 Pro",
-    shortLabel: "2.5 Pro",
+    label: "Gemini 4 Argon",
+    shortLabel: "4 Argon",
     supportsThinkingConfig: true,
     supportsStreaming: true,
     maxOutputTokens: 65536,
@@ -87,16 +87,16 @@ export const REASONING_MODES = Object.freeze({
   },
 });
 
-const LEGACY_GEMINI_MODEL_ALIASES = Object.freeze({
-  "gemini-3.8-flash": "gemini-2.5-flash",
-  "gemini-3.5-flash-lite": "gemini-2.5-flash-lite",
-  "gemini-4-argon": "gemini-2.5-pro",
-});
-
 export function migrateLegacySavedModelId(modelId) {
   const key = String(modelId || "").trim();
   if (Object.prototype.hasOwnProperty.call(MODEL_CATALOG, key)) return key;
-  return LEGACY_GEMINI_MODEL_ALIASES[key] || null;
+  const lower = key.toLowerCase();
+  if (/^gemini-2\.5-/.test(lower)) {
+    if (lower.includes("lite")) return "gemini-3.5-flash-lite";
+    if (lower.endsWith("-pro")) return "gemini-4-argon";
+    return DEFAULT_GEMINI_MODEL;
+  }
+  return null;
 }
 
 export function getSupportedGeminiModels() {
@@ -121,7 +121,7 @@ export function normalizeReasoningMode(modeId) {
 }
 
 export function getModelDisplayLabel(modelId) {
-  return MODEL_CATALOG[modelId]?.label || modelId || "Gemini 2.5 Flash";
+  return MODEL_CATALOG[modelId]?.label || modelId || "Gemini 3.8 Flash";
 }
 
 export function validatePromptInput(rawText, imagesCount = 0) {

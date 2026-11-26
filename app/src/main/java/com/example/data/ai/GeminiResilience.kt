@@ -31,10 +31,10 @@ object GeminiResilience {
     val DEFAULT_BACKOFF_MS = longArrayOf(900L, 2_000L)
 
     fun fallbackChainFor(primaryModelId: String): List<String> = when (primaryModelId) {
-        "gemini-2.5-pro" -> listOf("gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite")
-        "gemini-2.5-flash" -> listOf("gemini-2.5-flash", "gemini-2.5-flash-lite")
-        "gemini-2.5-flash-lite" -> listOf("gemini-2.5-flash-lite", "gemini-2.5-flash")
-        else -> listOf(primaryModelId, "gemini-2.5-flash", "gemini-2.5-flash-lite").distinct()
+        "gemini-4-argon" -> listOf("gemini-4-argon", "gemini-3.8-flash", "gemini-3.5-flash-lite")
+        "gemini-3.8-flash" -> listOf("gemini-3.8-flash", "gemini-3.5-flash-lite")
+        "gemini-3.5-flash-lite" -> listOf("gemini-3.5-flash-lite", "gemini-3.8-flash")
+        else -> listOf(primaryModelId, "gemini-3.8-flash", "gemini-3.5-flash-lite").distinct()
     }
 
     fun classifyError(throwable: Throwable): ClassifiedAiError {

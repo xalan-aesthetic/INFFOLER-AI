@@ -19,7 +19,7 @@ class GeminiResilienceTest {
         var attempts = 0
 
         val (usedModel, reply) = GeminiResilience.executeWithRetryAndFallback(
-            modelIds = listOf("gemini-2.5-flash", "gemini-2.5-flash-lite"),
+            modelIds = listOf("gemini-3.8-flash", "gemini-3.5-flash-lite"),
             backoffDelaysMs = longArrayOf(500L, 1_500L),
             delayFn = { ms -> recordedDelays.add(ms) }
         ) { modelId ->
@@ -30,8 +30,8 @@ class GeminiResilienceTest {
             "Answer from $modelId"
         }
 
-        assertEquals("gemini-2.5-flash", usedModel)
-        assertEquals("Answer from gemini-2.5-flash", reply)
+        assertEquals("gemini-3.8-flash", usedModel)
+        assertEquals("Answer from gemini-3.8-flash", reply)
         assertEquals(listOf(500L, 1_500L), recordedDelays)
         assertEquals(3, attempts)
     }
@@ -42,21 +42,21 @@ class GeminiResilienceTest {
         val recordedDelays = mutableListOf<Long>()
 
         val (usedModel, reply) = GeminiResilience.executeWithRetryAndFallback(
-            modelIds = GeminiResilience.fallbackChainFor("gemini-2.5-flash"),
+            modelIds = GeminiResilience.fallbackChainFor("gemini-3.8-flash"),
             backoffDelaysMs = longArrayOf(300L, 600L),
             delayFn = { ms -> recordedDelays.add(ms) }
         ) { modelId ->
             triedModels.add(modelId)
-            if (modelId == "gemini-2.5-flash") {
+            if (modelId == "gemini-3.8-flash") {
                 throw RuntimeException("503 Service Unavailable: This model is currently experiencing high demand")
             }
             "Fallback answer from $modelId"
         }
 
-        assertEquals("gemini-2.5-flash-lite", usedModel)
-        assertEquals("Fallback answer from gemini-2.5-flash-lite", reply)
+        assertEquals("gemini-3.5-flash-lite", usedModel)
+        assertEquals("Fallback answer from gemini-3.5-flash-lite", reply)
         assertEquals(
-            listOf("gemini-2.5-flash", "gemini-2.5-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite"),
+            listOf("gemini-3.8-flash", "gemini-3.8-flash", "gemini-3.8-flash", "gemini-3.5-flash-lite"),
             triedModels
         )
         assertEquals(listOf(300L, 600L), recordedDelays)
@@ -88,7 +88,7 @@ class GeminiResilienceTest {
     @Test(expected = CancellationException::class)
     fun `rethrows cooperative coroutine CancellationException immediately`() = runTest {
         GeminiResilience.executeWithRetryAndFallback(
-            modelIds = listOf("gemini-2.5-flash", "gemini-2.5-flash-lite")
+            modelIds = listOf("gemini-3.8-flash", "gemini-3.5-flash-lite")
         ) {
             throw CancellationException("User navigated away")
         }

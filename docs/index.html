@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css?v=20261126e" />
+  <link rel="stylesheet" href="./styles.css?v=20261126f" />
   <meta name="google-site-verification" content="Om7GhGfftaHC09g1tFhgVwqzQMmgXFK7NEo_Lw-V-LI" />
 </head>
 <body>
@@ -422,9 +422,9 @@
         <div class="topbar-right">
           <div class="engine-selectors-group">
             <select id="modelSelect" class="model-select" aria-label="Select Gemini AI model">
-              <option value="gemini-2.5-flash" selected>Gemini 2.5 Flash</option>
-              <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite</option>
-              <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+              <option value="gemini-3.8-flash" selected>Gemini 3.8 Flash</option>
+              <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite</option>
+              <option value="gemini-4-argon">Gemini 4 Argon</option>
             </select>
 
             <select id="reasoningModeSelect" class="mode-select" aria-label="Select reasoning mode">
@@ -482,7 +482,7 @@
           <div class="engine-status-bar" id="engineStatusBar" aria-live="polite">
             <div class="engine-status-pills">
               <span class="engine-meta-pill provider" id="engineActiveProvider">Gemini AI</span>
-              <span class="engine-meta-pill" id="engineActiveModel">Gemini 2.5 Flash</span>
+              <span class="engine-meta-pill" id="engineActiveModel">Gemini 3.8 Flash</span>
               <span class="engine-meta-pill mode" id="engineActiveMode">&#x2696;&#xFE0F; Balanced Mode</span>
             </div>
             <span class="engine-phase-text" id="engineGenerationStatus">Reasoning Engine 1.0 &middot; Ready</span>
@@ -803,7 +803,7 @@
               <article class="glass-panel section-card">
                 <span class="badge-chip teal">ARCHITECTURE</span>
                 <ul class="bullet-list">
-                  <li>Google Gemini 2.5 (Flash, Flash-Lite, Pro) via hardened server-side secrets proxy</li>
+                  <li>Google Gemini (3.8 Flash, 3.5 Flash Lite, 4 Argon) via hardened server-side secrets proxy</li>
                   <li>Firebase Authentication (Google, Microsoft, Apple, Phone OTP &amp; Email)</li>
                   <li>Cloud Firestore personal per-user real-time chat sync</li>
                   <li>Native Kotlin Jetpack Compose Android app + GitHub Pages Web UI</li>
@@ -1168,6 +1168,6 @@
 
   <div class="toast hidden" id="toastBanner" role="status" aria-live="polite"></div>
 
-  <script type="module" src="./app.js?v=20261126e"></script>
+  <script type="module" src="./app.js?v=20261126f"></script>
 </body>
 </html>

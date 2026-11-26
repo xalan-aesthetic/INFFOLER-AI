@@ -6,7 +6,7 @@
  * - Verifies Firebase Authentication ID Tokens (RS256 via Google Secure Token JWKs).
  * - Unauthenticated requests are rejected with HTTP 401; caller UID comes ONLY from verified JWT `sub`.
  * - Secret (`GEMINI_API_KEY`) lives strictly in backend env / Worker Secrets (never logged or exposed).
- * - Google Gemini is the sole AI provider (`gemini-2.5-flash` default, `gemini-2.5-flash-lite`, `gemini-2.5-pro`).
+ * - Google Gemini is the sole AI provider (`gemini-3.8-flash` default, `gemini-3.5-flash-lite`, `gemini-4-argon`).
  * - Respects user-selected Gemini model strictly (never silently switches models).
  * - 7-Step Reasoning Pipeline:
  *   1) Understand request  2) Classify task category (7 domains)  3) Resolve reasoning effort
@@ -19,7 +19,7 @@ const GOOGLE_JWK_URL =
   "https://www.googleapis.com/robot/v1/metadata/jwk/securetoken@system.gserviceaccount.com";
 
 export const DEFAULT_PROVIDER = "gemini";
-export const DEFAULT_MODEL = "gemini-2.5-flash";
+export const DEFAULT_MODEL = "gemini-3.8-flash";
 
 export function resolveServerSecret(env, keyName) {
   const fromWorkerEnv = env && typeof env[keyName] === "string" ? env[keyName].trim() : "";
@@ -42,10 +42,10 @@ const ALLOWED_ORIGINS = new Set([
 
 /* ==================== MODULE 1: MODEL CAPABILITY REGISTRY ==================== */
 export const MODEL_REGISTRY = Object.freeze({
-  "gemini-2.5-flash": {
-    id: "gemini-2.5-flash",
+  "gemini-3.8-flash": {
+    id: "gemini-3.8-flash",
     provider: "gemini",
-    label: "Gemini 2.5 Flash",
+    label: "Gemini 3.8 Flash",
     maxOutputTokens: 65536,
     supportsMultimodal: true,
     supportsThinkingConfig: true,
@@ -53,10 +53,10 @@ export const MODEL_REGISTRY = Object.freeze({
     supportsStreaming: true,
     thinkingBudgetByEffort: { low: 0, medium: 1024, high: 4096 },
   },
-  "gemini-2.5-flash-lite": {
-    id: "gemini-2.5-flash-lite",
+  "gemini-3.5-flash-lite": {
+    id: "gemini-3.5-flash-lite",
     provider: "gemini",
-    label: "Gemini 2.5 Flash-Lite",
+    label: "Gemini 3.5 Flash Lite",
     maxOutputTokens: 65536,
     supportsMultimodal: true,
     supportsThinkingConfig: false,
@@ -64,10 +64,10 @@ export const MODEL_REGISTRY = Object.freeze({
     supportsStreaming: true,
     thinkingBudgetByEffort: null,
   },
-  "gemini-2.5-pro": {
-    id: "gemini-2.5-pro",
+  "gemini-4-argon": {
+    id: "gemini-4-argon",
     provider: "gemini",
-    label: "Gemini 2.5 Pro",
+    label: "Gemini 4 Argon",
     maxOutputTokens: 65536,
     supportsMultimodal: true,
     supportsThinkingConfig: true,
@@ -678,7 +678,7 @@ export function classifyGeminiUpstreamError(upstreamStatus, upstreamText, retryA
       quotaType: null,
       retryable: false,
       retryAfterSec: null,
-      message: rawMessage || "The requested Gemini model is unavailable or not found (HTTP 404). Try switching to Gemini 2.5 Flash.",
+      message: rawMessage || "The requested Gemini model is unavailable or not found (HTTP 404). Try switching to Gemini 3.8 Flash.",
     };
   }
 
@@ -3042,7 +3042,7 @@ export async function handleRequest(request, env = {}, deps = {}) {
       {
         ok: true,
         service: "inffoler-ai-proxy",
-        version: "2.4.0",
+        version: "2.5.0",
         reasoningEngineVersion: "1.0.0",
         creator: "Alankrit Pathak",
         freeForAll: true,
